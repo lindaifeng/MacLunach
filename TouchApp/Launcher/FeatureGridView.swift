@@ -2,15 +2,37 @@ import SwiftUI
 import TouchFeatureAPI
 
 struct FeatureGridView: View {
-    let plugins: [any FeaturePlugin]
+    @EnvironmentObject private var featureStore: FeatureAreaStore
+    @State private var editingFeatureID: String?
     let palette: ThemePalette
 
     var body: some View {
         HStack(spacing: 24) {
-            ForEach(plugins, id: \.manifest.id) { plugin in
-                FeatureCardView(plugin: plugin, palette: palette) {
-                    Task { _ = try? await plugin.perform() }
+            ForEach(featureStore.visiblePlugins, id: \.manifest.id) { plugin in
+                FeatureCardView(
+                    plugin: plugin,
+                    shortcut: featureStore.shortcut(for: plugin.manifest.id),
+                    palette: palette,
+                    action: { Task { _ = try? await plugin.perform() } },
+                    editShortcut: { editingFeatureID = plugin.manifest.id },
+                    hide: { featureStore.setHidden(true, for: plugin.manifest.id) },
+                    restoreDefaults: { featureStore.restoreDefaults(for: plugin.manifest.id) }
+                )
+                .draggable(plugin.manifest.id)
+                .dropDestination(for: String.self) { featureIDs, _ in
+                    guard let sourceID = featureIDs.first else { return false }
+                    featureStore.move(sourceID, before: plugin.manifest.id)
+                    return true
                 }
+            }
+        }
+        .sheet(isPresented: Binding(
+            get: { editingFeatureID != nil },
+            set: { if !$0 { editingFeatureID = nil } }
+        )) {
+            if let editingFeatureID {
+                ShortcutEditorView(featureID: editingFeatureID)
+                    .environmentObject(featureStore)
             }
         }
     }

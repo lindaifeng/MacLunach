@@ -7,6 +7,7 @@ struct TouchApp: App {
     var body: some Scene {
         Settings {
             SettingsRootView()
+                .environmentObject(FeatureAreaStore.shared)
                 .frame(minWidth: 760, minHeight: 540)
         }
     }

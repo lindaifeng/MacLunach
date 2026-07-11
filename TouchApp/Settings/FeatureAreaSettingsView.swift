@@ -1,17 +1,8 @@
 import SwiftUI
-import TouchFeatureAPI
-import FinderFeature
-import ScreenshotFeature
-import SuperRightFeature
 
 struct FeatureAreaSettingsView: View {
+    @EnvironmentObject private var featureStore: FeatureAreaStore
     let onSelect: (String) -> Void
-
-    private let manifests: [FeatureManifest] = [
-        FinderFeaturePlugin().manifest,
-        ScreenshotFeaturePlugin().manifest,
-        SuperRightFeaturePlugin().manifest
-    ]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -20,7 +11,8 @@ struct FeatureAreaSettingsView: View {
             Text("集中管理启动页上的功能。每个功能独立加载，单项故障不会影响其他功能。")
                 .foregroundStyle(.secondary)
 
-            ForEach(manifests) { manifest in
+            ForEach(featureStore.plugins, id: \.manifest.id) { plugin in
+                let manifest = plugin.manifest
                 Button {
                     onSelect(manifest.id)
                 } label: {
@@ -33,8 +25,13 @@ struct FeatureAreaSettingsView: View {
                             Text(manifest.summary).font(.subheadline).foregroundStyle(.secondary)
                         }
                         Spacer()
-                        Text(manifest.defaultShortcut.displayValue)
+                        Text(featureStore.shortcut(for: manifest.id).displayValue)
                             .foregroundStyle(.secondary)
+                        if featureStore.preferences.hidden.contains(manifest.id) {
+                            Text("已隐藏")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                         Image(systemName: "chevron.right")
                             .foregroundStyle(.tertiary)
                     }

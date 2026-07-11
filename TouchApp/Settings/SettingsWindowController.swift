@@ -8,7 +8,7 @@ extension Notification.Name {
 @MainActor
 final class SettingsWindowController: NSWindowController {
     init() {
-        let rootView = SettingsRootView()
+        let rootView = SettingsRootView().environmentObject(FeatureAreaStore.shared)
         let window = NSWindow(contentViewController: NSHostingController(rootView: rootView))
         window.title = "触达设置"
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable]

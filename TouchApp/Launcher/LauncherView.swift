@@ -1,20 +1,10 @@
 import SwiftUI
-import TouchFeatureAPI
-import FinderFeature
-import ScreenshotFeature
-import SuperRightFeature
 
 struct LauncherView: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @State private var mode: SearchMode = .applications
     @State private var query = ""
-
-    private let plugins: [any FeaturePlugin] = [
-        FinderFeaturePlugin(),
-        ScreenshotFeaturePlugin(),
-        SuperRightFeaturePlugin()
-    ]
 
     private var palette: ThemePalette { .palette(for: themeStore.theme) }
 
@@ -57,7 +47,7 @@ struct LauncherView: View {
                 .padding(.top, 104)
                 .padding(.horizontal, 190)
 
-                FeatureGridView(plugins: plugins, palette: palette)
+                FeatureGridView(palette: palette)
                 .padding(.top, 100)
 
                 Spacer()
@@ -66,6 +56,5 @@ struct LauncherView: View {
         .clipShape(RoundedRectangle(cornerRadius: 36))
         .overlay(RoundedRectangle(cornerRadius: 36).stroke(palette.border, lineWidth: 1))
         .padding(1)
-        .accessibilityIdentifier("launcher.root")
     }
 }

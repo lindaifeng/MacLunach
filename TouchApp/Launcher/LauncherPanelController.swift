@@ -15,18 +15,23 @@ final class LauncherPanelController {
         )
         panel.isFloatingPanel = true
         panel.level = .floating
-        panel.hidesOnDeactivate = true
+        panel.hidesOnDeactivate = false
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = true
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        panel.contentView = NSHostingView(rootView: LauncherView().environmentObject(themeStore))
+        panel.contentView = NSHostingView(
+            rootView: LauncherView()
+                .environmentObject(themeStore)
+                .environmentObject(FeatureAreaStore.shared)
+        )
     }
 
     func show() {
         panel.center()
-        NSApp.activate(ignoringOtherApps: true)
+        NSRunningApplication.current.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
         panel.makeKeyAndOrderFront(nil)
+        panel.orderFrontRegardless()
     }
 
     func hide() {

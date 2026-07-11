@@ -1,6 +1,8 @@
 import SwiftUI
 
 struct FeatureDetailSettingsView: View {
+    @EnvironmentObject private var featureStore: FeatureAreaStore
+    @State private var shortcutError: String?
     let featureID: String
     let onBack: () -> Void
 
@@ -25,7 +27,12 @@ struct FeatureDetailSettingsView: View {
 
             Form {
                 Toggle("在启动页显示", isOn: .constant(true))
-                LabeledContent("快捷键", value: shortcut)
+                ShortcutRecorderView(
+                    shortcut: featureStore.shortcut(for: featureID),
+                    errorMessage: shortcutError
+                ) { shortcut in
+                    shortcutError = featureStore.updateShortcut(shortcut, for: featureID)
+                }
                 Divider()
                 featureSpecificSettings
             }
@@ -33,15 +40,6 @@ struct FeatureDetailSettingsView: View {
             Spacer()
         }
         .padding(30)
-    }
-
-    private var shortcut: String {
-        switch featureID {
-        case "me.touch.finder": "⌘ 1"
-        case "me.touch.screenshot": "⌘ 2"
-        case "me.touch.super-right": "⌘ 3"
-        default: "未设置"
-        }
     }
 
     @ViewBuilder

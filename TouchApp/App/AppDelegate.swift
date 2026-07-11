@@ -19,9 +19,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
 
         if CommandLine.arguments.contains("--open-settings") {
-            showSettings()
+            Task { @MainActor [weak self] in
+                self?.showSettings()
+            }
         } else {
-            launcherPanelController?.show()
+            Task { @MainActor [weak self] in
+                self?.launcherPanelController?.show()
+            }
         }
         do {
             try globalHotKeyController.start(shortcut: .init(modifiers: [.option], key: "space")) { [weak self] in

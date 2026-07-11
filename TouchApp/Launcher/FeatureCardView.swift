@@ -3,8 +3,12 @@ import TouchFeatureAPI
 
 struct FeatureCardView: View {
     let plugin: any FeaturePlugin
+    let shortcut: TouchFeatureAPI.KeyboardShortcut
     let palette: ThemePalette
     let action: () -> Void
+    let editShortcut: () -> Void
+    let hide: () -> Void
+    let restoreDefaults: () -> Void
 
     var body: some View {
         Button(action: action) {
@@ -16,7 +20,7 @@ struct FeatureCardView: View {
                 Text(plugin.manifest.name)
                     .font(.system(size: 19, weight: .semibold))
                 Spacer()
-                Text(plugin.manifest.defaultShortcut.displayValue)
+                Text(shortcut.displayValue)
                     .font(.system(size: 15, weight: .medium, design: .monospaced))
                     .padding(.horizontal, 10)
                     .padding(.vertical, 6)
@@ -30,5 +34,11 @@ struct FeatureCardView: View {
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("feature.\(plugin.manifest.id)")
+        .contextMenu {
+            Button("修改快捷键", action: editShortcut)
+            Button("隐藏功能", action: hide)
+            Divider()
+            Button("恢复默认", action: restoreDefaults)
+        }
     }
 }
