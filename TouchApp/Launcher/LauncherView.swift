@@ -39,7 +39,14 @@ struct LauncherView: View {
                         .accessibilityLabel("切换主题")
                         .accessibilityIdentifier("theme.switch")
                     Divider().frame(height: 26)
-                    Image(systemName: "gearshape")
+                    Button {
+                        NotificationCenter.default.post(name: .openTouchSettings, object: nil)
+                    } label: {
+                        Image(systemName: "gearshape")
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("打开设置")
+                    .accessibilityIdentifier("launcher.settings")
                 }
                 .font(.system(size: 20, weight: .medium))
                 .foregroundStyle(palette.primaryText)

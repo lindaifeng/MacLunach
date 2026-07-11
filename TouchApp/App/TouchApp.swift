@@ -6,8 +6,8 @@ struct TouchApp: App {
 
     var body: some Scene {
         Settings {
-            Text("触达设置")
-                .frame(width: 680, height: 480)
+            SettingsRootView()
+                .frame(minWidth: 760, minHeight: 540)
         }
     }
 }

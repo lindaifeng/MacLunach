@@ -37,3 +37,21 @@ targets:
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_LSUIElement: YES
         CODE_SIGNING_ALLOWED: NO
+    scheme:
+      testTargets:
+        - TouchUITests
+  TouchUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    deploymentTarget: '14.0'
+    sources:
+      - TouchUITests
+    dependencies:
+      - target: Touch
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: me.touch.launcher.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGNING_ALLOWED: YES
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
