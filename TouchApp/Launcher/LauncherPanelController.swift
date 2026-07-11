@@ -4,6 +4,7 @@ import SwiftUI
 @MainActor
 final class LauncherPanelController {
     private let panel: LauncherPanel
+    private let themeStore = ThemeStore()
 
     init() {
         panel = LauncherPanel(
@@ -19,7 +20,7 @@ final class LauncherPanelController {
         panel.backgroundColor = .clear
         panel.hasShadow = true
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        panel.contentView = NSHostingView(rootView: LauncherView())
+        panel.contentView = NSHostingView(rootView: LauncherView().environmentObject(themeStore))
     }
 
     func show() {
