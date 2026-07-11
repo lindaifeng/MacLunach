@@ -14,6 +14,7 @@ final class LauncherPanelController {
         )
         panel.isFloatingPanel = true
         panel.level = .floating
+        panel.hidesOnDeactivate = true
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = true
@@ -25,5 +26,13 @@ final class LauncherPanelController {
         panel.center()
         NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
+    }
+
+    func hide() {
+        panel.orderOut(nil)
+    }
+
+    func toggle() {
+        panel.isVisible ? hide() : show()
     }
 }
