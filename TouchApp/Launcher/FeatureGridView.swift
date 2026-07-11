@@ -3,6 +3,7 @@ import TouchFeatureAPI
 
 struct FeatureGridView: View {
     @EnvironmentObject private var featureStore: FeatureAreaStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var editingFeatureID: String?
     let palette: ThemePalette
 
@@ -21,7 +22,7 @@ struct FeatureGridView: View {
                 .draggable(plugin.manifest.id)
                 .dropDestination(for: String.self) { featureIDs, _ in
                     guard let sourceID = featureIDs.first else { return false }
-                    featureStore.move(sourceID, before: plugin.manifest.id)
+                    featureStore.move(sourceID, before: plugin.manifest.id, animated: !reduceMotion)
                     return true
                 }
             }

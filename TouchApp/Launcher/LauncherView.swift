@@ -10,7 +10,10 @@ struct LauncherView: View {
 
     var body: some View {
         ZStack {
-            GlassBackground(theme: themeStore.theme, reduceTransparency: reduceTransparency)
+            GlassBackground(
+                theme: themeStore.theme,
+                reduceTransparency: reduceTransparency || CommandLine.arguments.contains("--reduce-transparency")
+            )
             palette.tint
 
             VStack(spacing: 0) {
@@ -56,5 +59,15 @@ struct LauncherView: View {
         .clipShape(RoundedRectangle(cornerRadius: 36))
         .overlay(RoundedRectangle(cornerRadius: 36).stroke(palette.border, lineWidth: 1))
         .padding(1)
+        .onAppear(perform: finishPerformanceIntervalAfterRender)
+        .onReceive(NotificationCenter.default.publisher(for: .touchLauncherWillDisplay)) { _ in
+            finishPerformanceIntervalAfterRender()
+        }
+    }
+
+    private func finishPerformanceIntervalAfterRender() {
+        DispatchQueue.main.async {
+            LaunchPerformanceRecorder.shared.endAfterRenderedFrame()
+        }
     }
 }

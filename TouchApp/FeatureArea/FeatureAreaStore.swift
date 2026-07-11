@@ -45,15 +45,20 @@ final class FeatureAreaStore: ObservableObject {
             ?? .init(modifiers: [], key: "")
     }
 
-    func move(_ sourceID: String, before destinationID: String) {
+    func move(_ sourceID: String, before destinationID: String, animated: Bool) {
         guard sourceID != destinationID,
               let source = plugins.firstIndex(where: { $0.manifest.id == sourceID }),
               let destination = plugins.firstIndex(where: { $0.manifest.id == destinationID }) else { return }
 
-        withAnimation(.spring(response: 0.28, dampingFraction: 0.82)) {
-            let plugin = plugins.remove(at: source)
+        let updateOrder = {
+            let plugin = self.plugins.remove(at: source)
             let adjustedDestination = source < destination ? destination - 1 : destination
-            plugins.insert(plugin, at: max(0, adjustedDestination))
+            self.plugins.insert(plugin, at: max(0, adjustedDestination))
+        }
+        if animated {
+            withAnimation(.spring(response: 0.28, dampingFraction: 0.82), updateOrder)
+        } else {
+            updateOrder()
         }
         persistOrder()
     }

@@ -18,7 +18,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             object: nil
         )
 
-        if CommandLine.arguments.contains("--open-settings") {
+        if let measurementArgument = CommandLine.arguments.first(where: { $0.hasPrefix("--measure-launcher=") }),
+           let outputPath = measurementArgument.split(separator: "=", maxSplits: 1).last {
+            let outputURL = URL(fileURLWithPath: String(outputPath))
+            Task { @MainActor [weak self] in
+                await self?.launcherPanelController?.runPerformanceMeasurement(samples: 30, outputURL: outputURL)
+            }
+        } else if CommandLine.arguments.contains("--open-settings") {
             Task { @MainActor [weak self] in
                 self?.showSettings()
             }
