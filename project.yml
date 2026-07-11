@@ -1,0 +1,31 @@
+name: Touch
+options:
+  minimumXcodeGenVersion: 2.42.0
+  deploymentTarget:
+    macOS: '14.0'
+configs:
+  Debug: debug
+  Release: release
+configFiles:
+  Debug: Config/Debug.xcconfig
+  Release: Config/Release.xcconfig
+packages:
+  TouchKit:
+    path: Packages/TouchKit
+targets:
+  Touch:
+    type: application
+    platform: macOS
+    deploymentTarget: '14.0'
+    sources:
+      - TouchApp
+    dependencies:
+      - package: TouchKit
+        product: TouchFeatureAPI
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: me.touch.launcher
+        PRODUCT_NAME: 触达
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_LSUIElement: YES
+        CODE_SIGNING_ALLOWED: NO

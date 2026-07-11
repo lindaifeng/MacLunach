@@ -1,0 +1,11 @@
+{
+  "": {
+    "swift-dependencies": "/Users/ldf/Downloads/vibe-coding/MacLunach/.worktrees/touch-foundation/Packages/TouchKit/.build/arm64-apple-macosx/debug/TouchFeatureAPITests.build/master.swiftdeps"
+  },
+  "/Users/ldf/Downloads/vibe-coding/MacLunach/.worktrees/touch-foundation/Packages/TouchKit/Tests/TouchFeatureAPITests/FeatureModelTests.swift": {
+    "dependencies": "/Users/ldf/Downloads/vibe-coding/MacLunach/.worktrees/touch-foundation/Packages/TouchKit/.build/arm64-apple-macosx/debug/TouchFeatureAPITests.build/FeatureModelTests.d",
+    "object": "/Users/ldf/Downloads/vibe-coding/MacLunach/.worktrees/touch-foundation/Packages/TouchKit/.build/arm64-apple-macosx/debug/TouchFeatureAPITests.build/FeatureModelTests.swift.o",
+    "swiftmodule": "/Users/ldf/Downloads/vibe-coding/MacLunach/.worktrees/touch-foundation/Packages/TouchKit/.build/arm64-apple-macosx/debug/TouchFeatureAPITests.build/FeatureModelTests~partial.swiftmodule",
+    "swift-dependencies": "/Users/ldf/Downloads/vibe-coding/MacLunach/.worktrees/touch-foundation/Packages/TouchKit/.build/arm64-apple-macosx/debug/TouchFeatureAPITests.build/FeatureModelTests.swiftdeps"
+  }
+}
