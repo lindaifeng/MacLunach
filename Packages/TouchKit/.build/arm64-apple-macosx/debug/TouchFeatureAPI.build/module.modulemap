@@ -1,4 +1,0 @@
-module TouchFeatureAPI {
-    header "/Users/ldf/Downloads/vibe-coding/MacLunach/.worktrees/touch-foundation/Packages/TouchKit/.build/arm64-apple-macosx/debug/TouchFeatureAPI.build/TouchFeatureAPI-Swift.h"
-    requires objc
-}
