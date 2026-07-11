@@ -1,0 +1,4 @@
+.worktrees/
+DerivedData/
+build/
+.DS_Store
