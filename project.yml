@@ -22,6 +22,14 @@ targets:
     dependencies:
       - package: TouchKit
         product: TouchFeatureAPI
+      - package: TouchKit
+        product: TouchCore
+      - package: TouchKit
+        product: FinderFeature
+      - package: TouchKit
+        product: ScreenshotFeature
+      - package: TouchKit
+        product: SuperRightFeature
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: me.touch.launcher
