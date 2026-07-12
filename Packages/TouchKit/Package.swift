@@ -13,7 +13,11 @@ let package = Package(
     ],
     targets: [
         .target(name: "TouchFeatureAPI"),
-        .target(name: "TouchCore", dependencies: ["TouchFeatureAPI"]),
+        .target(
+            name: "TouchCore",
+            dependencies: ["TouchFeatureAPI"],
+            linkerSettings: [.linkedLibrary("sqlite3")]
+        ),
         .target(name: "FinderFeature", dependencies: ["TouchFeatureAPI"]),
         .target(name: "ScreenshotFeature", dependencies: ["TouchFeatureAPI"]),
         .target(name: "SuperRightFeature", dependencies: ["TouchFeatureAPI"]),
