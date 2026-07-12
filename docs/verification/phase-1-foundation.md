@@ -2,7 +2,7 @@
 
 ## 状态
 
-待解除 macOS 系统认证会话阻塞后，重跑新增的可访问性 UI 测试并补齐三主题截图。其余质量门槛已通过。
+自动化质量门槛已全部通过；阶段一仍等待 @电脑 实操验收。当前 Computer Use 辅助程序与 macOS 15.3 的 Swift 运行时不兼容，无法启动本机控制通道。
 
 ## 验收环境
 
@@ -25,14 +25,22 @@
 | 启动页、Tab 与查询保留 | `LauncherSmokeTests` | 通过 |
 | 卡片右键入口 | `LauncherSmokeTests` | 通过 |
 | 呼出性能 | `Scripts/measure-launcher.sh` | P50 1.528ms，P95 2.267ms |
-| 降低透明度 | `--reduce-transparency` 路径及静态检查 | 已实现，UI 测试待系统认证解除后复跑 |
+| 降低透明度与 VoiceOver 标签 | `LauncherSmokeTests.testLauncherControlsExposeLabelsWithReducedTransparency` | 通过 |
 | 减少动态效果 | `accessibilityReduceMotion` | 拖动排序禁用弹簧动画 |
+| 三主题视觉截图 | `LauncherSmokeTests.testCaptureThreeThemeSnapshots` | 通过，见下方图片 |
+| 完整 UI 回归 | `xcodebuild ... -resultBundlePath /tmp/touch-phase1.xcresult test` | 5 项通过 |
+
+## 三主题截图
+
+![主题一](assets/touch-theme-1.png)
+
+![主题二](assets/touch-theme-2.png)
+
+![主题三](assets/touch-theme-3.png)
 
 ## 待完成证据
 
-- 新增的“所有启动页控件均有 VoiceOver 标签”UI 测试尚未执行。macOS UI Test Runner 连续三次在测试启动前返回：`System authentication is running`。
-- 三主题截图由 UI 测试使用 `XCTAttachment` 采集；同样等待系统认证会话结束。
-- @电脑运行时的本机控制通道两次返回 `Sky Computer Use native pipe startup failed`，最终人工复验仍需重试。
+- @电脑实操验收尚未完成。`SkyComputerUseService` 在 macOS 15.3 上因缺少 `_swift_task_addPriorityEscalationHandler` 启动即崩溃；需更新为支持 macOS 15 的 Computer Use 组件后重试。
 
 ## 当前阶段边界
 
