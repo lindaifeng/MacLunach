@@ -1,4 +1,5 @@
 import Foundation
+import SQLite3
 import Testing
 @testable import TouchCore
 
@@ -10,6 +11,53 @@ import Testing
     ])
 
     #expect(try await store.search("设计", limit: 10).map(\.fileName) == ["设计说明.md"])
+}
+
+@Test func trigramSearchFindsMiddleSubstringAndTreatsWildcardsLiterally() async throws {
+    let store = try FileIndexStore.temporary()
+    try await store.upsert([
+        FileIndexRecord(path: "/tmp/search/quarterly-roadmap.txt", rootPath: "/tmp/search", contentType: "public.text", size: 1, createdAt: .now, modifiedAt: .now, isDirectory: false),
+        FileIndexRecord(path: "/tmp/search/100%_ready.txt", rootPath: "/tmp/search", contentType: "public.text", size: 1, createdAt: .now, modifiedAt: .now, isDirectory: false)
+    ])
+
+    #expect(try await store.search("terly-roa", limit: 10).map(\.fileName) == ["quarterly-roadmap.txt"])
+    #expect(try await store.search("%_", limit: 10).map(\.fileName) == ["100%_ready.txt"])
+    #expect(try await store.schemaVersion() == 1)
+}
+
+@Test func openingLegacyDatabaseMigratesExistingRowsIntoTrigramIndex() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("TouchStoreMigration-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let databaseURL = directory.appendingPathComponent("file-index.sqlite")
+    var database: OpaquePointer?
+    #expect(sqlite3_open(databaseURL.path, &database) == SQLITE_OK)
+    defer { sqlite3_close_v2(database) }
+    let legacySchema = """
+    CREATE TABLE files (
+        path TEXT PRIMARY KEY NOT NULL,
+        root_path TEXT NOT NULL,
+        file_name TEXT NOT NULL,
+        normalized_name TEXT NOT NULL,
+        content_type TEXT NOT NULL,
+        size INTEGER NOT NULL,
+        created_at REAL NOT NULL,
+        modified_at REAL NOT NULL,
+        is_directory INTEGER NOT NULL
+    );
+    INSERT INTO files VALUES (
+        '/tmp/legacy/annual-planning.txt', '/tmp/legacy', 'annual-planning.txt',
+        'annual-planning.txt', 'public.text', 1, 0, 0, 0
+    );
+    """
+    #expect(sqlite3_exec(database, legacySchema, nil, nil, nil) == SQLITE_OK)
+    #expect(sqlite3_close_v2(database) == SQLITE_OK)
+    database = nil
+
+    let store = try FileIndexStore(databaseURL: databaseURL)
+
+    #expect(try await store.schemaVersion() == 1)
+    #expect(try await store.search("planning", limit: 10).map(\.fileName) == ["annual-planning.txt"])
 }
 
 @Test func deletingRootRemovesOnlyMatchingRows() async throws {

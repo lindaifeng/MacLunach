@@ -33,6 +33,8 @@ public struct FileIndexRecord: Hashable, Sendable {
 }
 
 public actor FileIndexStore {
+    private static let currentSchemaVersion = 1
+
     public enum IsolationReason: Sendable {
         case rebuild
         case corruption
@@ -57,6 +59,7 @@ public actor FileIndexStore {
         }
         do {
             try Self.execute(handle, sql: """
+            BEGIN IMMEDIATE TRANSACTION;
             CREATE TABLE IF NOT EXISTS files (
                 path TEXT PRIMARY KEY NOT NULL,
                 root_path TEXT NOT NULL,
@@ -71,8 +74,38 @@ public actor FileIndexStore {
             CREATE INDEX IF NOT EXISTS files_normalized_name ON files(normalized_name);
             CREATE INDEX IF NOT EXISTS files_root_path ON files(root_path);
             """)
+            let version = try Self.schemaVersion(in: handle)
+            guard version <= Self.currentSchemaVersion else {
+                throw FileIndexStoreError.unsupportedSchemaVersion(version)
+            }
+            if version < 1 {
+                try Self.execute(handle, sql: """
+                CREATE VIRTUAL TABLE files_fts USING fts5(
+                    normalized_name,
+                    content='files',
+                    content_rowid='rowid',
+                    tokenize='trigram'
+                );
+                CREATE TRIGGER files_ai AFTER INSERT ON files BEGIN
+                    INSERT INTO files_fts(rowid, normalized_name) VALUES (new.rowid, new.normalized_name);
+                END;
+                CREATE TRIGGER files_ad AFTER DELETE ON files BEGIN
+                    INSERT INTO files_fts(files_fts, rowid, normalized_name)
+                    VALUES ('delete', old.rowid, old.normalized_name);
+                END;
+                CREATE TRIGGER files_au AFTER UPDATE ON files BEGIN
+                    INSERT INTO files_fts(files_fts, rowid, normalized_name)
+                    VALUES ('delete', old.rowid, old.normalized_name);
+                    INSERT INTO files_fts(rowid, normalized_name) VALUES (new.rowid, new.normalized_name);
+                END;
+                INSERT INTO files_fts(files_fts) VALUES ('rebuild');
+                PRAGMA user_version = 1;
+                """)
+            }
+            try Self.execute(handle, sql: "COMMIT")
             database = handle
         } catch {
+            try? Self.execute(handle, sql: "ROLLBACK")
             sqlite3_close_v2(handle)
             throw error
         }
@@ -136,16 +169,41 @@ public actor FileIndexStore {
     }
 
     public func search(_ query: String, limit: Int) throws -> [FileIndexRecord] {
-        let statement = try prepare("""
+        let normalizedQuery = normalize(query)
+        let usesTrigramIndex = normalizedQuery.count >= 3
+        let statement = try prepare(usesTrigramIndex ? """
+        SELECT files.path, files.root_path, files.file_name, files.content_type,
+               files.size, files.created_at, files.modified_at, files.is_directory
+        FROM files_fts
+        JOIN files ON files.rowid = files_fts.rowid
+        WHERE files_fts MATCH ?
+        ORDER BY CASE
+            WHEN files.normalized_name = ? THEN 0
+            WHEN files.normalized_name LIKE ? ESCAPE '\\' THEN 1
+            ELSE 2
+        END, files.file_name COLLATE NOCASE ASC
+        LIMIT ?
+        """ : """
         SELECT path, root_path, file_name, content_type, size, created_at, modified_at, is_directory
         FROM files
-        WHERE normalized_name LIKE ?
-        ORDER BY file_name COLLATE NOCASE ASC
+        WHERE normalized_name LIKE ? ESCAPE '\\'
+        ORDER BY CASE
+            WHEN normalized_name = ? THEN 0
+            WHEN normalized_name LIKE ? ESCAPE '\\' THEN 1
+            ELSE 2
+        END, file_name COLLATE NOCASE ASC
         LIMIT ?
         """)
         defer { sqlite3_finalize(statement) }
-        try bind("%\(normalize(query))%", to: statement, index: 1)
-        sqlite3_bind_int(statement, 2, Int32(max(1, limit)))
+        let escapedLikeQuery = escapeLikePattern(normalizedQuery)
+        if usesTrigramIndex {
+            try bind("\"\(normalizedQuery.replacingOccurrences(of: "\"", with: "\"\""))\"", to: statement, index: 1)
+        } else {
+            try bind("%\(escapedLikeQuery)%", to: statement, index: 1)
+        }
+        try bind(normalizedQuery, to: statement, index: 2)
+        try bind("\(escapedLikeQuery)%", to: statement, index: 3)
+        sqlite3_bind_int(statement, 4, Int32(max(1, limit)))
 
         var records: [FileIndexRecord] = []
         while sqlite3_step(statement) == SQLITE_ROW {
@@ -170,6 +228,10 @@ public actor FileIndexStore {
         defer { sqlite3_finalize(statement) }
         guard sqlite3_step(statement) == SQLITE_ROW else { throw FileIndexStoreError.executionFailed }
         return Int(sqlite3_column_int64(statement, 0))
+    }
+
+    public func schemaVersion() throws -> Int {
+        try Self.schemaVersion(in: database)
     }
 
     public func close() throws {
@@ -235,6 +297,15 @@ public actor FileIndexStore {
         guard sqlite3_exec(database, sql, nil, nil, nil) == SQLITE_OK else { throw FileIndexStoreError.executionFailed }
     }
 
+    private static func schemaVersion(in database: OpaquePointer?) throws -> Int {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, "PRAGMA user_version", -1, &statement, nil) == SQLITE_OK,
+              let statement else { throw FileIndexStoreError.executionFailed }
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_step(statement) == SQLITE_ROW else { throw FileIndexStoreError.executionFailed }
+        return Int(sqlite3_column_int(statement, 0))
+    }
+
     private func prepare(_ sql: String) throws -> OpaquePointer {
         var statement: OpaquePointer?
         guard sqlite3_prepare_v2(database, sql, -1, &statement, nil) == SQLITE_OK, let statement else {
@@ -254,10 +325,19 @@ public actor FileIndexStore {
         value.folding(options: [.caseInsensitive, .diacriticInsensitive, .widthInsensitive], locale: .current)
             .replacingOccurrences(of: " ", with: "")
     }
+
+
+    private func escapeLikePattern(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "%", with: "\\%")
+            .replacingOccurrences(of: "_", with: "\\_")
+    }
 }
 
 public enum FileIndexStoreError: Error, Sendable {
     case openFailed
     case executionFailed
     case closeFailed
+    case unsupportedSchemaVersion(Int)
 }
