@@ -20,9 +20,10 @@ public struct FileIndexRecord: Hashable, Sendable {
         modifiedAt: Date,
         isDirectory: Bool
     ) {
-        self.path = path
-        self.rootPath = rootPath
-        self.fileName = URL(fileURLWithPath: path).lastPathComponent
+        let canonicalURL = URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath()
+        self.path = canonicalURL.path
+        self.rootPath = URL(fileURLWithPath: rootPath).standardizedFileURL.resolvingSymlinksInPath().path
+        self.fileName = canonicalURL.lastPathComponent
         self.contentType = contentType
         self.size = size
         self.createdAt = createdAt
@@ -32,7 +33,21 @@ public struct FileIndexRecord: Hashable, Sendable {
 }
 
 public actor FileIndexStore {
-    private var database: OpaquePointer?
+    public enum IsolationReason: Sendable {
+        case rebuild
+        case corruption
+
+        fileprivate var filenameComponent: String {
+            switch self {
+            case .rebuild: "recovery"
+            case .corruption: "corrupt"
+            }
+        }
+    }
+
+    // SQLite is only touched by this actor. `nonisolated(unsafe)` is needed so
+    // the nonisolated actor deinitializer can release the C handle.
+    nonisolated(unsafe) private var database: OpaquePointer?
 
     public init(databaseURL: URL) throws {
         try FileManager.default.createDirectory(at: databaseURL.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -40,22 +55,31 @@ public actor FileIndexStore {
         guard sqlite3_open_v2(databaseURL.path, &handle, SQLITE_OPEN_CREATE | SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, nil) == SQLITE_OK else {
             throw FileIndexStoreError.openFailed
         }
-        database = handle
-        try Self.execute(handle, sql: """
-        CREATE TABLE IF NOT EXISTS files (
-            path TEXT PRIMARY KEY NOT NULL,
-            root_path TEXT NOT NULL,
-            file_name TEXT NOT NULL,
-            normalized_name TEXT NOT NULL,
-            content_type TEXT NOT NULL,
-            size INTEGER NOT NULL,
-            created_at REAL NOT NULL,
-            modified_at REAL NOT NULL,
-            is_directory INTEGER NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS files_normalized_name ON files(normalized_name);
-        CREATE INDEX IF NOT EXISTS files_root_path ON files(root_path);
-        """)
+        do {
+            try Self.execute(handle, sql: """
+            CREATE TABLE IF NOT EXISTS files (
+                path TEXT PRIMARY KEY NOT NULL,
+                root_path TEXT NOT NULL,
+                file_name TEXT NOT NULL,
+                normalized_name TEXT NOT NULL,
+                content_type TEXT NOT NULL,
+                size INTEGER NOT NULL,
+                created_at REAL NOT NULL,
+                modified_at REAL NOT NULL,
+                is_directory INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS files_normalized_name ON files(normalized_name);
+            CREATE INDEX IF NOT EXISTS files_root_path ON files(root_path);
+            """)
+            database = handle
+        } catch {
+            sqlite3_close_v2(handle)
+            throw error
+        }
+    }
+
+    deinit {
+        if let database { sqlite3_close_v2(database) }
     }
 
     public static func temporary() throws -> FileIndexStore {
@@ -63,6 +87,41 @@ public actor FileIndexStore {
             .appendingPathComponent("TouchTests", isDirectory: true)
             .appendingPathComponent("\(UUID().uuidString).sqlite")
         return try FileIndexStore(databaseURL: url)
+    }
+
+    public static func openRecovering(
+        databaseURL: URL,
+        timestamp: Date = .now
+    ) throws -> (store: FileIndexStore, didRecover: Bool) {
+        do {
+            return (try FileIndexStore(databaseURL: databaseURL), false)
+        } catch {
+            _ = try isolateDatabase(at: databaseURL, reason: .corruption, timestamp: timestamp)
+            return (try FileIndexStore(databaseURL: databaseURL), true)
+        }
+    }
+
+    @discardableResult
+    public static func isolateDatabase(
+        at databaseURL: URL,
+        reason: IsolationReason,
+        timestamp: Date = .now
+    ) throws -> URL? {
+        let fileManager = FileManager.default
+        guard fileManager.fileExists(atPath: databaseURL.path) else { return nil }
+        let timestampValue = Int64((timestamp.timeIntervalSince1970 * 1_000).rounded())
+        let baseName = databaseURL.deletingPathExtension().lastPathComponent
+        let isolatedURL = databaseURL.deletingLastPathComponent()
+            .appendingPathComponent("\(baseName).\(reason.filenameComponent)-\(timestampValue).sqlite")
+        try fileManager.moveItem(at: databaseURL, to: isolatedURL)
+
+        for suffix in ["-wal", "-shm"] {
+            let source = URL(fileURLWithPath: databaseURL.path + suffix)
+            guard fileManager.fileExists(atPath: source.path) else { continue }
+            let destination = URL(fileURLWithPath: isolatedURL.path + suffix)
+            try fileManager.moveItem(at: source, to: destination)
+        }
+        return isolatedURL
     }
 
     public func upsert(_ records: [FileIndexRecord]) throws {
@@ -106,6 +165,19 @@ public actor FileIndexStore {
         return records
     }
 
+    public func recordCount() throws -> Int {
+        let statement = try prepare("SELECT COUNT(*) FROM files")
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_step(statement) == SQLITE_ROW else { throw FileIndexStoreError.executionFailed }
+        return Int(sqlite3_column_int64(statement, 0))
+    }
+
+    public func close() throws {
+        guard let database else { return }
+        guard sqlite3_close_v2(database) == SQLITE_OK else { throw FileIndexStoreError.closeFailed }
+        self.database = nil
+    }
+
     public func delete(root: String) throws {
         let statement = try prepare("DELETE FROM files WHERE root_path = ?")
         defer { sqlite3_finalize(statement) }
@@ -117,6 +189,18 @@ public actor FileIndexStore {
         let statement = try prepare("DELETE FROM files WHERE path = ?")
         defer { sqlite3_finalize(statement) }
         try bind(path, to: statement, index: 1)
+        guard sqlite3_step(statement) == SQLITE_DONE else { throw FileIndexStoreError.executionFailed }
+    }
+
+    public func delete(subtree path: String) throws {
+        let statement = try prepare("""
+        DELETE FROM files
+        WHERE path = ? OR substr(path, 1, length(?) + 1) = ? || '/'
+        """)
+        defer { sqlite3_finalize(statement) }
+        try bind(path, to: statement, index: 1)
+        try bind(path, to: statement, index: 2)
+        try bind(path, to: statement, index: 3)
         guard sqlite3_step(statement) == SQLITE_DONE else { throw FileIndexStoreError.executionFailed }
     }
 
@@ -175,4 +259,5 @@ public actor FileIndexStore {
 public enum FileIndexStoreError: Error, Sendable {
     case openFailed
     case executionFailed
+    case closeFailed
 }

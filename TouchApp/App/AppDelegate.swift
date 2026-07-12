@@ -6,25 +6,29 @@ import TouchFeatureAPI
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var launcherPanelController: LauncherPanelController?
     private var settingsWindowController: SettingsWindowController?
-    private var searchEnvironment: SearchEnvironment?
+    let searchEnvironment = SearchEnvironment.makeForCurrentProcess()
     private var shouldRestoreLauncherAfterSettingsClose = false
     private let globalHotKeyController = GlobalHotKeyController()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
-        let searchEnvironment = SearchEnvironment.makeForCurrentProcess()
-        self.searchEnvironment = searchEnvironment
         Task {
             await searchEnvironment.prepare()
         }
         launcherPanelController = LauncherPanelController(searchEnvironment: searchEnvironment)
-        settingsWindowController = SettingsWindowController { [weak self] in
+        settingsWindowController = SettingsWindowController(searchEnvironment: searchEnvironment) { [weak self] in
             self?.restoreLauncherAfterSettingsClose()
         }
         NotificationCenter.default.addObserver(
             self,
-            selector: #selector(showSettings),
+            selector: #selector(handleOpenSettings(_:)),
             name: .openTouchSettings,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleRebuildSearchIndex),
+            name: .rebuildTouchSearchIndex,
             object: nil
         )
 
@@ -57,12 +61,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NotificationCenter.default.removeObserver(self)
     }
 
-    @objc private func showSettings() {
+    @objc private func handleOpenSettings(_ notification: Notification) {
+        showSettings(section: notification.object as? TouchSettingsSection ?? .general)
+    }
+
+    @objc private func handleRebuildSearchIndex() {
+        Task { [searchEnvironment] in await searchEnvironment.rebuildIndex() }
+    }
+
+    private func showSettings(section: TouchSettingsSection = .general) {
         shouldRestoreLauncherAfterSettingsClose = launcherPanelController?.isVisible ?? false
         if shouldRestoreLauncherAfterSettingsClose {
             launcherPanelController?.hide()
         }
-        settingsWindowController?.show()
+        settingsWindowController?.show(section: section)
     }
 
     private func restoreLauncherAfterSettingsClose() {

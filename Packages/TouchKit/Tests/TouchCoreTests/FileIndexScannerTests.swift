@@ -34,3 +34,26 @@ import Testing
     #expect(batches.count == 3)
     #expect(batches.allSatisfy { $0.count == 1 })
 }
+
+@Test func subtreeScanKeepsConfiguredRootAndIncludesChangedDirectory() async throws {
+    let configuredRoot = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let subtree = configuredRoot.appendingPathComponent("Folder", isDirectory: true)
+    try FileManager.default.createDirectory(at: subtree, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: configuredRoot) }
+    try Data().write(to: subtree.appendingPathComponent("note.txt"))
+
+    var records: [FileIndexRecord] = []
+    for try await batch in FileIndexScanner.batches(
+        root: subtree,
+        indexRoot: configuredRoot,
+        includeRoot: true,
+        batchSize: 10
+    ) {
+        records.append(contentsOf: batch)
+    }
+
+    let expectedPaths = [subtree, subtree.appendingPathComponent("note.txt")]
+        .map { $0.resolvingSymlinksInPath().path }
+    #expect(Set(records.map(\.path)) == Set(expectedPaths))
+    #expect(records.allSatisfy { $0.rootPath == configuredRoot.resolvingSymlinksInPath().path })
+}

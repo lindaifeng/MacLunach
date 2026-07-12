@@ -78,7 +78,7 @@ struct SearchResultsView: View {
                 }
                 .accessibilityIdentifier("search.empty.switch-mode")
                 Button("检查索引范围") {
-                    NotificationCenter.default.post(name: .openTouchSettings, object: nil)
+                    NotificationCenter.default.post(name: .openTouchSettings, object: TouchSettingsSection.search)
                 }
                 .accessibilityIdentifier("search.empty.index-settings")
                 Button("重建索引") {

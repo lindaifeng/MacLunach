@@ -8,10 +8,12 @@ extension Notification.Name {
 @MainActor
 final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let onClose: () -> Void
+    private let navigation = SettingsNavigationModel()
 
-    init(onClose: @escaping () -> Void) {
+    init(searchEnvironment: SearchEnvironment, onClose: @escaping () -> Void) {
         self.onClose = onClose
-        let rootView = SettingsRootView().environmentObject(FeatureAreaStore.shared)
+        let rootView = SettingsRootView(searchEnvironment: searchEnvironment, navigation: navigation)
+            .environmentObject(FeatureAreaStore.shared)
         let window = NSWindow(contentViewController: NSHostingController(rootView: rootView))
         window.title = "触达设置"
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
@@ -29,7 +31,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         fatalError("init(coder:) has not been implemented")
     }
 
-    func show() {
+    func show(section: TouchSettingsSection = .general) {
+        navigation.section = section
         window?.center()
         showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)

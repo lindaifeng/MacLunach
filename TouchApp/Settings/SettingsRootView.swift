@@ -43,16 +43,34 @@ enum TouchSettingsSection: String, CaseIterable, Identifiable {
     }
 }
 
+@MainActor
+final class SettingsNavigationModel: ObservableObject {
+    @Published var section: TouchSettingsSection
+
+    init(section: TouchSettingsSection = .general) {
+        self.section = section
+    }
+}
+
 struct SettingsRootView: View {
-    @State private var section: TouchSettingsSection = .general
+    @ObservedObject var searchEnvironment: SearchEnvironment
+    @ObservedObject var navigation: SettingsNavigationModel
     @State private var selectedFeatureID: String?
+
+    init(
+        searchEnvironment: SearchEnvironment,
+        navigation: SettingsNavigationModel = SettingsNavigationModel()
+    ) {
+        self.searchEnvironment = searchEnvironment
+        self.navigation = navigation
+    }
 
     var body: some View {
         NavigationSplitView {
             List {
                 ForEach(TouchSettingsSection.allCases) { item in
                     Button {
-                        section = item
+                        navigation.section = item
                         selectedFeatureID = nil
                     } label: {
                         Label(item.title, systemImage: item.symbol)
@@ -74,7 +92,9 @@ struct SettingsRootView: View {
 
     @ViewBuilder
     private var settingsDetail: some View {
-        if section == .featureArea {
+        if navigation.section == .search {
+            FileIndexSettingsView(environment: searchEnvironment)
+        } else if navigation.section == .featureArea {
             if let selectedFeatureID {
                 FeatureDetailSettingsView(featureID: selectedFeatureID) {
                     self.selectedFeatureID = nil
@@ -85,7 +105,7 @@ struct SettingsRootView: View {
                 }
             }
         } else {
-            GeneralSettingsView(section: section)
+            GeneralSettingsView(section: navigation.section)
         }
     }
 }

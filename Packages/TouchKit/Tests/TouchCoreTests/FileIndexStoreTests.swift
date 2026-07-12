@@ -35,3 +35,70 @@ import Testing
 
     #expect(try await store.search("", limit: 10).map(\.path) == ["/a/two.txt"])
 }
+
+@Test func storeReportsRecordCountWithoutLoadingRows() async throws {
+    let store = try FileIndexStore.temporary()
+    try await store.upsert([
+        FileIndexRecord(path: "/tmp/count/a.txt", rootPath: "/tmp/count", contentType: "public.text", size: 1, createdAt: .now, modifiedAt: .now, isDirectory: false),
+        FileIndexRecord(path: "/tmp/count/b.txt", rootPath: "/tmp/count", contentType: "public.text", size: 1, createdAt: .now, modifiedAt: .now, isDirectory: false)
+    ])
+
+    #expect(try await store.recordCount() == 2)
+    try await store.delete(path: "/tmp/count/a.txt")
+    #expect(try await store.recordCount() == 1)
+}
+
+@Test func closedStoreCanBeIsolatedAndRecreated() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("TouchStoreRecovery-\(UUID().uuidString)", isDirectory: true)
+    let databaseURL = directory.appendingPathComponent("file-index.sqlite")
+    let store = try FileIndexStore(databaseURL: databaseURL)
+    try await store.upsert([
+        FileIndexRecord(path: "/tmp/recovery/old.txt", rootPath: "/tmp/recovery", contentType: "public.text", size: 1, createdAt: .now, modifiedAt: .now, isDirectory: false)
+    ])
+
+    try await store.close()
+    let isolatedURL = try FileIndexStore.isolateDatabase(
+        at: databaseURL,
+        reason: .rebuild,
+        timestamp: Date(timeIntervalSince1970: 1_000)
+    )
+
+    #expect(isolatedURL?.lastPathComponent == "file-index.recovery-1000000.sqlite")
+    #expect(isolatedURL.map { FileManager.default.fileExists(atPath: $0.path) } == true)
+    #expect(!FileManager.default.fileExists(atPath: databaseURL.path))
+    let replacement = try FileIndexStore(databaseURL: databaseURL)
+    #expect(try await replacement.recordCount() == 0)
+}
+
+@Test func corruptDatabaseIsAutomaticallyIsolatedOnRecoveryOpen() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("TouchStoreCorrupt-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let databaseURL = directory.appendingPathComponent("file-index.sqlite")
+    try Data("not a sqlite database".utf8).write(to: databaseURL)
+
+    let result = try FileIndexStore.openRecovering(
+        databaseURL: databaseURL,
+        timestamp: Date(timeIntervalSince1970: 2_000)
+    )
+
+    #expect(result.didRecover)
+    #expect(FileManager.default.fileExists(atPath: directory.appendingPathComponent("file-index.corrupt-2000000.sqlite").path))
+    #expect(try await result.store.recordCount() == 0)
+}
+
+@Test func deletingSubtreeRemovesDescendantsWithoutTouchingSiblingPaths() async throws {
+    let store = try FileIndexStore.temporary()
+    try await store.upsert([
+        FileIndexRecord(path: "/tmp/root/folder/a.txt", rootPath: "/tmp/root", contentType: "public.text", size: 1, createdAt: .now, modifiedAt: .now, isDirectory: false),
+        FileIndexRecord(path: "/tmp/root/folder/nested/b.txt", rootPath: "/tmp/root", contentType: "public.text", size: 1, createdAt: .now, modifiedAt: .now, isDirectory: false),
+        FileIndexRecord(path: "/tmp/root/folder-other/c.txt", rootPath: "/tmp/root", contentType: "public.text", size: 1, createdAt: .now, modifiedAt: .now, isDirectory: false)
+    ])
+
+    try await store.delete(subtree: "/tmp/root/folder")
+
+    #expect(try await store.search("a", limit: 10).isEmpty)
+    #expect(try await store.search("b", limit: 10).isEmpty)
+    #expect(try await store.search("c", limit: 10).map(\.fileName) == ["c.txt"])
+}

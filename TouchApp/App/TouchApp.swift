@@ -6,7 +6,7 @@ struct TouchApp: App {
 
     var body: some Scene {
         Settings {
-            SettingsRootView()
+            SettingsRootView(searchEnvironment: appDelegate.searchEnvironment)
                 .environmentObject(FeatureAreaStore.shared)
                 .frame(minWidth: 760, minHeight: 540)
         }
