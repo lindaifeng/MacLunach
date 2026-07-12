@@ -1,15 +1,25 @@
 import AppKit
+import TouchCore
 import TouchFeatureAPI
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var launcherPanelController: LauncherPanelController?
     private var settingsWindowController: SettingsWindowController?
+    private var applicationCatalog: ApplicationCatalog?
     private var shouldRestoreLauncherAfterSettingsClose = false
     private let globalHotKeyController = GlobalHotKeyController()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        let applicationCatalog = ApplicationCatalog(
+            discoverer: WorkspaceApplicationDiscoverer(),
+            launcher: WorkspaceApplicationLauncher()
+        )
+        self.applicationCatalog = applicationCatalog
+        Task {
+            _ = await applicationCatalog.refresh()
+        }
         launcherPanelController = LauncherPanelController()
         settingsWindowController = SettingsWindowController { [weak self] in
             self?.restoreLauncherAfterSettingsClose()
