@@ -14,4 +14,18 @@ final class SettingsNavigationTests: XCTestCase {
         XCTAssertTrue(app.staticTexts["截取屏幕设置"].waitForExistence(timeout: 2))
         XCTAssertFalse(app.buttons["settings.screenshot.top-level"].exists)
     }
+
+    func testClosingSettingsRestoresLauncher() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["--show-launcher"]
+        app.launch()
+
+        XCTAssertTrue(app.buttons["launcher.settings"].waitForExistence(timeout: 2))
+        app.buttons["launcher.settings"].click()
+        XCTAssertTrue(app.buttons["settings.close"].waitForExistence(timeout: 2))
+
+        app.buttons["settings.close"].click()
+
+        XCTAssertTrue(app.buttons["feature.me.touch.finder"].waitForExistence(timeout: 2))
+    }
 }

@@ -5,12 +5,15 @@ import TouchFeatureAPI
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var launcherPanelController: LauncherPanelController?
     private var settingsWindowController: SettingsWindowController?
+    private var shouldRestoreLauncherAfterSettingsClose = false
     private let globalHotKeyController = GlobalHotKeyController()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         launcherPanelController = LauncherPanelController()
-        settingsWindowController = SettingsWindowController()
+        settingsWindowController = SettingsWindowController { [weak self] in
+            self?.restoreLauncherAfterSettingsClose()
+        }
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(showSettings),
@@ -48,7 +51,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func showSettings() {
-        launcherPanelController?.hide()
+        shouldRestoreLauncherAfterSettingsClose = launcherPanelController?.isVisible ?? false
+        if shouldRestoreLauncherAfterSettingsClose {
+            launcherPanelController?.hide()
+        }
         settingsWindowController?.show()
+    }
+
+    private func restoreLauncherAfterSettingsClose() {
+        guard shouldRestoreLauncherAfterSettingsClose else { return }
+        shouldRestoreLauncherAfterSettingsClose = false
+        launcherPanelController?.show()
     }
 }

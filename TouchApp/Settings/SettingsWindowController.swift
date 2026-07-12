@@ -6,8 +6,11 @@ extension Notification.Name {
 }
 
 @MainActor
-final class SettingsWindowController: NSWindowController {
-    init() {
+final class SettingsWindowController: NSWindowController, NSWindowDelegate {
+    private let onClose: () -> Void
+
+    init(onClose: @escaping () -> Void) {
+        self.onClose = onClose
         let rootView = SettingsRootView().environmentObject(FeatureAreaStore.shared)
         let window = NSWindow(contentViewController: NSHostingController(rootView: rootView))
         window.title = "触达设置"
@@ -16,7 +19,9 @@ final class SettingsWindowController: NSWindowController {
         window.minSize = NSSize(width: 760, height: 540)
         window.center()
         window.isReleasedWhenClosed = false
+        window.standardWindowButton(.closeButton)?.identifier = NSUserInterfaceItemIdentifier("settings.close")
         super.init(window: window)
+        window.delegate = self
     }
 
     @available(*, unavailable)
@@ -29,5 +34,9 @@ final class SettingsWindowController: NSWindowController {
         showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
         window?.makeKeyAndOrderFront(nil)
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        onClose()
     }
 }

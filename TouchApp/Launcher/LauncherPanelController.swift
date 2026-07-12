@@ -27,6 +27,8 @@ final class LauncherPanelController {
         )
     }
 
+    var isVisible: Bool { panel.isVisible }
+
     func show() {
         LaunchPerformanceRecorder.shared.begin()
         present()

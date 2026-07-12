@@ -2,7 +2,7 @@
 
 ## 状态
 
-自动化质量门槛已全部通过；阶段一仍等待 @电脑 实操验收。当前 Computer Use 辅助程序与 macOS 15.3 的 Swift 运行时不兼容，无法启动本机控制通道。
+阶段一验收完成：自动化质量门槛和 @电脑实操均已通过。
 
 ## 验收环境
 
@@ -21,14 +21,14 @@
 | 核心单元测试 | `swift test --package-path Packages/TouchKit` | 12 项通过 |
 | Debug 构建 | `xcodebuild ... build` | 通过 |
 | Release 构建 | `xcodebuild ... -configuration Release ... build` | 通过，arm64 + x86_64 |
-| 设置三级导航 | `SettingsNavigationTests` | 通过 |
+| 设置三级导航与关闭恢复 | `SettingsNavigationTests` | 通过；关闭设置后恢复此前可见的启动器 |
 | 启动页、Tab 与查询保留 | `LauncherSmokeTests` | 通过 |
 | 卡片右键入口 | `LauncherSmokeTests` | 通过 |
-| 呼出性能 | `Scripts/measure-launcher.sh` | P50 1.528ms，P95 2.267ms |
+| 呼出性能 | `Scripts/measure-launcher.sh` | P50 15.605ms，P95 20.601ms |
 | 降低透明度与 VoiceOver 标签 | `LauncherSmokeTests.testLauncherControlsExposeLabelsWithReducedTransparency` | 通过 |
 | 减少动态效果 | `accessibilityReduceMotion` | 拖动排序禁用弹簧动画 |
 | 三主题视觉截图 | `LauncherSmokeTests.testCaptureThreeThemeSnapshots` | 通过，见下方图片 |
-| 完整 UI 回归 | `xcodebuild ... -resultBundlePath /tmp/touch-phase1.xcresult test` | 5 项通过 |
+| 完整 UI 回归 | `xcodebuild -project Touch.xcodeproj -scheme Touch -configuration Debug -destination 'platform=macOS' test` | 6 项通过 |
 
 ## 三主题截图
 
@@ -38,13 +38,18 @@
 
 ![主题三](assets/touch-theme-3.png)
 
-## 待完成证据
+## @电脑实操证据
 
-- @电脑实操验收尚未完成。`SkyComputerUseService` 在 macOS 15.3 上因缺少 `_swift_task_addPriorityEscalationHandler` 启动即崩溃；需更新为支持 macOS 15 的 Computer Use 组件后重试。
+- 启动页在实机正常显示，三张功能卡均可见，毛玻璃主题视觉正常。
+- 通过设置按钮进入设置窗口，再关闭窗口；启动器恢复显示。该流程在实操中发现问题后已修复，并由新增 UI 测试覆盖。
+- 搜索框输入 `finder` 后按 Tab，模式从“应用”切换为“文件”，关键词保持不丢失。
+- 点击主题按钮后主题正常切换。
+- 右击“打开访达”卡片，出现“修改快捷键 / 隐藏功能 / 恢复默认”菜单。
+- 点击“打开访达”后，实机 Finder（`com.apple.finder`）处于运行状态。
 
 ## 当前阶段边界
 
-- “打开访达”执行真实 Finder 打开动作。
+- “打开访达”执行真实 Finder 打开动作，已完成实机验证。
 - “截取屏幕”和“超级右键”仍明确显示需要设置/后续阶段接入，不宣称功能已完成。
 - 阶段一只验收启动器基础、主题、功能区管理、插件隔离、设置导航、快捷键和性能。
 
