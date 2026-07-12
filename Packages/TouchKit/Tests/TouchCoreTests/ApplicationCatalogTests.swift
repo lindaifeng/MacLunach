@@ -29,6 +29,22 @@ private struct StubApplicationDiscoverer: ApplicationDiscovering {
     #expect(after > before)
 }
 
+@Test func catalogCarriesApplicationIconCacheKeyIntoSearchResults() async {
+    let application = ApplicationRecord(
+        bundleIdentifier: "com.example.editor",
+        name: "Editor",
+        path: "/Applications/Editor.app",
+        iconCacheKey: "com.example.editor|resolved-v2",
+        isUserInstalled: true
+    )
+    let catalog = ApplicationCatalog(discoverer: StubApplicationDiscoverer(applications: [application]))
+    _ = await catalog.refresh()
+
+    let result = await catalog.search(query: "editor").first
+
+    #expect(result?.iconCacheKey == application.iconCacheKey)
+}
+
 private actor StubApplicationLauncher: ApplicationLaunching {
     enum Failure: Error { case rejected }
 

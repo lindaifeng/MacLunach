@@ -10,6 +10,7 @@ public struct SearchResult: Identifiable, Hashable, Sendable {
     public let title: String
     public let subtitle: String
     public let path: String
+    public let iconCacheKey: String
     public let pinyin: String
     public let initials: String
     public let kind: SearchKind
@@ -20,15 +21,18 @@ public struct SearchResult: Identifiable, Hashable, Sendable {
         title: String,
         subtitle: String = "",
         path: String = "",
+        iconCacheKey: String? = nil,
         pinyin: String = "",
         initials: String = "",
         kind: SearchKind,
         baseScore: Double = 0
     ) {
-        self.id = id ?? (path.isEmpty ? "\(kind)-\(title)" : path)
+        let resolvedID = id ?? (path.isEmpty ? "\(kind)-\(title)" : path)
+        self.id = resolvedID
         self.title = title
         self.subtitle = subtitle
         self.path = path
+        self.iconCacheKey = iconCacheKey ?? (path.isEmpty ? resolvedID : path)
         self.pinyin = pinyin
         self.initials = initials
         self.kind = kind

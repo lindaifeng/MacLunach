@@ -39,7 +39,23 @@ targets:
         CODE_SIGNING_ALLOWED: NO
     scheme:
       testTargets:
+        - TouchTests
         - TouchUITests
+  TouchTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: '14.0'
+    sources:
+      - TouchTests
+    dependencies:
+      - target: Touch
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: me.touch.launcher.tests
+        GENERATE_INFOPLIST_FILE: YES
+        CODE_SIGNING_ALLOWED: NO
+        TEST_HOST: $(BUILT_PRODUCTS_DIR)/触达.app/Contents/MacOS/触达
+        BUNDLE_LOADER: $(TEST_HOST)
   TouchUITests:
     type: bundle.ui-testing
     platform: macOS

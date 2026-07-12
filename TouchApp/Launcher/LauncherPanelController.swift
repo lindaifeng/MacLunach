@@ -2,17 +2,20 @@ import AppKit
 import SwiftUI
 
 @MainActor
-final class LauncherPanelController {
+final class LauncherPanelController: NSObject {
     private let panel: LauncherPanel
     private let themeStore = ThemeStore()
+    private let searchCoordinator: SearchCoordinator
 
-    init() {
+    init(searchEnvironment: SearchEnvironment) {
+        searchCoordinator = SearchCoordinator(environment: searchEnvironment)
         panel = LauncherPanel(
             contentRect: NSRect(x: 0, y: 0, width: 1080, height: 620),
             styleMask: [.borderless, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
+        super.init()
         panel.isFloatingPanel = true
         panel.level = .floating
         panel.hidesOnDeactivate = false
@@ -20,11 +23,28 @@ final class LauncherPanelController {
         panel.backgroundColor = .clear
         panel.hasShadow = true
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        panel.searchKeyHandler = { [weak self] event in
+            self?.handleSearchKey(event) ?? false
+        }
         panel.contentView = NSHostingView(
-            rootView: LauncherView()
+            rootView: LauncherView(searchCoordinator: searchCoordinator)
                 .environmentObject(themeStore)
                 .environmentObject(FeatureAreaStore.shared)
         )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(dismissLauncher),
+            name: .dismissTouchLauncher,
+            object: nil
+        )
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    @objc private func dismissLauncher() {
+        hide()
     }
 
     var isVisible: Bool { panel.isVisible }
@@ -36,7 +56,7 @@ final class LauncherPanelController {
 
     private func present() {
         panel.center()
-        NSRunningApplication.current.activate(options: [.activateAllWindows, .activateIgnoringOtherApps])
+        NSApp.activate()
         panel.makeKeyAndOrderFront(nil)
         panel.orderFrontRegardless()
         NotificationCenter.default.post(name: .touchLauncherWillDisplay, object: nil)
@@ -48,6 +68,32 @@ final class LauncherPanelController {
 
     func toggle() {
         panel.isVisible ? hide() : show()
+    }
+
+
+    private func handleSearchKey(_ event: NSEvent) -> Bool {
+        switch event.keyCode {
+        case 48:
+            searchCoordinator.toggleMode()
+            return true
+        case 53:
+            if searchCoordinator.clearOrDismiss() == .dismiss { hide() }
+            return true
+        case 125:
+            searchCoordinator.moveSelection(by: 1)
+            return true
+        case 126:
+            searchCoordinator.moveSelection(by: -1)
+            return true
+        case 36, 76:
+            searchCoordinator.activateSelected(commandModifier: event.modifierFlags.contains(.command))
+            return true
+        case 49 where searchCoordinator.canPreviewSelectedResult:
+            searchCoordinator.previewSelected()
+            return true
+        default:
+            return false
+        }
     }
 
     func runPerformanceMeasurement(samples: Int, outputURL: URL) async {

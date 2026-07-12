@@ -23,3 +23,15 @@ import Testing
 
     #expect(try await store.search("", limit: 10).map(\.path) == ["/b/two.txt"])
 }
+
+@Test func deletingPathRemovesOnlyTheStaleResult() async throws {
+    let store = try FileIndexStore.temporary()
+    try await store.upsert([
+        FileIndexRecord(path: "/a/one.txt", rootPath: "/a", contentType: "public.plain-text", size: 1, createdAt: .now, modifiedAt: .now, isDirectory: false),
+        FileIndexRecord(path: "/a/two.txt", rootPath: "/a", contentType: "public.plain-text", size: 1, createdAt: .now, modifiedAt: .now, isDirectory: false)
+    ])
+
+    try await store.delete(path: "/a/one.txt")
+
+    #expect(try await store.search("", limit: 10).map(\.path) == ["/a/two.txt"])
+}

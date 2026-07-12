@@ -6,21 +6,18 @@ import TouchFeatureAPI
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var launcherPanelController: LauncherPanelController?
     private var settingsWindowController: SettingsWindowController?
-    private var applicationCatalog: ApplicationCatalog?
+    private var searchEnvironment: SearchEnvironment?
     private var shouldRestoreLauncherAfterSettingsClose = false
     private let globalHotKeyController = GlobalHotKeyController()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
-        let applicationCatalog = ApplicationCatalog(
-            discoverer: WorkspaceApplicationDiscoverer(),
-            launcher: WorkspaceApplicationLauncher()
-        )
-        self.applicationCatalog = applicationCatalog
+        let searchEnvironment = SearchEnvironment.makeForCurrentProcess()
+        self.searchEnvironment = searchEnvironment
         Task {
-            _ = await applicationCatalog.refresh()
+            await searchEnvironment.prepare()
         }
-        launcherPanelController = LauncherPanelController()
+        launcherPanelController = LauncherPanelController(searchEnvironment: searchEnvironment)
         settingsWindowController = SettingsWindowController { [weak self] in
             self?.restoreLauncherAfterSettingsClose()
         }

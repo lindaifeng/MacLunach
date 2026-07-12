@@ -1,9 +1,5 @@
 import SwiftUI
 
-extension Notification.Name {
-    static let toggleTouchSearchMode = Notification.Name("me.touch.toggle-search-mode")
-}
-
 enum SearchMode: String, CaseIterable {
     case applications = "应用"
     case files = "文件"
@@ -29,23 +25,13 @@ struct SearchBarView: View {
 
             Divider().frame(height: 22)
 
-            TextField("搜索应用、文件、动作", text: $query)
-                .textFieldStyle(.plain)
-                .font(.system(size: 18, weight: .medium))
-                .foregroundStyle(palette.primaryText)
-                .accessibilityIdentifier("search.query")
+            SearchQueryField(text: $query)
+                .frame(maxWidth: .infinity, minHeight: 24)
         }
         .padding(.horizontal, 22)
         .frame(height: 64)
         .background(palette.cardFill, in: Capsule())
         .overlay(Capsule().stroke(palette.border, lineWidth: 1))
-        .onKeyPress(.tab) {
-            mode = mode == .applications ? .files : .applications
-            return .handled
-        }
-        .onReceive(NotificationCenter.default.publisher(for: .toggleTouchSearchMode)) { _ in
-            mode = mode == .applications ? .files : .applications
-        }
     }
 
     private func modeButton(_ item: SearchMode) -> some View {

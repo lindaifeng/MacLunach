@@ -113,6 +113,13 @@ public actor FileIndexStore {
         guard sqlite3_step(statement) == SQLITE_DONE else { throw FileIndexStoreError.executionFailed }
     }
 
+    public func delete(path: String) throws {
+        let statement = try prepare("DELETE FROM files WHERE path = ?")
+        defer { sqlite3_finalize(statement) }
+        try bind(path, to: statement, index: 1)
+        guard sqlite3_step(statement) == SQLITE_DONE else { throw FileIndexStoreError.executionFailed }
+    }
+
     private func upsert(_ record: FileIndexRecord) throws {
         let statement = try prepare("""
         INSERT INTO files (path, root_path, file_name, normalized_name, content_type, size, created_at, modified_at, is_directory)

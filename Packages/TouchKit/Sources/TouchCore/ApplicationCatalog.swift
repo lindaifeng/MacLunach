@@ -101,6 +101,7 @@ public actor ApplicationCatalog {
                 title: application.localizedName,
                 subtitle: application.path,
                 path: application.path,
+                iconCacheKey: application.iconCacheKey,
                 pinyin: application.pinyin,
                 initials: application.initials,
                 kind: .application,

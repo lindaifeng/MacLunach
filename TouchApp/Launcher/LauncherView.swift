@@ -3,8 +3,7 @@ import SwiftUI
 struct LauncherView: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-    @State private var mode: SearchMode = .applications
-    @State private var query = ""
+    @ObservedObject var searchCoordinator: SearchCoordinator
 
     private var palette: ThemePalette { .palette(for: themeStore.theme) }
 
@@ -46,12 +45,24 @@ struct LauncherView: View {
                 .padding(.horizontal, 58)
                 .padding(.top, 46)
 
-                SearchBarView(mode: $mode, query: $query, palette: palette)
+                SearchBarView(
+                    mode: $searchCoordinator.mode,
+                    query: $searchCoordinator.query,
+                    palette: palette
+                )
                 .padding(.top, 104)
                 .padding(.horizontal, 190)
 
-                FeatureGridView(palette: palette)
-                .padding(.top, 100)
+                if searchCoordinator.query.isEmpty {
+                    FeatureGridView(palette: palette)
+                        .padding(.top, 100)
+                        .transition(.opacity)
+                } else {
+                    SearchResultsView(coordinator: searchCoordinator, palette: palette)
+                        .padding(.top, 20)
+                        .padding(.horizontal, 190)
+                        .transition(.opacity)
+                }
 
                 Spacer()
             }
@@ -59,6 +70,7 @@ struct LauncherView: View {
         .clipShape(RoundedRectangle(cornerRadius: 36))
         .overlay(RoundedRectangle(cornerRadius: 36).stroke(palette.border, lineWidth: 1))
         .padding(1)
+        .animation(.easeInOut(duration: 0.08), value: searchCoordinator.query.isEmpty)
         .onAppear(perform: finishPerformanceIntervalAfterRender)
         .onReceive(NotificationCenter.default.publisher(for: .touchLauncherWillDisplay)) { _ in
             finishPerformanceIntervalAfterRender()

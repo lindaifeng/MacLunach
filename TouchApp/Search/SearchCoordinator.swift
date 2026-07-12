@@ -1,0 +1,194 @@
+import Foundation
+import TouchCore
+
+struct SearchPresentationState: Equatable {
+    enum Phase: Equatable {
+        case idle
+        case searching
+        case results
+        case noResults
+        case failed(String)
+    }
+
+    var phase: Phase = .idle
+    var results: [SearchResult] = []
+    var selectedIndex: Int?
+
+    static let idle = SearchPresentationState()
+}
+
+enum SearchDismissal: Equatable {
+    case cleared
+    case dismiss
+}
+
+@MainActor
+final class SearchCoordinator: ObservableObject {
+    @Published var query = "" {
+        didSet {
+            guard query != oldValue else { return }
+            scheduleSearch(query: query, mode: mode)
+        }
+    }
+    @Published var mode: SearchMode = .applications {
+        didSet {
+            guard mode != oldValue else { return }
+            scheduleSearch(query: query, mode: mode)
+        }
+    }
+    @Published private(set) var state = SearchPresentationState.idle
+
+    private let environment: SearchEnvironment
+    private var searchTask: Task<Void, Never>?
+    private var isKeyboardSelectionActive = false
+
+    init(environment: SearchEnvironment) {
+        self.environment = environment
+    }
+
+    deinit {
+        searchTask?.cancel()
+    }
+
+    func update(query: String, mode: SearchMode) {
+        let changed = self.query != query || self.mode != mode
+        self.query = query
+        self.mode = mode
+        if !changed {
+            scheduleSearch(query: query, mode: mode)
+        }
+    }
+
+    private func scheduleSearch(query: String, mode: SearchMode) {
+        searchTask?.cancel()
+        isKeyboardSelectionActive = false
+
+        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedQuery.isEmpty else {
+            state = .idle
+            return
+        }
+
+        state = SearchPresentationState(phase: .searching, results: [], selectedIndex: nil)
+        let environment = environment
+        searchTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: .milliseconds(40))
+                try Task.checkCancellation()
+                await environment.prepare()
+                try Task.checkCancellation()
+
+                let results: [SearchResult]
+                switch mode {
+                case .applications:
+                    results = await environment.applicationCatalog.search(query: trimmedQuery)
+                case .files:
+                    guard let store = environment.fileIndexStore else {
+                        self?.state = SearchPresentationState(
+                            phase: .failed("文件索引暂不可用，应用搜索仍可正常使用。"),
+                            results: [],
+                            selectedIndex: nil
+                        )
+                        return
+                    }
+                    let records = try await store.search(trimmedQuery, limit: 80)
+                    let candidates = records.map {
+                        SearchResult(
+                            title: $0.fileName,
+                            subtitle: URL(fileURLWithPath: $0.path).deletingLastPathComponent().path,
+                            path: $0.path,
+                            kind: .file
+                        )
+                    }
+                    results = SearchRanking.sort(candidates, query: trimmedQuery)
+                }
+
+
+                try Task.checkCancellation()
+                guard self?.query == query, self?.mode == mode else { return }
+                self?.state = SearchPresentationState(
+                    phase: results.isEmpty ? .noResults : .results,
+                    results: results,
+                    selectedIndex: results.isEmpty ? nil : 0
+                )
+            } catch is CancellationError {
+                return
+            } catch {
+                guard self?.query == query, self?.mode == mode else { return }
+                self?.state = SearchPresentationState(
+                    phase: .failed("搜索暂时不可用，请检查索引状态后重试。"),
+                    results: [],
+                    selectedIndex: nil
+                )
+            }
+        }
+    }
+
+    func toggleMode() {
+        mode = mode == .applications ? .files : .applications
+    }
+
+    func moveSelection(by offset: Int) {
+        guard !state.results.isEmpty else { return }
+        let current = state.selectedIndex ?? 0
+        state.selectedIndex = (current + offset + state.results.count) % state.results.count
+        isKeyboardSelectionActive = true
+    }
+
+    func activateSelected(commandModifier: Bool = false) {
+        guard let result = selectedResult else { return }
+        let environment = environment
+        Task { [weak self] in
+            do {
+                if commandModifier {
+                    try environment.systemActions.revealFile(at: URL(fileURLWithPath: result.path))
+                } else {
+                    switch result.kind {
+                    case .application:
+                        try await environment.applicationCatalog.launch(bundleIdentifier: result.id)
+                    case .file:
+                        try environment.systemActions.openFile(at: URL(fileURLWithPath: result.path))
+                    }
+                }
+                self?.requestDismissal()
+            } catch {
+                if result.kind == .file {
+                    try? await environment.fileIndexStore?.delete(path: result.path)
+                }
+                self?.state.phase = .failed("无法打开“\(result.title)”，项目可能已移动或不可访问。")
+            }
+        }
+    }
+
+    func previewSelected() {
+        guard mode == .files, let result = selectedResult else { return }
+        do {
+            try environment.systemActions.previewFile(at: URL(fileURLWithPath: result.path))
+        } catch {
+            state.phase = .failed("无法预览“\(result.title)”，项目可能已移动或不可访问。")
+        }
+    }
+
+    func clearOrDismiss() -> SearchDismissal {
+        guard !query.isEmpty else { return .dismiss }
+        query = ""
+        return .cleared
+    }
+
+    var canPreviewSelectedResult: Bool {
+        mode == .files && isKeyboardSelectionActive && selectedResult != nil
+    }
+
+    private var selectedResult: SearchResult? {
+        guard let index = state.selectedIndex, state.results.indices.contains(index) else { return nil }
+        return state.results[index]
+    }
+
+    private func requestDismissal() {
+        NotificationCenter.default.post(name: .dismissTouchLauncher, object: nil)
+    }
+}
+
+extension Notification.Name {
+    static let dismissTouchLauncher = Notification.Name("me.touch.dismiss-launcher")
+}
