@@ -32,7 +32,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func show(section: TouchSettingsSection = .general) {
-        navigation.section = section
+        show(destination: TouchSettingsDestination(section: section))
+    }
+
+    func show(destination: TouchSettingsDestination) {
+        navigation.navigate(to: destination)
         window?.center()
         showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)

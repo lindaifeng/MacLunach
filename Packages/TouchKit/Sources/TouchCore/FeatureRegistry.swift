@@ -3,6 +3,9 @@ import TouchFeatureAPI
 public enum FeatureRegistryError: Error, Equatable {
     case unknownFeature
     case shortcutConflict(existingFeatureID: String)
+    case unavailable(state: FeatureState)
+    case executionTimedOut
+    case executionFailed
 }
 
 public struct FeatureEntry: Sendable {
@@ -44,13 +47,70 @@ public actor FeatureRegistry {
 
     public func load() async {
         for index in entries.indices {
-            guard let plugin = plugins[entries[index].manifest.id] else { continue }
-            entries[index].state = await plugin.initialState()
+            guard entries[index].state == .unloaded,
+                  let plugin = plugins[entries[index].manifest.id] else { continue }
+            let initialState = await plugin.initialState()
+            if entries[index].state == .unloaded {
+                entries[index].state = initialState
+            }
         }
     }
 
     public func state(for id: String) -> FeatureState? {
         entries.first { $0.manifest.id == id }?.state
+    }
+
+    public func perform(id: String, timeout: Duration = .seconds(5)) async throws -> FeatureActionResult {
+        guard let index = entries.firstIndex(where: { $0.manifest.id == id }),
+              let plugin = plugins[id] else { throw FeatureRegistryError.unknownFeature }
+
+        if entries[index].state == .unloaded {
+            entries[index].state = .running
+            let initialState = await plugin.initialState()
+            guard entries[index].state == .running else {
+                throw FeatureRegistryError.unavailable(state: entries[index].state)
+            }
+            guard initialState == .available else {
+                entries[index].state = initialState
+                throw FeatureRegistryError.unavailable(state: initialState)
+            }
+        } else {
+            guard entries[index].state == .available else {
+                throw FeatureRegistryError.unavailable(state: entries[index].state)
+            }
+            entries[index].state = .running
+        }
+        do {
+            let result = try await withThrowingTaskGroup(of: FeatureActionResult.self) { group in
+                group.addTask { try await plugin.perform() }
+                group.addTask {
+                    try await Task.sleep(for: timeout)
+                    throw FeatureRegistryError.executionTimedOut
+                }
+                guard let first = try await group.next() else {
+                    throw FeatureRegistryError.executionFailed
+                }
+                group.cancelAll()
+                return first
+            }
+            entries[index].state = .available
+            return result
+        } catch is CancellationError {
+            entries[index].state = .available
+            throw CancellationError()
+        } catch FeatureRegistryError.executionTimedOut {
+            entries[index].state = .failed(message: "功能响应超时，请重试。")
+            throw FeatureRegistryError.executionTimedOut
+        } catch {
+            entries[index].state = .failed(message: "功能执行失败，请重试。")
+            throw FeatureRegistryError.executionFailed
+        }
+    }
+
+    public func retry(id: String) async throws {
+        guard let index = entries.firstIndex(where: { $0.manifest.id == id }),
+              let plugin = plugins[id] else { throw FeatureRegistryError.unknownFeature }
+        entries[index].state = await plugin.initialState()
     }
 
     public func setShortcut(_ shortcut: KeyboardShortcut, for id: String) throws {

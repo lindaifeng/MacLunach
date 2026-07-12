@@ -13,8 +13,10 @@ struct FeatureGridView: View {
                 FeatureCardView(
                     plugin: plugin,
                     shortcut: featureStore.shortcut(for: plugin.manifest.id),
+                    state: featureStore.states[plugin.manifest.id] ?? .unloaded,
                     palette: palette,
-                    action: { Task { _ = try? await plugin.perform() } },
+                    action: { Task { await featureStore.perform(plugin.manifest.id) } },
+                    retry: { Task { await featureStore.retry(plugin.manifest.id) } },
                     editShortcut: { editingFeatureID = plugin.manifest.id },
                     hide: { featureStore.setHidden(true, for: plugin.manifest.id) },
                     restoreDefaults: { featureStore.restoreDefaults(for: plugin.manifest.id) }

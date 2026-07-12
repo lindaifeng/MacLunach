@@ -12,25 +12,35 @@ final class FeatureAreaStore: ObservableObject {
 
     @Published private(set) var plugins: [any FeaturePlugin]
     @Published private(set) var preferences: FeaturePreferences
+    @Published private(set) var states: [String: FeatureState] = [:]
 
     private let preferencesStore: FeaturePreferencesStore
+    private let registry: FeatureRegistry
+    private let notificationCenter: NotificationCenter
 
-    init(defaults: UserDefaults = .standard) {
+    init(
+        defaults: UserDefaults = .standard,
+        plugins injectedPlugins: [any FeaturePlugin]? = nil,
+        notificationCenter: NotificationCenter = .default
+    ) {
         preferencesStore = FeaturePreferencesStore(defaults: defaults)
+        self.notificationCenter = notificationCenter
         let loadedPreferences = (try? preferencesStore.load()) ?? .init()
         preferences = loadedPreferences
 
-        let builtIns: [any FeaturePlugin] = [
+        let builtIns: [any FeaturePlugin] = injectedPlugins ?? [
             FinderFeaturePlugin(),
             ScreenshotFeaturePlugin(),
             SuperRightFeaturePlugin()
         ]
+        registry = FeatureRegistry(plugins: builtIns, preferences: loadedPreferences)
         let storedOrder = Dictionary(uniqueKeysWithValues: loadedPreferences.order.enumerated().map { ($1, $0) })
         plugins = builtIns.sorted {
             let left = storedOrder[$0.manifest.id] ?? (loadedPreferences.order.count + $0.manifest.defaultOrder)
             let right = storedOrder[$1.manifest.id] ?? (loadedPreferences.order.count + $1.manifest.defaultOrder)
             return left < right
         }
+        Task { [weak self] in await self?.loadStates() }
     }
 
     var visiblePlugins: [any FeaturePlugin] {
@@ -89,6 +99,46 @@ final class FeatureAreaStore: ObservableObject {
         preferences.hidden.remove(featureID)
         plugins.sort { $0.manifest.defaultOrder < $1.manifest.defaultOrder }
         persistOrder()
+    }
+
+    func perform(_ featureID: String) async {
+        states[featureID] = .running
+        do {
+            let result = try await registry.perform(id: featureID)
+            if case .requiresSetup = result {
+                openSettings(for: featureID)
+            }
+        } catch FeatureRegistryError.unavailable(state: let state) {
+            if case .restricted = state {
+                openSettings(for: featureID)
+            } else if state == .disabled {
+                openSettings(for: featureID)
+            }
+        } catch {
+            // The registry owns and publishes the isolated failure state below.
+        }
+        await refreshStates()
+    }
+
+    func retry(_ featureID: String) async {
+        try? await registry.retry(id: featureID)
+        await refreshStates()
+    }
+
+    private func loadStates() async {
+        await registry.load()
+        await refreshStates()
+    }
+
+    private func refreshStates() async {
+        states = Dictionary(uniqueKeysWithValues: await registry.entries.map { ($0.manifest.id, $0.state) })
+    }
+
+    private func openSettings(for featureID: String) {
+        notificationCenter.post(
+            name: .openTouchSettings,
+            object: TouchSettingsDestination(section: .featureArea, featureID: featureID)
+        )
     }
 
     private func persistOrder() {

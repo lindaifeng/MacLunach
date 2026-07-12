@@ -43,19 +43,35 @@ enum TouchSettingsSection: String, CaseIterable, Identifiable {
     }
 }
 
+struct TouchSettingsDestination {
+    let section: TouchSettingsSection
+    let featureID: String?
+
+    init(section: TouchSettingsSection, featureID: String? = nil) {
+        self.section = section
+        self.featureID = featureID
+    }
+}
+
 @MainActor
 final class SettingsNavigationModel: ObservableObject {
     @Published var section: TouchSettingsSection
+    @Published var featureID: String?
 
-    init(section: TouchSettingsSection = .general) {
+    init(section: TouchSettingsSection = .general, featureID: String? = nil) {
         self.section = section
+        self.featureID = featureID
+    }
+
+    func navigate(to destination: TouchSettingsDestination) {
+        section = destination.section
+        featureID = destination.featureID
     }
 }
 
 struct SettingsRootView: View {
     @ObservedObject var searchEnvironment: SearchEnvironment
     @ObservedObject var navigation: SettingsNavigationModel
-    @State private var selectedFeatureID: String?
 
     init(
         searchEnvironment: SearchEnvironment,
@@ -71,7 +87,7 @@ struct SettingsRootView: View {
                 ForEach(TouchSettingsSection.allCases) { item in
                     Button {
                         navigation.section = item
-                        selectedFeatureID = nil
+                        navigation.featureID = nil
                     } label: {
                         Label(item.title, systemImage: item.symbol)
                             .frame(maxWidth: .infinity, alignment: .leading)
@@ -95,13 +111,13 @@ struct SettingsRootView: View {
         if navigation.section == .search {
             FileIndexSettingsView(environment: searchEnvironment)
         } else if navigation.section == .featureArea {
-            if let selectedFeatureID {
-                FeatureDetailSettingsView(featureID: selectedFeatureID) {
-                    self.selectedFeatureID = nil
+            if let featureID = navigation.featureID {
+                FeatureDetailSettingsView(featureID: featureID) {
+                    navigation.featureID = nil
                 }
             } else {
                 FeatureAreaSettingsView { featureID in
-                    selectedFeatureID = featureID
+                    navigation.featureID = featureID
                 }
             }
         } else {

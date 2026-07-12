@@ -62,7 +62,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func handleOpenSettings(_ notification: Notification) {
-        showSettings(section: notification.object as? TouchSettingsSection ?? .general)
+        if let destination = notification.object as? TouchSettingsDestination {
+            showSettings(destination: destination)
+        } else {
+            showSettings(section: notification.object as? TouchSettingsSection ?? .general)
+        }
     }
 
     @objc private func handleRebuildSearchIndex() {
@@ -70,11 +74,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func showSettings(section: TouchSettingsSection = .general) {
+        showSettings(destination: TouchSettingsDestination(section: section))
+    }
+
+    private func showSettings(destination: TouchSettingsDestination) {
         shouldRestoreLauncherAfterSettingsClose = launcherPanelController?.isVisible ?? false
         if shouldRestoreLauncherAfterSettingsClose {
             launcherPanelController?.hide()
         }
-        settingsWindowController?.show(section: section)
+        settingsWindowController?.show(destination: destination)
     }
 
     private func restoreLauncherAfterSettingsClose() {
