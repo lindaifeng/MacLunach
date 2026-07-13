@@ -1,4 +1,5 @@
 import SwiftUI
+import ScreenshotFeature
 
 struct FeatureDetailSettingsView: View {
     @EnvironmentObject private var featureStore: FeatureAreaStore
@@ -48,6 +49,7 @@ struct FeatureDetailSettingsView: View {
         case FeatureConfigurationStore.finderID:
             Toggle("优先复用现有访达窗口", isOn: finderBinding(\.reuseExistingWindow))
         case FeatureConfigurationStore.screenshotID:
+            ScreenshotPermissionSettingsView()
             Toggle("截图后显示标注工具栏", isOn: screenshotBinding(\.showsAnnotationToolbar))
             Toggle("截图后自动复制到剪贴板", isOn: screenshotBinding(\.copiesToClipboard))
             Toggle("显示钉图操作", isOn: screenshotBinding(\.showsPinAction))
@@ -91,5 +93,33 @@ struct FeatureDetailSettingsView: View {
             get: { featureStore.configurations.superRight[keyPath: keyPath] },
             set: { featureStore.updateSuperRightConfiguration(keyPath, to: $0) }
         )
+    }
+}
+
+private struct ScreenshotPermissionSettingsView: View {
+    @EnvironmentObject private var featureStore: FeatureAreaStore
+    @State private var isGranted = ScreenRecordingAuthorization.isGranted
+
+    var body: some View {
+        HStack {
+            Label(
+                isGranted ? "屏幕录制权限已授权" : "需要屏幕录制权限",
+                systemImage: isGranted ? "checkmark.circle.fill" : "lock.trianglebadge.exclamationmark"
+            )
+            .foregroundStyle(isGranted ? .green : .orange)
+            Spacer()
+            if !isGranted {
+                Button("请求权限") {
+                    isGranted = ScreenRecordingAuthorization.request()
+                    Task { await featureStore.retry(FeatureConfigurationStore.screenshotID) }
+                }
+                Button("打开系统设置") {
+                    ScreenRecordingAuthorization.openSystemSettings()
+                }
+            }
+        }
+        .onAppear {
+            isGranted = ScreenRecordingAuthorization.isGranted
+        }
     }
 }

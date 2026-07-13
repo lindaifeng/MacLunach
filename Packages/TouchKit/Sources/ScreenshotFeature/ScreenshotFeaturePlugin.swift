@@ -1,7 +1,11 @@
 import TouchFeatureAPI
 
 public struct ScreenshotFeaturePlugin: FeaturePlugin {
-    public init() {}
+    private let captureService: any ScreenshotCapturing
+
+    public init(captureService: any ScreenshotCapturing = ScreenCaptureService()) {
+        self.captureService = captureService
+    }
 
     public let manifest = FeatureManifest(
         id: "me.touch.screenshot",
@@ -13,10 +17,17 @@ public struct ScreenshotFeaturePlugin: FeaturePlugin {
     )
 
     public func initialState() async -> FeatureState {
-        .restricted(message: "需要配置屏幕录制权限")
+        if await captureService.hasScreenRecordingPermission() {
+            return .available
+        }
+        return .restricted(message: "需要配置屏幕录制权限")
     }
 
     public func perform() async throws -> FeatureActionResult {
-        .requiresSetup(message: "请在功能区中配置截取屏幕")
+        guard await captureService.hasScreenRecordingPermission() else {
+            return .requiresSetup(message: "请允许触达录制屏幕")
+        }
+        try await captureService.capturePrimaryDisplay()
+        return .completed
     }
 }
