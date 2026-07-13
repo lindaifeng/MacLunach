@@ -13,8 +13,10 @@ final class FeatureAreaStore: ObservableObject {
     @Published private(set) var plugins: [any FeaturePlugin]
     @Published private(set) var preferences: FeaturePreferences
     @Published private(set) var states: [String: FeatureState] = [:]
+    @Published private(set) var configurations: FeatureConfigurations
 
     private let preferencesStore: FeaturePreferencesStore
+    private let configurationStore: FeatureConfigurationStore
     private let registry: FeatureRegistry
     private let notificationCenter: NotificationCenter
 
@@ -24,9 +26,11 @@ final class FeatureAreaStore: ObservableObject {
         notificationCenter: NotificationCenter = .default
     ) {
         preferencesStore = FeaturePreferencesStore(defaults: defaults)
+        configurationStore = FeatureConfigurationStore(defaults: defaults)
         self.notificationCenter = notificationCenter
         let loadedPreferences = (try? preferencesStore.load()) ?? .init()
         preferences = loadedPreferences
+        configurations = configurationStore.load()
 
         let builtIns: [any FeaturePlugin] = injectedPlugins ?? [
             FinderFeaturePlugin(),
@@ -80,6 +84,30 @@ final class FeatureAreaStore: ObservableObject {
             preferences.hidden.remove(featureID)
         }
         persist()
+    }
+
+    func updateFinderConfiguration<Value>(
+        _ keyPath: WritableKeyPath<FinderFeatureConfiguration, Value>,
+        to value: Value
+    ) {
+        configurations.finder[keyPath: keyPath] = value
+        try? configurationStore.save(configurations.finder)
+    }
+
+    func updateScreenshotConfiguration<Value>(
+        _ keyPath: WritableKeyPath<ScreenshotFeatureConfiguration, Value>,
+        to value: Value
+    ) {
+        configurations.screenshot[keyPath: keyPath] = value
+        try? configurationStore.save(configurations.screenshot)
+    }
+
+    func updateSuperRightConfiguration<Value>(
+        _ keyPath: WritableKeyPath<SuperRightFeatureConfiguration, Value>,
+        to value: Value
+    ) {
+        configurations.superRight[keyPath: keyPath] = value
+        try? configurationStore.save(configurations.superRight)
     }
 
     func updateShortcut(_ shortcut: TouchFeatureAPI.KeyboardShortcut, for featureID: String) -> String? {
