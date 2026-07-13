@@ -47,9 +47,9 @@
 
 ### 阶段三：截图、标注与钉图
 
-**状态：待正式计划与既有实现差距审计。**
+**状态：计划已创建，实施中（Task 1 待开始）。**
 
-详细计划将在阶段二通过验收后创建为 `docs/superpowers/plans/2026-07-12-touch-phase-3-screenshot.md`。
+详细计划：`docs/superpowers/plans/2026-07-12-touch-phase-3-screenshot.md`。
 
 交付：
 
