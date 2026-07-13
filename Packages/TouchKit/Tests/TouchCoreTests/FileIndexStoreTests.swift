@@ -22,7 +22,18 @@ import Testing
 
     #expect(try await store.search("terly-roa", limit: 10).map(\.fileName) == ["quarterly-roadmap.txt"])
     #expect(try await store.search("%_", limit: 10).map(\.fileName) == ["100%_ready.txt"])
-    #expect(try await store.schemaVersion() == 1)
+    #expect(try await store.schemaVersion() == 2)
+}
+
+@Test func shortSubstringSearchUsesTheShortTokenIndex() async throws {
+    let store = try FileIndexStore.temporary()
+    try await store.upsert([
+        FileIndexRecord(path: "/tmp/search/report-fd-final.txt", rootPath: "/tmp/search", contentType: "public.text", size: 1, createdAt: .now, modifiedAt: .now, isDirectory: false),
+        FileIndexRecord(path: "/tmp/search/unrelated.txt", rootPath: "/tmp/search", contentType: "public.text", size: 1, createdAt: .now, modifiedAt: .now, isDirectory: false)
+    ])
+
+    #expect(try await store.search("fd", limit: 10).map(\.fileName) == ["report-fd-final.txt"])
+    #expect(try await store.search("f", limit: 10).map(\.fileName) == ["report-fd-final.txt"])
 }
 
 @Test func openingLegacyDatabaseMigratesExistingRowsIntoTrigramIndex() async throws {
@@ -56,8 +67,9 @@ import Testing
 
     let store = try FileIndexStore(databaseURL: databaseURL)
 
-    #expect(try await store.schemaVersion() == 1)
+    #expect(try await store.schemaVersion() == 2)
     #expect(try await store.search("planning", limit: 10).map(\.fileName) == ["annual-planning.txt"])
+    #expect(try await store.search("pl", limit: 10).map(\.fileName) == ["annual-planning.txt"])
 }
 
 @Test func deletingRootRemovesOnlyMatchingRows() async throws {
