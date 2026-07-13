@@ -143,7 +143,7 @@ git status --short
 - Modify: `TouchApp/FeatureArea/FeatureConfigurationStore.swift`
 - Modify: `TouchTests/FeatureConfigurationStoreTests.swift`
 
-- [ ] **Step 1：写失败测试**
+- [x] **Step 1：写失败测试**
 
 覆盖：
 
@@ -153,17 +153,17 @@ git status --short
 - `ScreenshotFeaturePaths` 规范化相对路径，拒绝 `..`、符号链接逃逸和其他插件目录。
 - 领域错误可区分权限、取消、无显示器、目标失效、服务超时、服务中断、编码、存储、迁移和不兼容协议。
 
-- [ ] **Step 2：确认失败**
+- [x] **Step 2：确认失败**
 
 Run: `swift test --package-path Packages/TouchKit --filter Screenshot`
 
 Expected: FAIL，因为领域模型和 v2 配置尚不存在。
 
-- [ ] **Step 3：实现最小模型与迁移**
+- [x] **Step 3：实现最小模型与迁移**
 
 模型必须 `Codable + Equatable + Sendable`；持久化使用显式 schema version，不依赖枚举声明顺序。保留读取 `me.touch.features.me.touch.screenshot.configuration.v1`，成功迁移后原子写 v2，再删除旧键；失败先备份原始 `Data`。将完整截图配置类型放入 `ScreenshotFeature`，主应用只通过该公共类型更新自身命名空间。
 
-- [ ] **Step 4：目标验证、共同门槛并提交**
+- [x] **Step 4：目标验证、共同门槛并提交**
 
 Commit: `feat: define versioned screenshot models`
 

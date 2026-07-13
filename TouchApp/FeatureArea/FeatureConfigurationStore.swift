@@ -1,4 +1,5 @@
 import Foundation
+import ScreenshotFeature
 
 struct FinderFeatureConfiguration: Codable, Equatable, Sendable {
     var reuseExistingWindow: Bool
@@ -10,29 +11,6 @@ struct FinderFeatureConfiguration: Codable, Equatable, Sendable {
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         reuseExistingWindow = try values.decodeIfPresent(Bool.self, forKey: .reuseExistingWindow) ?? true
-    }
-}
-
-struct ScreenshotFeatureConfiguration: Codable, Equatable, Sendable {
-    var showsAnnotationToolbar: Bool
-    var copiesToClipboard: Bool
-    var showsPinAction: Bool
-
-    init(
-        showsAnnotationToolbar: Bool = true,
-        copiesToClipboard: Bool = true,
-        showsPinAction: Bool = true
-    ) {
-        self.showsAnnotationToolbar = showsAnnotationToolbar
-        self.copiesToClipboard = copiesToClipboard
-        self.showsPinAction = showsPinAction
-    }
-
-    init(from decoder: Decoder) throws {
-        let values = try decoder.container(keyedBy: CodingKeys.self)
-        showsAnnotationToolbar = try values.decodeIfPresent(Bool.self, forKey: .showsAnnotationToolbar) ?? true
-        copiesToClipboard = try values.decodeIfPresent(Bool.self, forKey: .copiesToClipboard) ?? true
-        showsPinAction = try values.decodeIfPresent(Bool.self, forKey: .showsPinAction) ?? true
     }
 }
 
@@ -75,17 +53,19 @@ struct FeatureConfigurationStore {
     static let superRightID = "me.touch.super-right"
 
     private let defaults: UserDefaults
+    private let now: () -> Date
     private let encoder = JSONEncoder()
     private let decoder = JSONDecoder()
 
-    init(defaults: UserDefaults = .standard) {
+    init(defaults: UserDefaults = .standard, now: @escaping () -> Date = Date.init) {
         self.defaults = defaults
+        self.now = now
     }
 
     func load() -> FeatureConfigurations {
         FeatureConfigurations(
             finder: load(FinderFeatureConfiguration.self, pluginID: Self.finderID) ?? .init(),
-            screenshot: load(ScreenshotFeatureConfiguration.self, pluginID: Self.screenshotID) ?? .init(),
+            screenshot: loadScreenshotConfiguration(),
             superRight: load(SuperRightFeatureConfiguration.self, pluginID: Self.superRightID) ?? .init()
         )
     }
@@ -95,15 +75,55 @@ struct FeatureConfigurationStore {
     }
 
     func save(_ configuration: ScreenshotFeatureConfiguration) throws {
-        try save(configuration, pluginID: Self.screenshotID)
+        let envelope = ScreenshotConfigurationEnvelope(configuration: configuration)
+        defaults.set(try encoder.encode(envelope), forKey: Self.storageKey(for: Self.screenshotID))
     }
 
     func save(_ configuration: SuperRightFeatureConfiguration) throws {
         try save(configuration, pluginID: Self.superRightID)
     }
 
+    static let legacyScreenshotStorageKey = "me.touch.features.\(screenshotID).configuration.v1"
+
     static func storageKey(for pluginID: String) -> String {
-        "me.touch.features.\(pluginID).configuration.v1"
+        let version = pluginID == screenshotID ? 2 : 1
+        return "me.touch.features.\(pluginID).configuration.v\(version)"
+    }
+
+    static func screenshotCorruptBackupKey(at date: Date) -> String {
+        "me.touch.features.\(screenshotID).configuration.v2.corrupt.\(Int(date.timeIntervalSince1970))"
+    }
+
+    private func loadScreenshotConfiguration() -> ScreenshotFeatureConfiguration {
+        let currentKey = Self.storageKey(for: Self.screenshotID)
+        if let data = defaults.data(forKey: currentKey) {
+            do {
+                let envelope = try decoder.decode(ScreenshotConfigurationEnvelope.self, from: data)
+                guard envelope.schemaVersion == ScreenshotConfigurationEnvelope.currentSchemaVersion else {
+                    // A newer app may own this value. Preserve it so a downgrade cannot destroy user settings.
+                    return .init()
+                }
+                return envelope.configuration
+            } catch {
+                defaults.set(data, forKey: Self.screenshotCorruptBackupKey(at: now()))
+                defaults.removeObject(forKey: currentKey)
+                return .init()
+            }
+        }
+
+        guard let legacyData = defaults.data(forKey: Self.legacyScreenshotStorageKey) else {
+            return .init()
+        }
+        do {
+            let configuration = try decoder.decode(ScreenshotFeatureConfiguration.self, from: legacyData)
+            try save(configuration)
+            defaults.removeObject(forKey: Self.legacyScreenshotStorageKey)
+            return configuration
+        } catch {
+            defaults.set(legacyData, forKey: Self.screenshotCorruptBackupKey(at: now()))
+            defaults.removeObject(forKey: Self.legacyScreenshotStorageKey)
+            return .init()
+        }
     }
 
     private func load<Value: Decodable>(_ type: Value.Type, pluginID: String) -> Value? {

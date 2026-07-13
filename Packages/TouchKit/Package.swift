@@ -25,6 +25,7 @@ let package = Package(
         .executableTarget(name: "SearchBenchmark", dependencies: ["TouchCore"]),
         .testTarget(name: "TouchFeatureAPITests", dependencies: ["TouchFeatureAPI"]),
         .testTarget(name: "TouchCoreTests", dependencies: ["TouchCore", "TouchFeatureAPI"]),
+        .testTarget(name: "ScreenshotFeatureTests", dependencies: ["ScreenshotFeature", "TouchFeatureAPI"]),
         .testTarget(name: "FeaturePluginTests", dependencies: ["FinderFeature", "ScreenshotFeature", "SuperRightFeature", "TouchFeatureAPI"])
     ]
 )
