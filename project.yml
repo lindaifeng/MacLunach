@@ -60,6 +60,10 @@ targets:
     dependencies:
       - package: TouchKit
         product: ScreenshotServiceProtocol
+      - package: TouchKit
+        product: ScreenshotServiceCore
+      - package: TouchKit
+        product: ScreenshotFeature
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: me.touch.launcher.ScreenshotService

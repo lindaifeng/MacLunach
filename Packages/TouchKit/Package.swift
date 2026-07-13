@@ -10,6 +10,7 @@ let package = Package(
         .library(name: "FinderFeature", targets: ["FinderFeature"]),
         .library(name: "ScreenshotFeature", targets: ["ScreenshotFeature"]),
         .library(name: "ScreenshotServiceProtocol", targets: ["ScreenshotServiceProtocol"]),
+        .library(name: "ScreenshotServiceCore", targets: ["ScreenshotServiceCore"]),
         .library(name: "SuperRightFeature", targets: ["SuperRightFeature"]),
         .executable(name: "SearchBenchmark", targets: ["SearchBenchmark"])
     ],
@@ -26,6 +27,7 @@ let package = Package(
             name: "ScreenshotFeature",
             dependencies: ["TouchFeatureAPI", "ScreenshotServiceProtocol"]
         ),
+        .target(name: "ScreenshotServiceCore", dependencies: ["ScreenshotFeature"]),
         .target(name: "SuperRightFeature", dependencies: ["TouchFeatureAPI"]),
         .executableTarget(name: "SearchBenchmark", dependencies: ["TouchCore"]),
         .testTarget(name: "TouchFeatureAPITests", dependencies: ["TouchFeatureAPI"]),
@@ -33,6 +35,11 @@ let package = Package(
         .testTarget(
             name: "ScreenshotFeatureTests",
             dependencies: ["ScreenshotFeature", "ScreenshotServiceProtocol", "TouchFeatureAPI"]
+        ),
+        .testTarget(
+            name: "ScreenshotServiceCoreTests",
+            dependencies: ["ScreenshotServiceCore", "ScreenshotFeature"],
+            resources: [.copy("Fixtures")]
         ),
         .testTarget(name: "FeaturePluginTests", dependencies: ["FinderFeature", "ScreenshotFeature", "SuperRightFeature", "TouchFeatureAPI"])
     ]

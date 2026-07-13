@@ -10,12 +10,13 @@ final class ScreenshotEnvironment: ObservableObject {
     init(
         defaults: UserDefaults = .standard,
         authorization: (any ScreenRecordingAuthorizing)? = nil,
-        captureService: any ScreenshotCapturing = ScreenCaptureService(),
+        captureService: (any ScreenshotCapturing)? = nil,
         client: ScreenshotClient = ScreenshotClient(),
         registerShortcuts: @escaping ScreenshotCoordinator.ShortcutAction = {},
         unregisterShortcuts: @escaping ScreenshotCoordinator.ShortcutAction = {}
     ) {
         let authorizer = authorization ?? SystemScreenRecordingAuthorizer(defaults: defaults)
+        let captureService = captureService ?? XPCScreenCaptureService(client: client)
         permissionState = authorizer.status
         coordinator = ScreenshotCoordinator(
             authorization: authorizer,

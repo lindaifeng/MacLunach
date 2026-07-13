@@ -1,0 +1,191 @@
+import CoreGraphics
+import Foundation
+import ImageIO
+import ScreenshotFeature
+import ScreenshotServiceCore
+import Testing
+import UniformTypeIdentifiers
+
+@Suite("ScreenshotFileStore")
+struct ScreenshotFileStoreTests {
+    @Test("格式的 UTType、扩展名和 alpha 策略一致")
+    func imageFormatDescriptorsAreConsistent() {
+        #expect(ScreenshotImageFormatDescriptor.for(.png) == .init(
+            uniformTypeIdentifier: UTType.png.identifier,
+            filenameExtension: "png",
+            preservesAlpha: true
+        ))
+        #expect(ScreenshotImageFormatDescriptor.for(.jpeg) == .init(
+            uniformTypeIdentifier: UTType.jpeg.identifier,
+            filenameExtension: "jpg",
+            preservesAlpha: false
+        ))
+        #expect(ScreenshotImageFormatDescriptor.for(.heif) == .init(
+            uniformTypeIdentifier: UTType.heic.identifier,
+            filenameExtension: "heic",
+            preservesAlpha: false
+        ))
+    }
+
+    @Test("原子写入使用同目录临时文件、fsync 和 rename")
+    func atomicWriterSynchronizesAndRenamesInSameDirectory() throws {
+        let directory = temporaryDirectory()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let destination = directory.appendingPathComponent("capture.png")
+        let operations = AtomicOperationRecorder()
+        let writer = POSIXAtomicFileWriter(observer: { operations.append($0) })
+        let bytes = Data("complete-image".utf8)
+
+        try writer.write(bytes, to: destination)
+
+        #expect(try Data(contentsOf: destination) == bytes)
+        let events = operations.values
+        let temporary = try #require(events.compactMap { operation -> URL? in
+            if case let .temporaryFileCreated(url) = operation { return url }
+            return nil
+        }.first)
+        #expect(temporary.deletingLastPathComponent() == destination.deletingLastPathComponent())
+        #expect(events.contains(.fileSynchronized(temporary)))
+        #expect(events.contains(.renamed(from: temporary, to: destination)))
+        #expect(events.contains(.directorySynchronized(directory)))
+        #expect(!FileManager.default.fileExists(atPath: temporary.path))
+    }
+
+    @Test("编码失败不创建最终文件或半文件")
+    func encodingFailureLeavesNoPartialFile() async throws {
+        struct ExpectedFailure: Error {}
+        let root = temporaryDirectory()
+        let store = ScreenshotFileStore(
+            rootURL: root,
+            encoder: FailingEncoder(error: ExpectedFailure())
+        )
+        let request = ScreenshotCaptureRequest(
+            id: UUID(uuidString: "11111111-1111-1111-1111-111111111111")!,
+            mode: .fullScreen,
+            target: .display(displayID: 1)
+        )
+
+        await #expect(throws: ExpectedFailure.self) {
+            try await store.store(
+                image: solidTransparentImage(),
+                request: request,
+                pointSize: .init(width: 2, height: 2),
+                displays: []
+            )
+        }
+
+        let files = recursiveFiles(at: root)
+        #expect(files.isEmpty)
+    }
+
+    @Test("PNG 保留 alpha，JPEG 输出不透明且 artifact 元数据匹配")
+    func realEncodingAppliesAlphaPolicyAndMetadata() async throws {
+        let root = temporaryDirectory()
+        let store = ScreenshotFileStore(rootURL: root)
+        let image = solidTransparentImage()
+        let pngRequest = ScreenshotCaptureRequest(
+            id: UUID(uuidString: "22222222-2222-2222-2222-222222222222")!,
+            mode: .region,
+            target: .region(displayID: 1, rect: .init(x: 0, y: 0, width: 2, height: 2)),
+            output: .init(format: .png, quality: 1)
+        )
+        let jpegRequest = ScreenshotCaptureRequest(
+            id: UUID(uuidString: "33333333-3333-3333-3333-333333333333")!,
+            mode: .region,
+            target: .region(displayID: 1, rect: .init(x: 0, y: 0, width: 2, height: 2)),
+            output: .init(format: .jpeg, quality: 1)
+        )
+
+        let png = try await store.store(
+            image: image,
+            request: pngRequest,
+            pointSize: .init(width: 2, height: 2),
+            displays: []
+        )
+        let jpeg = try await store.store(
+            image: image,
+            request: jpegRequest,
+            pointSize: .init(width: 2, height: 2),
+            displays: []
+        )
+
+        #expect(png.relativePath.hasSuffix(".png"))
+        #expect(png.uniformTypeIdentifier == UTType.png.identifier)
+        #expect(jpeg.relativePath.hasSuffix(".jpg"))
+        #expect(jpeg.uniformTypeIdentifier == UTType.jpeg.identifier)
+        #expect(!png.sha256.isEmpty && !jpeg.sha256.isEmpty)
+        let pngImage = try loadImage(root.appendingPathComponent(png.relativePath))
+        let jpegImage = try loadImage(root.appendingPathComponent(jpeg.relativePath))
+        #expect(pngImage.alphaInfo != .none && pngImage.alphaInfo != .noneSkipFirst && pngImage.alphaInfo != .noneSkipLast)
+        #expect(jpegImage.alphaInfo == .none || jpegImage.alphaInfo == .noneSkipFirst || jpegImage.alphaInfo == .noneSkipLast)
+    }
+
+    @Test("HEIF 使用 HEIC 文件扩展名、UTType 并输出不透明图像")
+    func heifEncodingProducesDecodableOpaqueImage() async throws {
+        let root = temporaryDirectory()
+        let store = ScreenshotFileStore(rootURL: root)
+        let request = ScreenshotCaptureRequest(
+            id: UUID(uuidString: "55555555-5555-5555-5555-555555555555")!,
+            mode: .fullScreen,
+            target: .display(displayID: 1),
+            output: .init(format: .heif, quality: 0.9)
+        )
+
+        let artifact = try await store.store(
+            image: solidTransparentImage(),
+            request: request,
+            pointSize: .init(width: 2, height: 2),
+            displays: []
+        )
+
+        #expect(artifact.relativePath.hasSuffix(".heic"))
+        #expect(artifact.uniformTypeIdentifier == UTType.heic.identifier)
+        let image = try loadImage(root.appendingPathComponent(artifact.relativePath))
+        #expect(image.alphaInfo == .none || image.alphaInfo == .noneSkipFirst || image.alphaInfo == .noneSkipLast)
+    }
+}
+
+private struct FailingEncoder: ScreenshotImageEncoding, @unchecked Sendable {
+    let error: any Error
+    func encode(_ image: CGImage, options: ScreenshotOutputOptions) throws -> Data { throw error }
+}
+
+private final class AtomicOperationRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var operations: [AtomicFileOperation] = []
+    func append(_ operation: AtomicFileOperation) { lock.withLock { operations.append(operation) } }
+    var values: [AtomicFileOperation] { lock.withLock { operations } }
+}
+
+private func temporaryDirectory() -> URL {
+    FileManager.default.temporaryDirectory
+        .appendingPathComponent("TouchFileStoreTests-\(UUID().uuidString)", isDirectory: true)
+}
+
+private func recursiveFiles(at root: URL) -> [URL] {
+    guard let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil) else { return [] }
+    return enumerator.compactMap { $0 as? URL }.filter {
+        var isDirectory: ObjCBool = false
+        return FileManager.default.fileExists(atPath: $0.path, isDirectory: &isDirectory) && !isDirectory.boolValue
+    }
+}
+
+private func solidTransparentImage() -> CGImage {
+    let context = CGContext(
+        data: nil,
+        width: 2,
+        height: 2,
+        bitsPerComponent: 8,
+        bytesPerRow: 8,
+        space: CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    )!
+    context.setFillColor(red: 1, green: 0, blue: 0, alpha: 0.25)
+    context.fill(CGRect(x: 0, y: 0, width: 2, height: 2))
+    return context.makeImage()!
+}
+
+private func loadImage(_ url: URL) throws -> CGImage {
+    let source = try #require(CGImageSourceCreateWithURL(url as CFURL, nil))
+    return try #require(CGImageSourceCreateImageAtIndex(source, 0, nil))
+}

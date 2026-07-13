@@ -343,3 +343,41 @@ private final class MockScreenshotServiceConnection: ScreenshotServiceConnection
         handler?()
     }
 }
+
+@Test func screenshotClientSendsCapturePayloadAndDecodesArtifactMetadata() async throws {
+    let artifact = ScreenshotArtifact(
+        id: UUID(uuidString: "44444444-4444-4444-4444-444444444444")!,
+        createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+        captureMode: .fullScreen,
+        relativePath: "Captures/2026/07/capture.png",
+        thumbnailRelativePath: nil,
+        pointSize: .init(width: 100, height: 50),
+        pixelSize: .init(width: 200, height: 100),
+        uniformTypeIdentifier: "public.png",
+        sha256: "abc123",
+        displays: []
+    )
+    let request = ScreenshotCaptureRequest(
+        mode: .fullScreen,
+        target: .display(displayID: 9)
+    )
+    let connection = MockScreenshotServiceConnection { _, data, reply, _ in
+        let serviceRequest = try! JSONDecoder().decode(ScreenshotServiceRequest.self, from: data)
+        #expect(serviceRequest.action.name == "capture")
+        #expect(serviceRequest.action.isIdempotent == false)
+        let decodedRequest = try! JSONDecoder().decode(
+            ScreenshotCaptureRequest.self,
+            from: serviceRequest.action.payload!
+        )
+        #expect(decodedRequest == request)
+        reply(try! makeResponse(
+            for: data,
+            payload: .capture(try! JSONEncoder().encode(artifact))
+        ))
+    }
+    let client = ScreenshotClient(connectionFactory: { connection })
+
+    let received = try await client.capture(request, timeout: .seconds(1))
+
+    #expect(received == artifact)
+}

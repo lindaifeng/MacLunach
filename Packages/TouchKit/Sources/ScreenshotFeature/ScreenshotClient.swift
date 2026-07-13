@@ -85,6 +85,36 @@ public actor ScreenshotClient {
         return health
     }
 
+    public func capture(
+        _ request: ScreenshotCaptureRequest,
+        timeout: Duration = .seconds(30)
+    ) async throws -> ScreenshotArtifact {
+        let requestData: Data
+        do {
+            requestData = try JSONEncoder().encode(request)
+        } catch {
+            throw ScreenshotFeatureError.serviceFailed(
+                message: "capture request encoding failed: \(error)"
+            )
+        }
+        let payload = try await perform(
+            action: .capture(requestData: requestData),
+            timeout: timeout
+        )
+        guard case let .capture(artifactData) = payload else {
+            throw ScreenshotFeatureError.serviceFailed(
+                message: "capture returned an unexpected payload"
+            )
+        }
+        do {
+            return try JSONDecoder().decode(ScreenshotArtifact.self, from: artifactData)
+        } catch {
+            throw ScreenshotFeatureError.serviceFailed(
+                message: "capture artifact decoding failed: \(error)"
+            )
+        }
+    }
+
     public func perform(
         action: ScreenshotServiceAction,
         timeout: Duration = .seconds(2)
@@ -338,17 +368,23 @@ public actor ScreenshotClient {
         payload: ScreenshotServiceResponsePayload,
         for action: ScreenshotServiceAction
     ) throws {
-        switch action {
-        case .ping:
+        switch action.name {
+        case ScreenshotServiceAction.ping.name:
             guard case .pong = payload else {
                 throw ScreenshotFeatureError.serviceFailed(
                     message: "ping returned an unexpected payload"
                 )
             }
-        case .health:
+        case ScreenshotServiceAction.health.name:
             guard case .health = payload else {
                 throw ScreenshotFeatureError.serviceFailed(
                     message: "health returned an unexpected payload"
+                )
+            }
+        case "capture":
+            guard case .capture = payload else {
+                throw ScreenshotFeatureError.serviceFailed(
+                    message: "capture returned an unexpected payload"
                 )
             }
         default:
@@ -366,6 +402,16 @@ public actor ScreenshotClient {
             return .serviceFailed(message: message)
         case .cancelled:
             return .cancelled
+        case .permissionDenied:
+            return .permissionDenied
+        case .noDisplayAvailable:
+            return .noDisplayAvailable
+        case .targetUnavailable:
+            return .targetUnavailable
+        case .encodingFailed:
+            return .encodingFailed
+        case let .storageFailed(message):
+            return .storageFailed(message: message)
         }
     }
 

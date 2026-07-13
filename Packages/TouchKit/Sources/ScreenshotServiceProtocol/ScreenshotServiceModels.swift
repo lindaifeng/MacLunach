@@ -7,10 +7,12 @@ public enum ScreenshotServiceProtocolVersion {
 public struct ScreenshotServiceAction: Codable, Equatable, Sendable {
     public let name: String
     public let isIdempotent: Bool
+    public let payload: Data?
 
-    public init(name: String, isIdempotent: Bool) {
+    public init(name: String, isIdempotent: Bool, payload: Data? = nil) {
         self.name = name
         self.isIdempotent = isIdempotent
+        self.payload = payload
     }
 
     public static let ping = ScreenshotServiceAction(name: "ping", isIdempotent: true)
@@ -18,6 +20,10 @@ public struct ScreenshotServiceAction: Codable, Equatable, Sendable {
 
     public static func custom(name: String, isIdempotent: Bool) -> Self {
         .init(name: name, isIdempotent: isIdempotent)
+    }
+
+    public static func capture(requestData: Data) -> Self {
+        .init(name: "capture", isIdempotent: false, payload: requestData)
     }
 }
 
@@ -45,4 +51,9 @@ public enum ScreenshotServiceFailure: Error, Codable, Equatable, Sendable {
     case malformedRequest(String)
     case internalFailure(String)
     case cancelled
+    case permissionDenied
+    case noDisplayAvailable
+    case targetUnavailable
+    case encodingFailed
+    case storageFailed(String)
 }
