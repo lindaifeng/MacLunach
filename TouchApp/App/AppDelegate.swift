@@ -15,14 +15,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var shouldRestoreLauncherAfterSettingsClose = false
     private let globalHotKeyController = GlobalHotKeyController(identifier: 1)
     private let screenshotHotKeyController = GlobalHotKeyController(identifier: 2)
+    private let isScreenshotSelectionFixture: Bool
 
     override init() {
+        let fixtureArgument = CommandLine.arguments.first {
+            $0.hasPrefix("--screenshot-selection-output=")
+        }
+        isScreenshotSelectionFixture = CommandLine.arguments.contains(
+            "--screenshot-selection-fixture"
+        )
         super.init()
 
-        let environment = ScreenshotEnvironment(
-            registerShortcuts: { [weak self] in self?.registerScreenshotShortcut() },
-            unregisterShortcuts: { [weak self] in self?.screenshotHotKeyController.stop() }
-        )
+        let environment: ScreenshotEnvironment
+        if isScreenshotSelectionFixture,
+           let fixtureArgument,
+           let outputPath = fixtureArgument.split(separator: "=", maxSplits: 1).last {
+            environment = ScreenshotEnvironment(
+                authorization: ScreenshotSelectionFixtureAuthorizer(),
+                captureService: ScreenshotSelectionFixtureCaptureService(
+                    content: ScreenshotSelectionFixtureContent.make(),
+                    outputURL: URL(fileURLWithPath: String(outputPath))
+                )
+            )
+        } else {
+            environment = ScreenshotEnvironment(
+                registerShortcuts: { [weak self] in self?.registerScreenshotShortcut() },
+                unregisterShortcuts: { [weak self] in self?.screenshotHotKeyController.stop() }
+            )
+        }
         screenshotEnvironment = environment
         featureStore = FeatureAreaStore(
             plugins: [
@@ -35,8 +55,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
-        Task {
-            await searchEnvironment.prepare()
+        if !isScreenshotSelectionFixture {
+            Task { await searchEnvironment.prepare() }
         }
         let launcher = LauncherPanelController(
             searchEnvironment: searchEnvironment,
@@ -65,7 +85,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             object: nil
         )
 
-        if let measurementArgument = CommandLine.arguments.first(where: { $0.hasPrefix("--measure-launcher=") }),
+        if isScreenshotSelectionFixture {
+            Task { @MainActor [weak self] in
+                do {
+                    _ = try await self?.screenshotEnvironment.coordinator.route(.captureDefaultMode)
+                } catch {
+                    NSLog("Screenshot selection UI fixture failed: %@", error.localizedDescription)
+                }
+            }
+        } else if let measurementArgument = CommandLine.arguments.first(where: { $0.hasPrefix("--measure-launcher=") }),
            let outputPath = measurementArgument.split(separator: "=", maxSplits: 1).last {
             let outputURL = URL(fileURLWithPath: String(outputPath))
             Task { @MainActor [weak self] in
@@ -80,6 +108,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.launcherPanelController?.show()
             }
         }
+        guard !isScreenshotSelectionFixture else { return }
         do {
             try globalHotKeyController.start(shortcut: .init(modifiers: [.option], key: "space")) { [weak self] in
                 self?.launcherPanelController?.toggle()

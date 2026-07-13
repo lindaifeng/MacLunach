@@ -164,6 +164,14 @@ public actor ScreenCaptureEngine {
         return artifact
     }
 
+    public func availableSelectionContent() async throws -> ScreenshotSelectionContent {
+        let content = try await backend.availableContent()
+        return ScreenshotSelectionContent(
+            displays: content.displays,
+            windows: content.windows
+        )
+    }
+
     private func captureRegion(
         _ rect: ScreenshotRect,
         displayID: UInt32,

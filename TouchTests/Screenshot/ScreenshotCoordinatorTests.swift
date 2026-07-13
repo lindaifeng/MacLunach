@@ -9,10 +9,13 @@ final class ScreenshotCoordinatorTests: XCTestCase {
     func testSuccessfulCaptureHidesLauncherBeforeFallbackAndDoesNotStealFocusAfterward() async throws {
         let events = EventRecorder()
         let launcher = LauncherStub(isVisible: true, events: events)
+        let selection = SelectionStub {
+            XCTAssertEqual(events.values(), ["hide"])
+        }
         let capture = CaptureStub {
             XCTAssertEqual(events.values(), ["hide"])
         }
-        let coordinator = makeCoordinator(capture: capture)
+        let coordinator = makeCoordinator(capture: capture, selection: selection)
         coordinator.attachLauncher(launcher)
 
         let result = try await coordinator.route(.captureDefaultMode)
@@ -103,6 +106,50 @@ final class ScreenshotCoordinatorTests: XCTestCase {
         XCTAssertEqual(firstResult, .completed)
     }
 
+    func testCancelledSelectionDoesNotCaptureAndRestoresLauncher() async throws {
+        let events = EventRecorder()
+        let launcher = LauncherStub(isVisible: true, events: events)
+        let capture = CaptureStub {}
+        let coordinator = makeCoordinator(
+            capture: capture,
+            selection: SelectionStub(target: nil)
+        )
+        coordinator.attachLauncher(launcher)
+
+        let result = try await coordinator.route(.captureDefaultMode)
+
+        XCTAssertEqual(result, .completed)
+        XCTAssertEqual(capture.captureCount, 0)
+        XCTAssertEqual(events.values(), ["hide", "show"])
+        XCTAssertTrue(launcher.isLauncherVisible)
+    }
+
+    func testConcurrentCaptureIsBusyDuringSelectionAndDeactivationCancelsPresenter() async {
+        let selection = BlockingSelectionStub()
+        let capture = CaptureStub {}
+        let coordinator = makeCoordinator(capture: capture, selection: selection)
+        let routeTask = Task { try await coordinator.route(.captureDefaultMode) }
+        while !selection.didStart {
+            await Task.yield()
+        }
+
+        do {
+            _ = try await coordinator.route(.captureDefaultMode)
+            XCTFail("选择期间不应启动第二条截图流程")
+        } catch let error as ScreenshotCoordinatorError {
+            XCTAssertEqual(error, .busy)
+        } catch {
+            XCTFail("收到非预期错误：\(error)")
+        }
+
+        await coordinator.deactivate()
+        _ = try? await routeTask.value
+
+        XCTAssertGreaterThanOrEqual(selection.cancelCount, 1)
+        XCTAssertEqual(capture.captureCount, 0)
+        XCTAssertEqual(coordinator.featureState(), .disabled)
+    }
+
     func testDeactivationCancelsFlowClosesServiceAndUnregistersShortcuts() async {
         let gate = CaptureGate()
         let service = LifecycleCounter()
@@ -135,6 +182,7 @@ final class ScreenshotCoordinatorTests: XCTestCase {
     private func makeCoordinator(
         authorization: AuthorizationStub = AuthorizationStub(status: .authorized),
         capture: CaptureStub,
+        selection: any ScreenshotSelectionPresenting = SelectionStub(),
         invalidateService: @escaping @Sendable () async -> Void = {},
         registerShortcuts: @escaping @MainActor @Sendable () -> Void = {},
         unregisterShortcuts: @escaping @MainActor @Sendable () -> Void = {}
@@ -142,6 +190,7 @@ final class ScreenshotCoordinatorTests: XCTestCase {
         ScreenshotCoordinator(
             authorization: authorization,
             captureService: capture,
+            selectionFactory: { selection },
             invalidateService: invalidateService,
             registerShortcuts: registerShortcuts,
             unregisterShortcuts: unregisterShortcuts
@@ -183,9 +232,72 @@ private final class CaptureStub: ScreenshotCapturing, @unchecked Sendable {
 
     var captureCount: Int { lock.withLock { storedCaptureCount } }
 
-    func capturePrimaryDisplay() async throws {
+    func availableSelectionContent() async throws -> ScreenshotSelectionContent {
+        ScreenshotSelectionContent(
+            displays: [
+                .init(
+                    id: 1,
+                    frame: .init(x: 0, y: 0, width: 1440, height: 900),
+                    pixelSize: .init(width: 2880, height: 1800),
+                    scaleFactor: 2
+                )
+            ],
+            windows: []
+        )
+    }
+
+    func capture(_ request: ScreenshotCaptureRequest) async throws {
         lock.withLock { storedCaptureCount += 1 }
         try await handler()
+    }
+
+    func capturePrimaryDisplay() async throws {
+        try await capture(.init(mode: .fullScreen, target: .display(displayID: 1)))
+    }
+}
+
+@MainActor
+private final class SelectionStub: ScreenshotSelectionPresenting {
+    var target: ScreenshotCaptureTarget?
+    private(set) var cancelCount = 0
+    private let onSelect: @MainActor () -> Void
+
+    init(target: ScreenshotCaptureTarget? = .region(
+        displayID: 1,
+        rect: .init(x: 10, y: 20, width: 300, height: 200)
+    ), onSelect: @escaping @MainActor () -> Void = {}) {
+        self.target = target
+        self.onSelect = onSelect
+    }
+
+    func select(from content: ScreenshotSelectionContent) async -> ScreenshotCaptureTarget? {
+        onSelect()
+        return target
+    }
+
+    func cancel() {
+        cancelCount += 1
+    }
+}
+
+@MainActor
+private final class BlockingSelectionStub: ScreenshotSelectionPresenting {
+    private var continuation: CheckedContinuation<ScreenshotCaptureTarget?, Never>?
+    private(set) var didStart = false
+    private(set) var cancelCount = 0
+
+    func select(from content: ScreenshotSelectionContent) async -> ScreenshotCaptureTarget? {
+        didStart = true
+        return await withCheckedContinuation { continuation in
+            self.continuation = continuation
+        }
+    }
+
+    func cancel() {
+        cancelCount += 1
+        let continuation = continuation
+        self.continuation = nil
+        continuation?.resume(returning: nil)
     }
 }
 

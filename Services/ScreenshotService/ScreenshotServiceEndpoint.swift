@@ -47,9 +47,11 @@ final class ScreenshotServiceEndpoint: NSObject, ScreenshotXPCProtocol, @uncheck
             return
         }
 
+        let isAsynchronousAction = request.action.name == "capture"
+            && request.action.payload != nil
+            || request.action.name == ScreenshotServiceAction.availableContent.name
         guard request.protocolVersion == ScreenshotServiceProtocolVersion.current,
-              request.action.name == "capture",
-              request.action.payload != nil else {
+              isAsynchronousAction else {
             _ = lock.withLock { activeRequestIDs.insert(request.id) }
             defer { _ = lock.withLock { activeRequestIDs.remove(request.id) } }
             let processor = ScreenshotServiceRequestProcessor(
@@ -65,7 +67,12 @@ final class ScreenshotServiceEndpoint: NSObject, ScreenshotXPCProtocol, @uncheck
         let replyBox = ReplyBox(reply)
         let task = Task { [weak self] in
             guard let self else { return }
-            let response = await processCapture(request)
+            let response: ScreenshotServiceResponse
+            if request.action.name == "capture" {
+                response = await processCapture(request)
+            } else {
+                response = await processAvailableContent(request)
+            }
             finishCapture(request.id)
             replyBox.reply(encode(response))
         }
@@ -111,6 +118,29 @@ final class ScreenshotServiceEndpoint: NSObject, ScreenshotXPCProtocol, @uncheck
             let artifact = try await engine.capture(request)
             let artifactData = try JSONEncoder().encode(artifact)
             return .init(requestID: serviceRequest.id, payload: .capture(artifactData))
+        } catch is CancellationError {
+            return .init(requestID: serviceRequest.id, payload: .failure(.cancelled))
+        } catch let error as ScreenshotFeatureError {
+            return .init(requestID: serviceRequest.id, payload: .failure(map(error)))
+        } catch {
+            return .init(
+                requestID: serviceRequest.id,
+                payload: .failure(.internalFailure(String(describing: error)))
+            )
+        }
+    }
+
+    private func processAvailableContent(
+        _ serviceRequest: ScreenshotServiceRequest
+    ) async -> ScreenshotServiceResponse {
+        do {
+            try Task.checkCancellation()
+            let content = try await engine.availableSelectionContent()
+            let contentData = try JSONEncoder().encode(content)
+            return .init(
+                requestID: serviceRequest.id,
+                payload: .availableContent(contentData)
+            )
         } catch is CancellationError {
             return .init(requestID: serviceRequest.id, payload: .failure(.cancelled))
         } catch let error as ScreenshotFeatureError {

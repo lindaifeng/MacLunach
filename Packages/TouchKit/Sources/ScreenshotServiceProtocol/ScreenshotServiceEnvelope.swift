@@ -35,6 +35,7 @@ public struct ScreenshotServiceResponse: Codable, Equatable, Sendable {
 public enum ScreenshotServiceResponsePayload: Codable, Equatable, Sendable {
     case pong(ScreenshotPong)
     case health(ScreenshotServiceHealth)
+    case availableContent(Data)
     case capture(Data)
     case failure(ScreenshotServiceFailure)
 }

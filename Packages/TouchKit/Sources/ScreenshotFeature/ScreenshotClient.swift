@@ -85,6 +85,24 @@ public actor ScreenshotClient {
         return health
     }
 
+    public func availableSelectionContent(
+        timeout: Duration = .seconds(10)
+    ) async throws -> ScreenshotSelectionContent {
+        let payload = try await perform(action: .availableContent, timeout: timeout)
+        guard case let .availableContent(contentData) = payload else {
+            throw ScreenshotFeatureError.serviceFailed(
+                message: "availableContent returned an unexpected payload"
+            )
+        }
+        do {
+            return try JSONDecoder().decode(ScreenshotSelectionContent.self, from: contentData)
+        } catch {
+            throw ScreenshotFeatureError.serviceFailed(
+                message: "available content decoding failed: \(error)"
+            )
+        }
+    }
+
     public func capture(
         _ request: ScreenshotCaptureRequest,
         timeout: Duration = .seconds(30)
@@ -379,6 +397,12 @@ public actor ScreenshotClient {
             guard case .health = payload else {
                 throw ScreenshotFeatureError.serviceFailed(
                     message: "health returned an unexpected payload"
+                )
+            }
+        case ScreenshotServiceAction.availableContent.name:
+            guard case .availableContent = payload else {
+                throw ScreenshotFeatureError.serviceFailed(
+                    message: "availableContent returned an unexpected payload"
                 )
             }
         case "capture":

@@ -17,27 +17,32 @@ protocol ScreenshotLauncherPresenting: AnyObject {
 final class ScreenshotCoordinator: ScreenshotActionRouting {
     typealias ServiceInvalidation = @Sendable () async -> Void
     typealias ShortcutAction = @MainActor @Sendable () -> Void
+    typealias SelectionFactory = @MainActor () -> any ScreenshotSelectionPresenting
 
     private let authorization: any ScreenRecordingAuthorizing
     private let captureService: any ScreenshotCapturing
+    private let selectionFactory: SelectionFactory
     private let invalidateService: ServiceInvalidation
     private let registerShortcuts: ShortcutAction
     private let unregisterShortcuts: ShortcutAction
 
     private weak var launcher: (any ScreenshotLauncherPresenting)?
-    private var captureTask: Task<Void, any Error>?
+    private var captureTask: Task<Bool, any Error>?
     private var activeCaptureID: UUID?
+    private var activeSelectionPresenter: (any ScreenshotSelectionPresenting)?
     private var isEnabled = true
 
     init(
         authorization: any ScreenRecordingAuthorizing,
         captureService: any ScreenshotCapturing,
+        selectionFactory: @escaping SelectionFactory = { SelectionOverlayController() },
         invalidateService: @escaping ServiceInvalidation = {},
         registerShortcuts: @escaping ShortcutAction = {},
         unregisterShortcuts: @escaping ShortcutAction = {}
     ) {
         self.authorization = authorization
         self.captureService = captureService
+        self.selectionFactory = selectionFactory
         self.invalidateService = invalidateService
         self.registerShortcuts = registerShortcuts
         self.unregisterShortcuts = unregisterShortcuts
@@ -95,6 +100,7 @@ final class ScreenshotCoordinator: ScreenshotActionRouting {
     func deactivate() async {
         guard isEnabled else { return }
         isEnabled = false
+        activeSelectionPresenter?.cancel()
         captureTask?.cancel()
         unregisterShortcuts()
         await invalidateService()
@@ -111,17 +117,36 @@ final class ScreenshotCoordinator: ScreenshotActionRouting {
         }
 
         let captureID = UUID()
-        let task = Task { try await captureService.capturePrimaryDisplay() }
+        let presenter = selectionFactory()
+        activeSelectionPresenter = presenter
+        let captureService = captureService
+        let task = Task { @MainActor in
+            let content = try await captureService.availableSelectionContent()
+            guard let target = await presenter.select(from: content) else {
+                return false
+            }
+            try Task.checkCancellation()
+            let request = ScreenshotCaptureRequest(
+                mode: Self.mode(for: target),
+                target: target
+            )
+            try await captureService.capture(request)
+            return true
+        }
         activeCaptureID = captureID
         captureTask = task
 
         do {
-            try await withTaskCancellationHandler {
+            let didCapture = try await withTaskCancellationHandler {
                 try await task.value
             } onCancel: {
                 task.cancel()
+                Task { @MainActor in presenter.cancel() }
             }
             finishCapture(id: captureID)
+            if !didCapture, shouldRestoreLauncher {
+                launcher?.showLauncher()
+            }
             return .completed
         } catch {
             finishCapture(id: captureID)
@@ -132,8 +157,24 @@ final class ScreenshotCoordinator: ScreenshotActionRouting {
         }
     }
 
+    private static func mode(for target: ScreenshotCaptureTarget) -> ScreenshotCaptureMode {
+        switch target {
+        case .region:
+            .region
+        case .window:
+            .window
+        case .display:
+            .fullScreen
+        case .allDisplays:
+            .allDisplays
+        case .interactive:
+            .region
+        }
+    }
+
     private func finishCapture(id: UUID) {
         guard activeCaptureID == id else { return }
+        activeSelectionPresenter = nil
         activeCaptureID = nil
         captureTask = nil
     }

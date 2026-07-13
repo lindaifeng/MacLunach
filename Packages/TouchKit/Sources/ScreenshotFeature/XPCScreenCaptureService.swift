@@ -8,11 +8,19 @@ public actor XPCScreenCaptureService: ScreenshotCapturing {
         self.client = client
     }
 
+    public func availableSelectionContent() async throws -> ScreenshotSelectionContent {
+        try await client.availableSelectionContent()
+    }
+
+    public func capture(_ request: ScreenshotCaptureRequest) async throws {
+        _ = try await client.capture(request)
+    }
+
     public func capturePrimaryDisplay() async throws {
         let request = ScreenshotCaptureRequest(
             mode: .fullScreen,
             target: .display(displayID: CGMainDisplayID())
         )
-        _ = try await client.capture(request)
+        try await capture(request)
     }
 }

@@ -97,6 +97,19 @@ public struct ScreenshotWindowDescriptor: Codable, Equatable, Sendable, Identifi
     }
 }
 
+public struct ScreenshotSelectionContent: Codable, Equatable, Sendable {
+    public var displays: [ScreenshotDisplayDescriptor]
+    public var windows: [ScreenshotWindowDescriptor]
+
+    public init(
+        displays: [ScreenshotDisplayDescriptor],
+        windows: [ScreenshotWindowDescriptor]
+    ) {
+        self.displays = displays
+        self.windows = windows
+    }
+}
+
 public enum ScreenshotCaptureTarget: Codable, Equatable, Sendable {
     case interactive
     case region(displayID: UInt32, rect: ScreenshotRect)

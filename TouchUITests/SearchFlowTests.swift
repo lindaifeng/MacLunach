@@ -168,7 +168,7 @@ final class SearchFlowTests: XCTestCase {
     }
 
     private func actionLogURL() -> URL {
-        FileManager.default.temporaryDirectory
+        URL(fileURLWithPath: "/tmp", isDirectory: true)
             .appendingPathComponent("TouchSearchAction-\(UUID().uuidString).log")
     }
 

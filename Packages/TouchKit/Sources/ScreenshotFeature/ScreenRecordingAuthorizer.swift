@@ -3,7 +3,19 @@ import CoreGraphics
 import Foundation
 
 public protocol ScreenshotCapturing: Sendable {
+    func availableSelectionContent() async throws -> ScreenshotSelectionContent
+    func capture(_ request: ScreenshotCaptureRequest) async throws
     func capturePrimaryDisplay() async throws
+}
+
+public extension ScreenshotCapturing {
+    func availableSelectionContent() async throws -> ScreenshotSelectionContent {
+        throw ScreenshotFeatureError.targetUnavailable
+    }
+
+    func capture(_ request: ScreenshotCaptureRequest) async throws {
+        try await capturePrimaryDisplay()
+    }
 }
 
 @MainActor

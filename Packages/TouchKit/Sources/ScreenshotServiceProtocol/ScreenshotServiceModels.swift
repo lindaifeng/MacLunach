@@ -17,6 +17,10 @@ public struct ScreenshotServiceAction: Codable, Equatable, Sendable {
 
     public static let ping = ScreenshotServiceAction(name: "ping", isIdempotent: true)
     public static let health = ScreenshotServiceAction(name: "health", isIdempotent: true)
+    public static let availableContent = ScreenshotServiceAction(
+        name: "availableContent",
+        isIdempotent: true
+    )
 
     public static func custom(name: String, isIdempotent: Bool) -> Self {
         .init(name: name, isIdempotent: isIdempotent)
