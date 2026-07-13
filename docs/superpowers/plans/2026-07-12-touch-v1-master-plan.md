@@ -1,6 +1,6 @@
 # 触达 V1 总体实施路线图
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this roadmap in the current task. The user explicitly prohibits subagents. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **执行说明：** 由当前模型依据路线图自主规划并执行；不使用 Superpowers 技能或子代理。持续性工程规则仍用 checkbox（`- [ ]`）表示。
 
 **Goal:** 交付一个原生、丝滑、插件隔离的 macOS 桌面启动器，包含应用/文件搜索、三个功能插件、截图工作流、Finder 超级右键、三套主题和完整设置中心。
 
@@ -13,6 +13,8 @@
 ## 1. 阶段拆分
 
 ### 阶段一：原生壳层与插件基础
+
+**状态：已完成。** 验证记录：`docs/verification/phase-1-foundation.md`。
 
 详细计划：`docs/superpowers/plans/2026-07-12-touch-phase-1-foundation.md`
 
@@ -30,7 +32,9 @@
 
 ### 阶段二：应用与文件搜索
 
-详细计划将在阶段一代码通过验收后创建为 `docs/superpowers/plans/2026-07-12-touch-phase-2-search.md`。
+**状态：已完成。** 验证记录：`docs/verification/phase-2-search.md`。
+
+详细计划：`docs/superpowers/plans/2026-07-12-touch-phase-2-search.md`。
 
 交付：
 
@@ -42,6 +46,8 @@
 验收门槛：100 万索引记录查询 P95 小于 50ms，索引过程不阻塞启动器，文件变化正确增删改。
 
 ### 阶段三：截图、标注与钉图
+
+**状态：待正式计划与既有实现差距审计。**
 
 详细计划将在阶段二通过验收后创建为 `docs/superpowers/plans/2026-07-12-touch-phase-3-screenshot.md`。
 
@@ -57,6 +63,8 @@
 
 ### 阶段四：超级右键
 
+**状态：待阶段依赖满足后开始。**
+
 详细计划将在阶段三通过验收后创建为 `docs/superpowers/plans/2026-07-12-touch-phase-4-super-right.md`。
 
 交付：
@@ -70,6 +78,8 @@
 
 ### 阶段五：系统集成与更新
 
+**状态：待阶段依赖满足后开始。**
+
 详细计划将在阶段四通过验收后创建为 `docs/superpowers/plans/2026-07-12-touch-phase-5-system-integration.md`。
 
 交付：
@@ -82,6 +92,8 @@
 验收门槛：全新安装、升级、权限拒绝、更新失败和数据迁移路径均可恢复。
 
 ### 阶段六：发布质量验收
+
+**状态：待阶段依赖满足后开始。**
 
 详细计划将在阶段五通过验收后创建为 `docs/superpowers/plans/2026-07-12-touch-phase-6-release.md`。
 

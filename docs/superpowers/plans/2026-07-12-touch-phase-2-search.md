@@ -1,6 +1,8 @@
 # 触达阶段二：应用与文件搜索 Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use executing-plans to implement this plan task-by-task. The user explicitly prohibits subagents. Steps use checkbox (- [ ]) syntax for tracking.
+**状态（2026-07-13）：已完成。** 自动化、双架构 Release、性能与真实 macOS 操作验收均已完成；证据见 `docs/verification/phase-2-search.md`。
+
+> **执行说明：** 由当前模型自主规划并逐项执行；不使用 Superpowers 技能或子代理。步骤使用 checkbox 跟踪。
 
 **Goal:** 在不阻塞启动器的前提下交付应用启动、本地文件索引、键盘搜索与 Finder 定位。
 
@@ -45,7 +47,7 @@
 - Create: Packages/TouchKit/Sources/TouchCore/SearchRanking.swift
 - Create: Packages/TouchKit/Tests/TouchCoreTests/SearchRankingTests.swift
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
     @Test func exactAndPrefixMatchesPrecedeFuzzyMatches() {
         let results = [
@@ -61,13 +63,13 @@
         #expect(SearchRanking.score(item, query: "fd") > 0)
     }
 
-- [ ] **Step 2: 确认测试失败**
+- [x] **Step 2: 确认测试失败**
 
 Run: swift test --package-path Packages/TouchKit --filter SearchRankingTests
 
 Expected: FAIL，因为 SearchResult 和 SearchRanking 尚不存在。
 
-- [ ] **Step 3: 实现最小模型和排序器**
+- [x] **Step 3: 实现最小模型和排序器**
 
     public enum SearchKind: Sendable { case application, file }
 
@@ -95,7 +97,7 @@ Expected: FAIL，因为 SearchResult 和 SearchRanking 尚不存在。
 
 评分顺序固定为完全匹配、前缀、拼音/首字母、子序列模糊匹配，再叠加调用方给出的最近使用与频率分数；空查询返回空数组。
 
-- [ ] **Step 4: 验证并提交**
+- [x] **Step 4: 验证并提交**
 
 Run: swift test --package-path Packages/TouchKit --filter SearchRankingTests
 
@@ -110,7 +112,7 @@ Expected: PASS。
 - Create: Packages/TouchKit/Sources/TouchCore/FileIndexStore.swift
 - Create: Packages/TouchKit/Tests/TouchCoreTests/FileIndexStoreTests.swift
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
     @Test func storeFindsPrefixAndPartialFileName() async throws {
         let store = try FileIndexStore.temporary()
@@ -128,13 +130,13 @@ Expected: PASS。
         #expect(try await store.search("", limit: 10).map(\.path) == ["/b/two.txt"])
     }
 
-- [ ] **Step 2: 确认测试失败**
+- [x] **Step 2: 确认测试失败**
 
 Run: swift test --package-path Packages/TouchKit --filter FileIndexStoreTests
 
 Expected: FAIL，因为索引存储不存在。
 
-- [ ] **Step 3: 实现 actor 隔离的数据库**
+- [x] **Step 3: 实现 actor 隔离的数据库**
 
 建立 files 表（path 唯一、root_path、file_name、normalized_name、content_type、size、created_at、modified_at、is_directory）和 roots 表；对 normalized_name、root_path 建索引。所有 SQL 使用 bind 参数；查询先以 LIKE 限定候选，再交给 SearchRanking 排序。
 
@@ -147,7 +149,7 @@ Expected: FAIL，因为索引存储不存在。
 
 遇到 SQLITE_CORRUPT 时原子移动旧库到 file-index.corrupt-timestamp.sqlite，创建新库并返回 needsRebuild，绝不让文件索引错误使应用搜索失效。
 
-- [ ] **Step 4: 验证并提交**
+- [x] **Step 4: 验证并提交**
 
 Run: swift test --package-path Packages/TouchKit --filter FileIndexStoreTests
 
@@ -164,7 +166,7 @@ Expected: PASS。
 - Create: Packages/TouchKit/Tests/TouchCoreTests/FileIndexScannerTests.swift
 - Create: Packages/TouchKit/Tests/TouchCoreTests/FileEventMonitorTests.swift
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
     @Test func scannerExcludesCachesAndTrash() async throws {
         let scan = try await FileIndexScanner.scan(root: fixtureRoot, exclusions: [.cacheDirectories, .trash])
@@ -175,13 +177,13 @@ Expected: PASS。
         #expect(FileEventMonitor.coalescedRoots(["/a/b/one", "/a/b/two", "/a/c"]) == ["/a/b", "/a/c"])
     }
 
-- [ ] **Step 2: 确认测试失败**
+- [x] **Step 2: 确认测试失败**
 
 Run: swift test --package-path Packages/TouchKit --filter FileIndex
 
 Expected: FAIL，因为扫描器和事件监控器不存在。
 
-- [ ] **Step 3: 实现后台工作和局部重扫**
+- [x] **Step 3: 实现后台工作和局部重扫**
 
 FileIndexScanner 用 FileManager.enumerator 在非主 actor 扫描，跳过 .Trash、Library/Caches、系统根、显式排除与无权限目录；每 500 项写入并经 AsyncStream<FileIndexProgress> 上报。监控器遇到 mustScanSubDirs、userDropped 或 kernelDropped 时请求根目录重扫；普通事件只 upsert 或删除对应 URL。Spotlight 只补充标签、内容类型和 iCloud 占位状态，不读取正文。
 
@@ -192,7 +194,7 @@ FileIndexScanner 用 FileManager.enumerator 在非主 actor 扫描，跳过 .Tra
         func stop()
     }
 
-- [ ] **Step 4: 验证并提交**
+- [x] **Step 4: 验证并提交**
 
 Run: swift test --package-path Packages/TouchKit --filter FileIndex
 
@@ -208,7 +210,7 @@ Expected: PASS。
 - Create: Packages/TouchKit/Tests/TouchCoreTests/ApplicationCatalogTests.swift
 - Modify: TouchApp/App/AppDelegate.swift
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
     @Test func catalogDeduplicatesBundleIdentifiersAndPrefersUserApplication() async throws {
         let catalog = ApplicationCatalog(workspace: StubWorkspace(applications: [systemFinder, userFinder]))
@@ -219,17 +221,17 @@ Expected: PASS。
         #expect(ApplicationUsageScore(count: 3, lastLaunched: .now) > ApplicationUsageScore(count: 1, lastLaunched: .distantPast))
     }
 
-- [ ] **Step 2: 确认测试失败**
+- [x] **Step 2: 确认测试失败**
 
 Run: swift test --package-path Packages/TouchKit --filter ApplicationCatalogTests
 
 Expected: FAIL，因为 ApplicationCatalog 不存在。
 
-- [ ] **Step 3: 实现安全启动**
+- [x] **Step 3: 实现安全启动**
 
 扫描 /Applications、/System/Applications、~/Applications，并合并 Launch Services 已知 URL；以 bundle identifier 去重，缓存显示名、路径、图标键、拼音键和使用统计。启动使用 NSWorkspace.openApplication 的异步变体；成功后才更新频率。失败返回 SearchActionError.cannotOpen(path:)，不关闭面板。
 
-- [ ] **Step 4: 验证并提交**
+- [x] **Step 4: 验证并提交**
 
 Run: swift test --package-path Packages/TouchKit --filter ApplicationCatalogTests
 
@@ -249,7 +251,7 @@ Expected: PASS。
 - Modify: TouchApp/Launcher/SearchBarView.swift
 - Create: TouchUITests/SearchFlowTests.swift
 
-- [ ] **Step 1: 写失败 UI 测试**
+- [x] **Step 1: 写失败 UI 测试**
 
     func testTypingQueryReplacesCardsAndEscapeRestoresCards() {
         let app = XCUIApplication()
@@ -262,13 +264,13 @@ Expected: PASS。
         XCTAssertTrue(app.buttons["feature.me.touch.finder"].waitForExistence(timeout: 2))
     }
 
-- [ ] **Step 2: 确认测试失败**
+- [x] **Step 2: 确认测试失败**
 
 Run: xcodebuild -project Touch.xcodeproj -scheme Touch -destination 'platform=macOS' -only-testing:TouchUITests/SearchFlowTests/testTypingQueryReplacesCardsAndEscapeRestoresCards test
 
 Expected: FAIL，因为查询尚未显示结果。
 
-- [ ] **Step 3: 实现协调与系统动作**
+- [x] **Step 3: 实现协调与系统动作**
 
     @MainActor final class SearchCoordinator: ObservableObject {
         @Published private(set) var state = SearchPresentationState.idle
@@ -278,9 +280,9 @@ Expected: FAIL，因为查询尚未显示结果。
         func clearOrDismiss() -> SearchDismissal
     }
 
-每次输入取消上一个 Task，等待 40ms 后后台查询；文字存在时以 120ms 交叉淡化显示 SearchResultsView 并隐藏功能卡片，清空后恢复。Esc 首次清空、第二次向面板发送关闭通知；Up/Down 选择、Enter 打开、Command+Enter 调用 NSWorkspace.selectFile、Space 调用 QLPreviewPanel。每一行提供 search.result.<id> accessibility identifier；无结果页给出切换模式、检查范围、重建索引入口。
+每次输入取消上一个 Task，等待 40ms 后后台查询；文字存在时以 80ms 交叉淡化显示 SearchResultsView 并隐藏功能卡片，清空后恢复。Esc 首次清空、第二次向面板发送关闭通知；Up/Down 选择、Enter 打开、Command+Enter 调用 NSWorkspace.selectFile、Space 调用 QLPreviewPanel。每一行提供 search.result.<id> accessibility identifier；无结果页给出切换模式、检查范围、重建索引入口。
 
-- [ ] **Step 4: 验证并提交**
+- [x] **Step 4: 验证并提交**
 
 Run: xcodebuild -project Touch.xcodeproj -scheme Touch -destination 'platform=macOS' -only-testing:TouchUITests/SearchFlowTests test
 
@@ -297,7 +299,7 @@ Expected: PASS。
 - Modify: TouchApp/Settings/SettingsRootView.swift
 - Create: TouchUITests/SearchSettingsTests.swift
 
-- [ ] **Step 1: 写失败设置 UI 测试**
+- [x] **Step 1: 写失败设置 UI 测试**
 
     func testSearchSettingsShowIndexStateAndRebuildAction() {
         let app = XCUIApplication()
@@ -308,17 +310,17 @@ Expected: PASS。
         XCTAssertTrue(app.buttons["search.rebuild-index"].exists)
     }
 
-- [ ] **Step 2: 确认测试失败**
+- [x] **Step 2: 确认测试失败**
 
 Run: xcodebuild -project Touch.xcodeproj -scheme Touch -destination 'platform=macOS' -only-testing:TouchUITests/SearchSettingsTests test
 
 Expected: FAIL，因为搜索设置还是占位内容。
 
-- [ ] **Step 3: 实现用户主动授权和索引诊断**
+- [x] **Step 3: 实现用户主动授权和索引诊断**
 
 显示根目录、扫描文件数、数据库大小、最后更新时间、状态与排除规则。添加目录仅在用户点击时调起 NSOpenPanel；移除目录调用 FileIndexStore.delete(root:)。重建先停止事件监控、隔离数据库、重扫根目录，运行时显示正在重建，但应用模式始终可用。诊断默认只显示根目录名称和计数，不输出完整文件路径。
 
-- [ ] **Step 4: 验证并提交**
+- [x] **Step 4: 验证并提交**
 
 Run: xcodebuild -project Touch.xcodeproj -scheme Touch -destination 'platform=macOS' -only-testing:TouchUITests/SearchSettingsTests test
 
@@ -334,7 +336,7 @@ Expected: PASS。
 - Create: docs/verification/phase-2-search.md
 - Modify: docs/superpowers/plans/2026-07-12-touch-v1-master-plan.md
 
-- [ ] **Step 1: 写性能门槛脚本**
+- [x] **Step 1: 写性能门槛脚本**
 
 脚本创建临时 SQLite，确定性插入 1,000,000 条记录，预热 10 次，测量 100 次 design 与 fd 查询，输出 P50/P95；P95 大于 50ms 时以非零状态退出。
 
@@ -343,13 +345,13 @@ Expected: PASS。
       exit 1
     fi
 
-- [ ] **Step 2: 记录基线并优化查询计划**
+- [x] **Step 2: 记录基线并优化查询计划**
 
 Run: Scripts/measure-search.sh
 
 Expected: 输出 P50/P95；若超过阈值，使用 EXPLAIN QUERY PLAN 确认命中 normalized_name 索引，再增加覆盖索引 (normalized_name, path, file_name)。不得修改阈值、扩大结果上限或跳过百万级基准。
 
-- [ ] **Step 3: 跑阶段质量门槛**
+- [x] **Step 3: 跑阶段质量门槛**
 
     swift test --package-path Packages/TouchKit
     xcodegen generate
@@ -362,11 +364,11 @@ Expected: 输出 P50/P95；若超过阈值，使用 EXPLAIN QUERY PLAN 确认命
 
 Expected: 所有命令成功，查询 P95 小于 50ms，工作区干净。
 
-- [ ] **Step 4: 用 @电脑实机逐项复测**
+- [x] **Step 4: 用 @电脑实机逐项复测**
 
 验证 Option+Space、应用搜索 Finder 并 Enter 启动、Tab 后文件搜索、Up/Down、Enter、Command+Enter、Space、首次/再次 Esc、添加和移除临时授权目录、创建/改名/删除文件后的索引更新和重建。每次操作后重新读取 UI；问题先加回归测试再修复，修复后重跑本任务全部质量门槛。
 
-- [ ] **Step 5: 记录验收并提交**
+- [x] **Step 5: 记录验收并提交**
 
     git add Scripts docs
     git commit -m "docs: record phase two search verification"
@@ -374,7 +376,7 @@ Expected: 所有命令成功，查询 P95 小于 50ms，工作区干净。
 ## 计划自检
 
 - 规格第 6 节的应用发现、拼音与使用频率、SQLite 文件名索引、渐进扫描、FSEvents、Spotlight 补充、外置卷选择、状态、重建和失效处理分别映射到 Task 1–7；没有正文全文索引。
-- 规格第 5.3 节的 Tab、内容保留、120ms 过渡、键盘导航、Finder 定位、Quick Look 与空状态映射到 Task 5，并在 Task 7 真机复验。
+- 规格第 5.3 节的 Tab、内容保留、80ms 过渡、键盘导航、Finder 定位、Quick Look 与空状态映射到 Task 5，并在 Task 7 真机复验。
 - 搜索保留为核心模块，不向功能插件共享可变状态；SQLite 和 UI 主线程边界明确。
 - 已检查计划中没有 TODO、TBD、implement later、fill in details 或 Similar to 占位语；所有任务均列出文件、失败测试、验证命令与提交点。
 
