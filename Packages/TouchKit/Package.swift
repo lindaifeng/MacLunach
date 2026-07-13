@@ -9,6 +9,7 @@ let package = Package(
         .library(name: "TouchCore", targets: ["TouchCore"]),
         .library(name: "FinderFeature", targets: ["FinderFeature"]),
         .library(name: "ScreenshotFeature", targets: ["ScreenshotFeature"]),
+        .library(name: "ScreenshotServiceProtocol", targets: ["ScreenshotServiceProtocol"]),
         .library(name: "SuperRightFeature", targets: ["SuperRightFeature"]),
         .executable(name: "SearchBenchmark", targets: ["SearchBenchmark"])
     ],
@@ -20,12 +21,19 @@ let package = Package(
             linkerSettings: [.linkedLibrary("sqlite3")]
         ),
         .target(name: "FinderFeature", dependencies: ["TouchFeatureAPI"]),
-        .target(name: "ScreenshotFeature", dependencies: ["TouchFeatureAPI"]),
+        .target(name: "ScreenshotServiceProtocol"),
+        .target(
+            name: "ScreenshotFeature",
+            dependencies: ["TouchFeatureAPI", "ScreenshotServiceProtocol"]
+        ),
         .target(name: "SuperRightFeature", dependencies: ["TouchFeatureAPI"]),
         .executableTarget(name: "SearchBenchmark", dependencies: ["TouchCore"]),
         .testTarget(name: "TouchFeatureAPITests", dependencies: ["TouchFeatureAPI"]),
         .testTarget(name: "TouchCoreTests", dependencies: ["TouchCore", "TouchFeatureAPI"]),
-        .testTarget(name: "ScreenshotFeatureTests", dependencies: ["ScreenshotFeature", "TouchFeatureAPI"]),
+        .testTarget(
+            name: "ScreenshotFeatureTests",
+            dependencies: ["ScreenshotFeature", "ScreenshotServiceProtocol", "TouchFeatureAPI"]
+        ),
         .testTarget(name: "FeaturePluginTests", dependencies: ["FinderFeature", "ScreenshotFeature", "SuperRightFeature", "TouchFeatureAPI"])
     ]
 )

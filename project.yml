@@ -30,6 +30,8 @@ targets:
         product: ScreenshotFeature
       - package: TouchKit
         product: SuperRightFeature
+      - target: ScreenshotService
+        embed: true
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: me.touch.launcher
@@ -41,6 +43,32 @@ targets:
       testTargets:
         - TouchTests
         - TouchUITests
+  ScreenshotService:
+    type: xpc-service
+    platform: macOS
+    deploymentTarget: '14.0'
+    sources:
+      - path: Services/ScreenshotService
+        excludes:
+          - Info.plist
+    info:
+      path: Services/ScreenshotService/Info.plist
+      properties:
+        XPCService:
+          RunLoopType: NSRunLoop
+          ServiceType: Application
+    dependencies:
+      - package: TouchKit
+        product: ScreenshotServiceProtocol
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: me.touch.launcher.ScreenshotService
+        PRODUCT_NAME: ScreenshotService
+        MARKETING_VERSION: 1.0
+        CURRENT_PROJECT_VERSION: 1
+        CODE_SIGNING_ALLOWED: YES
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
   TouchTests:
     type: bundle.unit-test
     platform: macOS
@@ -49,6 +77,8 @@ targets:
       - TouchTests
     dependencies:
       - target: Touch
+      - package: TouchKit
+        product: ScreenshotFeature
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: me.touch.launcher.tests

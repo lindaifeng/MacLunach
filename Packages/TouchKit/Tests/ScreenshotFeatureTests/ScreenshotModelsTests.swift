@@ -59,7 +59,14 @@ import Testing
         .encodingFailed,
         .storageFailed(message: "disk full"),
         .migrationFailed(message: "schema 2"),
-        .incompatibleProtocol(expected: 2, received: 3)
+        .incompatibleProtocol(expected: 2, received: 3),
+        .responseMismatch(
+            expected: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!,
+            received: UUID(uuidString: "00000000-0000-0000-0000-000000000002")!
+        ),
+        .unsupportedAction(action: "capture"),
+        .serviceFailed(message: "unavailable"),
+        .serviceIsolated
     ]
 
     for error in errors {

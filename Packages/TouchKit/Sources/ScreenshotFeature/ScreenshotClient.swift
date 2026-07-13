@@ -1,0 +1,434 @@
+import Foundation
+import ScreenshotServiceProtocol
+
+public protocol ScreenshotServiceConnection: AnyObject, Sendable {
+    var interruptionHandler: (@Sendable () -> Void)? { get set }
+    var invalidationHandler: (@Sendable () -> Void)? { get set }
+
+    func resume()
+    func perform(
+        requestData: Data,
+        reply: @escaping @Sendable (Data) -> Void,
+        failure: @escaping @Sendable (Error) -> Void
+    )
+    func cancel(requestID: String)
+    func invalidate()
+}
+
+public enum ScreenshotClientHealthState: Equatable, Sendable {
+    case healthy
+    case isolated(consecutiveFailures: Int)
+}
+
+public actor ScreenshotClient {
+    public typealias ConnectionFactory = @Sendable () -> any ScreenshotServiceConnection
+
+    private struct ConnectionRecord {
+        let id: ObjectIdentifier
+        let connection: any ScreenshotServiceConnection
+    }
+
+    private struct PendingRequest {
+        let connectionID: ObjectIdentifier
+        let continuation: CheckedContinuation<ScreenshotServiceResponse, any Error>
+        let timeoutTask: Task<Void, Never>
+    }
+
+    private let connectionFactory: ConnectionFactory
+    private var connectionRecord: ConnectionRecord?
+    private var pendingRequests: [UUID: PendingRequest] = [:]
+    private var consecutiveFailures = 0
+
+    public private(set) var healthState: ScreenshotClientHealthState = .healthy
+
+    public init(connectionFactory: @escaping ConnectionFactory) {
+        self.connectionFactory = connectionFactory
+    }
+
+    public init(serviceName: String = ScreenshotXPCInterface.serviceName) {
+        self.connectionFactory = {
+            LiveScreenshotServiceConnection(serviceName: serviceName)
+        }
+    }
+
+    public func ping(timeout: Duration = .seconds(2)) async throws -> ScreenshotPong {
+        let payload = try await perform(action: .ping, timeout: timeout)
+        guard case let .pong(pong) = payload else {
+            throw ScreenshotFeatureError.serviceFailed(message: "ping returned an unexpected payload")
+        }
+        return pong
+    }
+
+    public func healthCheck(timeout: Duration = .seconds(2)) async throws -> ScreenshotServiceHealth {
+        let payload = try await perform(action: .health, timeout: timeout, permitsIsolation: true)
+        guard case let .health(health) = payload else {
+            throw ScreenshotFeatureError.serviceFailed(message: "health returned an unexpected payload")
+        }
+        return health
+    }
+
+    public func perform(
+        action: ScreenshotServiceAction,
+        timeout: Duration = .seconds(2)
+    ) async throws -> ScreenshotServiceResponsePayload {
+        try await perform(action: action, timeout: timeout, permitsIsolation: false)
+    }
+
+    private func perform(
+        action: ScreenshotServiceAction,
+        timeout: Duration,
+        permitsIsolation: Bool
+    ) async throws -> ScreenshotServiceResponsePayload {
+        if !permitsIsolation, case .isolated = healthState {
+            throw ScreenshotFeatureError.serviceIsolated
+        }
+
+        let request = ScreenshotServiceRequest(action: action)
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: timeout)
+        do {
+            let response: ScreenshotServiceResponse
+            do {
+                response = try await performAttempt(request: request, timeout: timeout)
+            } catch let error as ScreenshotFeatureError
+                where error == .serviceInterrupted && action.isIdempotent {
+                // launchd may still be retiring the crashed service when interruption arrives.
+                // A bounded backoff lets a fresh embedded-service instance become launchable.
+                var remaining = clock.now.duration(to: deadline)
+                guard remaining > .zero else {
+                    throw ScreenshotFeatureError.serviceTimedOut
+                }
+                do {
+                    try await Task.sleep(for: min(remaining, .milliseconds(100)))
+                } catch {
+                    throw ScreenshotFeatureError.cancelled
+                }
+                remaining = clock.now.duration(to: deadline)
+                guard remaining > .zero else {
+                    throw ScreenshotFeatureError.serviceTimedOut
+                }
+                response = try await performAttempt(request: request, timeout: remaining)
+            }
+
+            let payload = try validatedPayload(from: response, expectedRequestID: request.id)
+            try validate(payload: payload, for: action)
+            consecutiveFailures = 0
+            healthState = .healthy
+            return payload
+        } catch {
+            let featureError = normalize(error)
+            if featureError != .cancelled {
+                recordFailure()
+            }
+            throw featureError
+        }
+    }
+
+    private func performAttempt(
+        request: ScreenshotServiceRequest,
+        timeout: Duration
+    ) async throws -> ScreenshotServiceResponse {
+        let record = makeConnectionIfNeeded()
+        let requestData: Data
+        do {
+            requestData = try JSONEncoder().encode(request)
+        } catch {
+            throw ScreenshotFeatureError.serviceFailed(message: "request encoding failed: \(error)")
+        }
+
+        return try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                let timeoutTask = Task { [weak self] in
+                    do {
+                        try await Task.sleep(for: timeout)
+                    } catch {
+                        return
+                    }
+                    await self?.requestTimedOut(
+                        requestID: request.id,
+                        connectionID: record.id
+                    )
+                }
+                pendingRequests[request.id] = PendingRequest(
+                    connectionID: record.id,
+                    continuation: continuation,
+                    timeoutTask: timeoutTask
+                )
+                if Task<Never, Never>.isCancelled {
+                    Task { [weak self] in
+                        await self?.cancelRequest(
+                            requestID: request.id,
+                            connectionID: record.id
+                        )
+                    }
+                }
+
+                record.connection.perform(
+                    requestData: requestData,
+                    reply: { [weak self] data in
+                        guard let self else { return }
+                        Task {
+                            await self.receiveReply(
+                                data,
+                                requestID: request.id,
+                                connectionID: record.id
+                            )
+                        }
+                    },
+                    failure: { [weak self] _ in
+                        guard let self else { return }
+                        Task {
+                            await self.connectionFailed(connectionID: record.id)
+                        }
+                    }
+                )
+            }
+        } onCancel: {
+            Task { [weak self] in
+                await self?.cancelRequest(requestID: request.id, connectionID: record.id)
+            }
+        }
+    }
+
+    private func makeConnectionIfNeeded() -> ConnectionRecord {
+        if let connectionRecord {
+            return connectionRecord
+        }
+
+        let connection = connectionFactory()
+        let id = ObjectIdentifier(connection)
+        connection.interruptionHandler = { [weak self] in
+            guard let self else { return }
+            Task { await self.connectionInterrupted(connectionID: id) }
+        }
+        connection.invalidationHandler = { [weak self] in
+            guard let self else { return }
+            Task { await self.connectionInterrupted(connectionID: id) }
+        }
+        connection.resume()
+
+        let record = ConnectionRecord(id: id, connection: connection)
+        connectionRecord = record
+        return record
+    }
+
+    private func receiveReply(
+        _ data: Data,
+        requestID: UUID,
+        connectionID: ObjectIdentifier
+    ) {
+        guard let pending = takePending(requestID: requestID, connectionID: connectionID) else {
+            return
+        }
+
+        do {
+            let response = try JSONDecoder().decode(ScreenshotServiceResponse.self, from: data)
+            pending.continuation.resume(returning: response)
+        } catch {
+            pending.continuation.resume(throwing: ScreenshotFeatureError.serviceFailed(
+                message: "response decoding failed: \(error)"
+            ))
+        }
+    }
+
+    private func requestTimedOut(requestID: UUID, connectionID: ObjectIdentifier) {
+        guard let pending = takePending(requestID: requestID, connectionID: connectionID) else {
+            return
+        }
+        if connectionRecord?.id == connectionID {
+            let connection = connectionRecord?.connection
+            connectionRecord = nil
+            connection?.cancel(requestID: requestID.uuidString)
+            connection?.invalidate()
+        }
+        pending.continuation.resume(throwing: ScreenshotFeatureError.serviceTimedOut)
+    }
+
+    private func cancelRequest(requestID: UUID, connectionID: ObjectIdentifier) {
+        guard let pending = takePending(requestID: requestID, connectionID: connectionID) else {
+            return
+        }
+        if connectionRecord?.id == connectionID {
+            connectionRecord?.connection.cancel(requestID: requestID.uuidString)
+        }
+        pending.continuation.resume(throwing: ScreenshotFeatureError.cancelled)
+    }
+
+    private func connectionFailed(connectionID: ObjectIdentifier) {
+        finishConnection(connectionID: connectionID, error: .serviceInterrupted)
+    }
+
+    private func connectionInterrupted(connectionID: ObjectIdentifier) {
+        finishConnection(connectionID: connectionID, error: .serviceInterrupted)
+    }
+
+    private func finishConnection(
+        connectionID: ObjectIdentifier,
+        error: ScreenshotFeatureError
+    ) {
+        if connectionRecord?.id == connectionID {
+            let interruptedConnection = connectionRecord?.connection
+            connectionRecord = nil
+            interruptedConnection?.invalidate()
+        }
+        let requestIDs = pendingRequests.compactMap { requestID, pending in
+            pending.connectionID == connectionID ? requestID : nil
+        }
+        for requestID in requestIDs {
+            guard let pending = pendingRequests.removeValue(forKey: requestID) else { continue }
+            pending.timeoutTask.cancel()
+            pending.continuation.resume(throwing: error)
+        }
+    }
+
+    private func takePending(
+        requestID: UUID,
+        connectionID: ObjectIdentifier
+    ) -> PendingRequest? {
+        guard pendingRequests[requestID]?.connectionID == connectionID,
+              let pending = pendingRequests.removeValue(forKey: requestID) else {
+            return nil
+        }
+        pending.timeoutTask.cancel()
+        return pending
+    }
+
+    private func validatedPayload(
+        from response: ScreenshotServiceResponse,
+        expectedRequestID: UUID
+    ) throws -> ScreenshotServiceResponsePayload {
+        guard response.requestID == expectedRequestID else {
+            throw ScreenshotFeatureError.responseMismatch(
+                expected: expectedRequestID,
+                received: response.requestID
+            )
+        }
+        guard response.protocolVersion == ScreenshotServiceProtocolVersion.current else {
+            throw ScreenshotFeatureError.incompatibleProtocol(
+                expected: ScreenshotServiceProtocolVersion.current,
+                received: response.protocolVersion
+            )
+        }
+
+        if case let .failure(failure) = response.payload {
+            throw map(failure)
+        }
+        return response.payload
+    }
+
+    private func validate(
+        payload: ScreenshotServiceResponsePayload,
+        for action: ScreenshotServiceAction
+    ) throws {
+        switch action {
+        case .ping:
+            guard case .pong = payload else {
+                throw ScreenshotFeatureError.serviceFailed(
+                    message: "ping returned an unexpected payload"
+                )
+            }
+        case .health:
+            guard case .health = payload else {
+                throw ScreenshotFeatureError.serviceFailed(
+                    message: "health returned an unexpected payload"
+                )
+            }
+        default:
+            break
+        }
+    }
+
+    private func map(_ failure: ScreenshotServiceFailure) -> ScreenshotFeatureError {
+        switch failure {
+        case let .incompatibleProtocol(expected, received):
+            return .incompatibleProtocol(expected: expected, received: received)
+        case let .unsupportedAction(action):
+            return .unsupportedAction(action: action)
+        case let .malformedRequest(message), let .internalFailure(message):
+            return .serviceFailed(message: message)
+        case .cancelled:
+            return .cancelled
+        }
+    }
+
+    private func normalize(_ error: any Error) -> ScreenshotFeatureError {
+        if let featureError = error as? ScreenshotFeatureError {
+            return featureError
+        }
+        return .serviceFailed(message: String(describing: error))
+    }
+
+    private func recordFailure() {
+        consecutiveFailures += 1
+        if consecutiveFailures >= 3 {
+            healthState = .isolated(consecutiveFailures: consecutiveFailures)
+        }
+    }
+}
+
+public final class LiveScreenshotServiceConnection: ScreenshotServiceConnection, @unchecked Sendable {
+    private let lock = NSLock()
+    private let connection: NSXPCConnection
+    private var storedInterruptionHandler: (@Sendable () -> Void)?
+    private var storedInvalidationHandler: (@Sendable () -> Void)?
+
+    public init(serviceName: String = ScreenshotXPCInterface.serviceName) {
+        connection = NSXPCConnection(serviceName: serviceName)
+        connection.remoteObjectInterface = ScreenshotXPCInterface.make()
+        connection.interruptionHandler = { [weak self] in
+            self?.emitInterruption()
+        }
+        connection.invalidationHandler = { [weak self] in
+            self?.emitInvalidation()
+        }
+    }
+
+    public var interruptionHandler: (@Sendable () -> Void)? {
+        get { lock.withLock { storedInterruptionHandler } }
+        set { lock.withLock { storedInterruptionHandler = newValue } }
+    }
+
+    public var invalidationHandler: (@Sendable () -> Void)? {
+        get { lock.withLock { storedInvalidationHandler } }
+        set { lock.withLock { storedInvalidationHandler = newValue } }
+    }
+
+    public func resume() {
+        connection.resume()
+    }
+
+    public func perform(
+        requestData: Data,
+        reply: @escaping @Sendable (Data) -> Void,
+        failure: @escaping @Sendable (Error) -> Void
+    ) {
+        guard let proxy = connection.remoteObjectProxyWithErrorHandler(failure)
+            as? ScreenshotXPCProtocol else {
+            failure(ScreenshotFeatureError.serviceInterrupted)
+            return
+        }
+        proxy.perform(requestData: requestData, reply: reply)
+    }
+
+    public func cancel(requestID: String) {
+        guard let proxy = connection.remoteObjectProxyWithErrorHandler({ _ in })
+            as? ScreenshotXPCProtocol else {
+            return
+        }
+        proxy.cancel(requestID: requestID)
+    }
+
+    public func invalidate() {
+        connection.invalidate()
+    }
+
+    private func emitInterruption() {
+        let handler = lock.withLock { storedInterruptionHandler }
+        handler?()
+    }
+
+    private func emitInvalidation() {
+        let handler = lock.withLock { storedInvalidationHandler }
+        handler?()
+    }
+}

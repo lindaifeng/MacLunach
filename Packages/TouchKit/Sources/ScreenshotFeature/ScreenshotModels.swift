@@ -185,4 +185,8 @@ public enum ScreenshotFeatureError: Error, Codable, Equatable, Sendable {
     case storageFailed(message: String)
     case migrationFailed(message: String)
     case incompatibleProtocol(expected: Int, received: Int)
+    case responseMismatch(expected: UUID, received: UUID)
+    case unsupportedAction(action: String)
+    case serviceFailed(message: String)
+    case serviceIsolated
 }

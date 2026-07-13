@@ -185,7 +185,7 @@ Commit: `feat: define versioned screenshot models`
 - Modify: `project.yml`
 - Modify: `Scripts/check-deployment-targets.sh`
 
-- [ ] **Step 1：写失败测试**
+- [x] **Step 1：写失败测试**
 
 覆盖：
 
@@ -196,17 +196,17 @@ Commit: `feat: define versioned screenshot models`
 - 三次连续失败进入 isolated health state；成功 health check 清零计数。
 - XPC allow-list 只接受 `NSData/NSString/NSNumber/NSArray/NSDictionary` 和协议声明类型。
 
-- [ ] **Step 2：确认失败**
+- [x] **Step 2：确认失败**
 
 Run: `swift test --package-path Packages/TouchKit --filter ScreenshotClientTests`
 
 Expected: FAIL，因为协议和客户端不存在。
 
-- [ ] **Step 3：实现 ping/cancel/health 垂直链路**
+- [x] **Step 3：实现 ping/cancel/health 垂直链路**
 
 创建 `ScreenshotServiceProtocol` 产品；`@objc ScreenshotXPCProtocol` 暴露单一 `perform(requestData:reply:)` 和 `cancel(requestID:)`，具体动作在 Codable 信封内版本化。XPC Target bundle id 为 `me.touch.launcher.ScreenshotService`、部署目标 14.0，并嵌入 `触达.app/Contents/XPCServices/`。此任务只实现 ping、取消和结构化 unsupported action，不实现捕获。
 
-- [ ] **Step 4：真实 XPC 冒烟测试**
+- [x] **Step 4：真实 XPC 冒烟测试**
 
 构建 Debug 应用，确认：
 
@@ -217,7 +217,7 @@ plutil -p "$APP/Contents/XPCServices/ScreenshotService.xpc/Contents/Info.plist"
 
 从测试宿主调用真实 `ping`，杀掉服务进程后再次调用，验证客户端重连且主应用仍存活。自动化日志必须包含服务 PID 变化和同一主应用 PID。
 
-- [ ] **Step 5：共同门槛并提交**
+- [x] **Step 5：共同门槛并提交**
 
 Commit: `feat: add recoverable screenshot xpc service`
 
