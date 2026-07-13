@@ -3,7 +3,7 @@ import TouchFeatureAPI
 import XCTest
 @testable import 触达
 
-private actor StoreTestPlugin: FeaturePlugin {
+private actor StoreTestPlugin: FeaturePlugin, FeatureLifecycleHandling {
     enum Action: Sendable {
         case complete
         case fail
@@ -14,6 +14,8 @@ private actor StoreTestPlugin: FeaturePlugin {
     private let state: FeatureState
     private let action: Action
     private var performCallCount = 0
+    private var enableCallCount = 0
+    private var disableCallCount = 0
 
     init(id: String, state: FeatureState = .available, action: Action = .complete) {
         manifest = FeatureManifest(
@@ -44,6 +46,12 @@ private actor StoreTestPlugin: FeaturePlugin {
     }
 
     func callCount() -> Int { performCallCount }
+    func lifecycleCounts() -> (enabled: Int, disabled: Int) {
+        (enableCallCount, disableCallCount)
+    }
+
+    func featureDidEnable() async { enableCallCount += 1 }
+    func featureDidDisable() async { disableCallCount += 1 }
 }
 
 private final class SettingsDestinationCapture: @unchecked Sendable {
@@ -133,6 +141,42 @@ final class FeatureAreaStoreTests: XCTestCase {
 
         XCTAssertEqual(capture.featureIDs(), [plugin.manifest.id])
         XCTAssertEqual(store.states[plugin.manifest.id], .available)
+    }
+
+    func testHidingCardDoesNotDisablePluginButDisableOnlyStopsRequestedFeature() async {
+        let screenshot = StoreTestPlugin(id: "me.touch.screenshot")
+        let finder = StoreTestPlugin(id: "me.touch.finder")
+        let store = makeStore(plugins: [screenshot, finder])
+        await waitForState(of: screenshot.manifest.id, in: store)
+
+        store.setHidden(true, for: screenshot.manifest.id)
+        XCTAssertFalse(store.visiblePlugins.contains { $0.manifest.id == screenshot.manifest.id })
+        XCTAssertTrue(store.isEnabled(screenshot.manifest.id))
+        let lifecycleCountsAfterHiding = await screenshot.lifecycleCounts()
+        XCTAssertEqual(lifecycleCountsAfterHiding.disabled, 0)
+
+        await store.setEnabled(false, for: screenshot.manifest.id)
+        XCTAssertFalse(store.isEnabled(screenshot.manifest.id))
+        XCTAssertEqual(store.states[screenshot.manifest.id], .disabled)
+        let screenshotCountsAfterDisabling = await screenshot.lifecycleCounts()
+        XCTAssertEqual(screenshotCountsAfterDisabling.disabled, 1)
+        XCTAssertEqual(store.states[finder.manifest.id], .available)
+        let finderCountsAfterDisablingScreenshot = await finder.lifecycleCounts()
+        XCTAssertEqual(finderCountsAfterDisablingScreenshot.disabled, 0)
+
+        await store.setEnabled(true, for: screenshot.manifest.id)
+        XCTAssertTrue(store.isEnabled(screenshot.manifest.id))
+        XCTAssertEqual(store.states[screenshot.manifest.id], .available)
+        let screenshotCountsAfterReenabling = await screenshot.lifecycleCounts()
+        let finderCountsAfterReenablingScreenshot = await finder.lifecycleCounts()
+        XCTAssertEqual(screenshotCountsAfterReenabling.enabled, 2)
+        XCTAssertEqual(finderCountsAfterReenablingScreenshot.enabled, 1)
+    }
+
+    private func waitForState(of featureID: String, in store: FeatureAreaStore) async {
+        for _ in 0..<100 where store.states[featureID] == nil {
+            await Task.yield()
+        }
     }
 
     private func makeStore(

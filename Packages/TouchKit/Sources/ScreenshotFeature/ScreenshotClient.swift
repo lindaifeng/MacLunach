@@ -51,6 +51,24 @@ public actor ScreenshotClient {
         }
     }
 
+    /// Closes the private XPC connection and finishes every outstanding request.
+    /// A later request can establish a fresh connection after the feature is enabled again.
+    public func shutdown() {
+        let connection = connectionRecord?.connection
+        connectionRecord = nil
+        connection?.invalidate()
+
+        let pending = pendingRequests.values
+        pendingRequests.removeAll()
+        for request in pending {
+            request.timeoutTask.cancel()
+            request.continuation.resume(throwing: ScreenshotFeatureError.cancelled)
+        }
+
+        consecutiveFailures = 0
+        healthState = .healthy
+    }
+
     public func ping(timeout: Duration = .seconds(2)) async throws -> ScreenshotPong {
         let payload = try await perform(action: .ping, timeout: timeout)
         guard case let .pong(pong) = payload else {

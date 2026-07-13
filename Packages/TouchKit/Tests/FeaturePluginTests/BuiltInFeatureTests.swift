@@ -4,10 +4,34 @@ import TouchFeatureAPI
 @testable import ScreenshotFeature
 @testable import SuperRightFeature
 
-@Test func builtInFeatureManifestsAreUnique() {
+@MainActor
+private final class ScreenshotRouterStub: ScreenshotActionRouting {
+    var state: FeatureState
+    var result: FeatureActionResult
+    private(set) var actions: [ScreenshotPluginAction] = []
+    private(set) var activationCount = 0
+    private(set) var deactivationCount = 0
+
+    init(state: FeatureState = .available, result: FeatureActionResult = .completed) {
+        self.state = state
+        self.result = result
+    }
+
+    func featureState() -> FeatureState { state }
+
+    func route(_ action: ScreenshotPluginAction) async throws -> FeatureActionResult {
+        actions.append(action)
+        return result
+    }
+
+    func activate() async { activationCount += 1 }
+    func deactivate() async { deactivationCount += 1 }
+}
+
+@Test @MainActor func builtInFeatureManifestsAreUnique() {
     let plugins: [any FeaturePlugin] = [
         FinderFeaturePlugin(),
-        ScreenshotFeaturePlugin(),
+        ScreenshotFeaturePlugin(router: ScreenshotRouterStub()),
         SuperRightFeaturePlugin()
     ]
 
@@ -19,35 +43,24 @@ import TouchFeatureAPI
     #expect(await SuperRightFeaturePlugin().initialState() == .restricted(message: "需要启用 Finder 扩展"))
 }
 
-private actor ScreenshotCaptureServiceStub: ScreenshotCapturing {
-    let permission: Bool
-    private(set) var captureCount = 0
-
-    init(permission: Bool) {
-        self.permission = permission
-    }
-
-    func hasScreenRecordingPermission() async -> Bool { permission }
-
-    func capturePrimaryDisplay() async throws {
-        captureCount += 1
-    }
-}
-
-@Test func screenshotPluginCapturesWhenPermissionIsGranted() async throws {
-    let service = ScreenshotCaptureServiceStub(permission: true)
-    let plugin = ScreenshotFeaturePlugin(captureService: service)
+@Test @MainActor func screenshotPluginOnlyRoutesDefaultModeAction() async throws {
+    let router = ScreenshotRouterStub()
+    let plugin = ScreenshotFeaturePlugin(router: router)
 
     #expect(await plugin.initialState() == .available)
     #expect(try await plugin.perform() == .completed)
-    #expect(await service.captureCount == 1)
+    #expect(router.actions == [.captureDefaultMode])
 }
 
-@Test func screenshotPluginRequestsSetupWithoutCapturingWhenPermissionIsMissing() async throws {
-    let service = ScreenshotCaptureServiceStub(permission: false)
-    let plugin = ScreenshotFeaturePlugin(captureService: service)
+@Test @MainActor func screenshotPluginForwardsLifecycleWithoutPerformingAnAction() async {
+    let router = ScreenshotRouterStub(state: .restricted(message: "需要配置屏幕录制权限"))
+    let plugin = ScreenshotFeaturePlugin(router: router)
 
     #expect(await plugin.initialState() == .restricted(message: "需要配置屏幕录制权限"))
-    #expect(try await plugin.perform() == .requiresSetup(message: "请允许触达录制屏幕"))
-    #expect(await service.captureCount == 0)
+    await plugin.featureDidEnable()
+    await plugin.featureDidDisable()
+
+    #expect(router.activationCount == 1)
+    #expect(router.deactivationCount == 1)
+    #expect(router.actions.isEmpty)
 }

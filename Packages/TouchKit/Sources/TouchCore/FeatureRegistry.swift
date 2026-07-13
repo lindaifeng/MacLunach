@@ -24,6 +24,7 @@ public struct FeatureEntry: Sendable {
 
 public actor FeatureRegistry {
     private let plugins: [String: any FeaturePlugin]
+    private var activatedFeatureIDs: Set<String> = []
     public private(set) var entries: [FeatureEntry]
 
     public init(plugins: [any FeaturePlugin], preferences: FeaturePreferences = .init()) {
@@ -38,7 +39,7 @@ public actor FeatureRegistry {
             .map {
                 FeatureEntry(
                     manifest: $0.manifest,
-                    state: .unloaded,
+                    state: preferences.disabled.contains($0.manifest.id) ? .disabled : .unloaded,
                     shortcut: preferences.shortcuts[$0.manifest.id] ?? $0.manifest.defaultShortcut,
                     isVisible: !preferences.hidden.contains($0.manifest.id)
                 )
@@ -46,13 +47,11 @@ public actor FeatureRegistry {
     }
 
     public func load() async {
-        for index in entries.indices {
-            guard entries[index].state == .unloaded,
-                  let plugin = plugins[entries[index].manifest.id] else { continue }
+        for id in entries.map(\.manifest.id) {
+            guard state(for: id) == .unloaded, let plugin = plugins[id] else { continue }
+            await activateLifecycleIfNeeded(for: plugin, id: id)
             let initialState = await plugin.initialState()
-            if entries[index].state == .unloaded {
-                entries[index].state = initialState
-            }
+            setState(initialState, for: id, onlyIf: .unloaded)
         }
     }
 
@@ -61,25 +60,28 @@ public actor FeatureRegistry {
     }
 
     public func perform(id: String, timeout: Duration = .seconds(5)) async throws -> FeatureActionResult {
-        guard let index = entries.firstIndex(where: { $0.manifest.id == id }),
-              let plugin = plugins[id] else { throw FeatureRegistryError.unknownFeature }
+        guard let plugin = plugins[id], let state = state(for: id) else {
+            throw FeatureRegistryError.unknownFeature
+        }
 
-        if entries[index].state == .unloaded {
-            entries[index].state = .running
+        switch state {
+        case .unloaded:
+            setState(.running, for: id)
+            await activateLifecycleIfNeeded(for: plugin, id: id)
             let initialState = await plugin.initialState()
-            guard entries[index].state == .running else {
-                throw FeatureRegistryError.unavailable(state: entries[index].state)
+            guard self.state(for: id) == .running else {
+                throw FeatureRegistryError.unavailable(state: self.state(for: id) ?? .disabled)
             }
             guard initialState == .available else {
-                entries[index].state = initialState
+                setState(initialState, for: id)
                 throw FeatureRegistryError.unavailable(state: initialState)
             }
-        } else {
-            guard entries[index].state == .available else {
-                throw FeatureRegistryError.unavailable(state: entries[index].state)
-            }
-            entries[index].state = .running
+        case .available:
+            setState(.running, for: id)
+        case .running, .restricted, .failed, .disabled:
+            throw FeatureRegistryError.unavailable(state: state)
         }
+
         do {
             let result = try await withThrowingTaskGroup(of: FeatureActionResult.self) { group in
                 group.addTask { try await plugin.perform() }
@@ -93,24 +95,56 @@ public actor FeatureRegistry {
                 group.cancelAll()
                 return first
             }
-            entries[index].state = .available
+
+            if case .requiresSetup = result {
+                let refreshedState = await plugin.initialState()
+                setState(refreshedState, for: id, onlyIf: .running)
+            } else {
+                setState(.available, for: id, onlyIf: .running)
+            }
             return result
         } catch is CancellationError {
-            entries[index].state = .available
+            setState(.available, for: id, onlyIf: .running)
             throw CancellationError()
         } catch FeatureRegistryError.executionTimedOut {
-            entries[index].state = .failed(message: "功能响应超时，请重试。")
+            setState(.failed(message: "功能响应超时，请重试。"), for: id, onlyIf: .running)
             throw FeatureRegistryError.executionTimedOut
         } catch {
-            entries[index].state = .failed(message: "功能执行失败，请重试。")
+            setState(.failed(message: "功能执行失败，请重试。"), for: id, onlyIf: .running)
             throw FeatureRegistryError.executionFailed
         }
     }
 
     public func retry(id: String) async throws {
-        guard let index = entries.firstIndex(where: { $0.manifest.id == id }),
-              let plugin = plugins[id] else { throw FeatureRegistryError.unknownFeature }
-        entries[index].state = await plugin.initialState()
+        guard let plugin = plugins[id], let state = state(for: id) else {
+            throw FeatureRegistryError.unknownFeature
+        }
+        guard state != .disabled else {
+            throw FeatureRegistryError.unavailable(state: .disabled)
+        }
+        let refreshedState = await plugin.initialState()
+        guard self.state(for: id) != .disabled else {
+            throw FeatureRegistryError.unavailable(state: .disabled)
+        }
+        setState(refreshedState, for: id)
+    }
+
+    public func setEnabled(_ isEnabled: Bool, for id: String) async throws {
+        guard let plugin = plugins[id], let currentState = state(for: id) else {
+            throw FeatureRegistryError.unknownFeature
+        }
+
+        if isEnabled {
+            guard currentState == .disabled else { return }
+            setState(.unloaded, for: id)
+            await activateLifecycleIfNeeded(for: plugin, id: id)
+            let initialState = await plugin.initialState()
+            setState(initialState, for: id, onlyIf: .unloaded)
+        } else {
+            guard currentState != .disabled else { return }
+            setState(.disabled, for: id)
+            await deactivateLifecycle(for: plugin, id: id)
+        }
     }
 
     public func setShortcut(_ shortcut: KeyboardShortcut, for id: String) throws {
@@ -151,10 +185,41 @@ public actor FeatureRegistry {
         FeaturePreferences(
             order: entries.map(\.manifest.id),
             hidden: Set(entries.filter { !$0.isVisible }.map(\.manifest.id)),
+            disabled: Set(entries.filter { $0.state == .disabled }.map(\.manifest.id)),
             shortcuts: Dictionary(uniqueKeysWithValues: entries.compactMap { entry in
                 guard entry.shortcut != entry.manifest.defaultShortcut else { return nil }
                 return (entry.manifest.id, entry.shortcut)
             })
         )
+    }
+
+    private func activateLifecycleIfNeeded(
+        for plugin: any FeaturePlugin,
+        id: String
+    ) async {
+        guard let lifecycle = plugin as? any FeatureLifecycleHandling,
+              activatedFeatureIDs.insert(id).inserted else { return }
+        await lifecycle.featureDidEnable()
+
+        // A lifecycle hook may suspend. If the feature was disabled while it
+        // was enabling, compensate before returning so no private resource leaks.
+        if state(for: id) == .disabled, activatedFeatureIDs.remove(id) != nil {
+            await lifecycle.featureDidDisable()
+        }
+    }
+
+    private func deactivateLifecycle(
+        for plugin: any FeaturePlugin,
+        id: String
+    ) async {
+        activatedFeatureIDs.remove(id)
+        guard let lifecycle = plugin as? any FeatureLifecycleHandling else { return }
+        await lifecycle.featureDidDisable()
+    }
+
+    private func setState(_ state: FeatureState, for id: String, onlyIf expected: FeatureState? = nil) {
+        guard let index = entries.firstIndex(where: { $0.manifest.id == id }) else { return }
+        if let expected, entries[index].state != expected { return }
+        entries[index].state = state
     }
 }

@@ -206,6 +206,41 @@ import Testing
     #expect(await client.healthState == .healthy)
 }
 
+@Test func screenshotClientShutdownCancelsPendingRequestsAndAllowsFreshConnection() async throws {
+    let pendingConnection = MockScreenshotServiceConnection { _, _, _, _ in }
+    let freshConnection = MockScreenshotServiceConnection { _, data, reply, _ in
+        reply(try! makeResponse(for: data, payload: .pong(.init(processID: 55))))
+    }
+    let factory = MockScreenshotConnectionFactory([pendingConnection, freshConnection])
+    let client = ScreenshotClient(connectionFactory: { factory.makeConnection() })
+    let pendingRequest = Task {
+        try await client.ping(timeout: .seconds(1))
+    }
+
+    for _ in 0..<1_000 where pendingConnection.performCount == 0 {
+        await Task.yield()
+    }
+    #expect(pendingConnection.performCount == 1)
+
+    await client.shutdown()
+
+    do {
+        _ = try await pendingRequest.value
+        Issue.record("关闭客户端后，未完成请求不应成功")
+    } catch let error as ScreenshotFeatureError {
+        #expect(error == .cancelled)
+    } catch {
+        Issue.record("收到非预期错误类型：\(error)")
+    }
+    #expect(pendingConnection.invalidateCount == 1)
+    #expect(await client.healthState == .healthy)
+
+    let pong = try await client.ping(timeout: .seconds(1))
+    #expect(pong.processID == 55)
+    #expect(factory.makeCount == 2)
+    #expect(freshConnection.performCount == 1)
+}
+
 @Test func xpcInterfaceAllowListContainsOnlyApprovedFoundationClasses() {
     let approved = Set(["NSData", "NSString", "NSNumber", "NSArray", "NSDictionary"])
     #expect(ScreenshotXPCInterface.allowedSecureCodingClassNames.isSubset(of: approved))

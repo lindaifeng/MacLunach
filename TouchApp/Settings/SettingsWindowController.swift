@@ -10,10 +10,16 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let onClose: () -> Void
     private let navigation = SettingsNavigationModel()
 
-    init(searchEnvironment: SearchEnvironment, onClose: @escaping () -> Void) {
+    init(
+        searchEnvironment: SearchEnvironment,
+        featureStore: FeatureAreaStore,
+        screenshotEnvironment: ScreenshotEnvironment,
+        onClose: @escaping () -> Void
+    ) {
         self.onClose = onClose
         let rootView = SettingsRootView(searchEnvironment: searchEnvironment, navigation: navigation)
-            .environmentObject(FeatureAreaStore.shared)
+            .environmentObject(featureStore)
+            .environmentObject(screenshotEnvironment)
         let window = NSWindow(contentViewController: NSHostingController(rootView: rootView))
         window.title = "触达设置"
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable]

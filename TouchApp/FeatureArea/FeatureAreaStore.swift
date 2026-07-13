@@ -1,15 +1,13 @@
 import Foundation
-import SwiftUI
-import TouchCore
-import TouchFeatureAPI
 import FinderFeature
 import ScreenshotFeature
 import SuperRightFeature
+import SwiftUI
+import TouchCore
+import TouchFeatureAPI
 
 @MainActor
 final class FeatureAreaStore: ObservableObject {
-    static let shared = FeatureAreaStore()
-
     @Published private(set) var plugins: [any FeaturePlugin]
     @Published private(set) var preferences: FeaturePreferences
     @Published private(set) var states: [String: FeatureState] = [:]
@@ -22,7 +20,7 @@ final class FeatureAreaStore: ObservableObject {
 
     init(
         defaults: UserDefaults = .standard,
-        plugins injectedPlugins: [any FeaturePlugin]? = nil,
+        plugins: [any FeaturePlugin],
         notificationCenter: NotificationCenter = .default
     ) {
         preferencesStore = FeaturePreferencesStore(defaults: defaults)
@@ -32,14 +30,9 @@ final class FeatureAreaStore: ObservableObject {
         preferences = loadedPreferences
         configurations = configurationStore.load()
 
-        let builtIns: [any FeaturePlugin] = injectedPlugins ?? [
-            FinderFeaturePlugin(),
-            ScreenshotFeaturePlugin(),
-            SuperRightFeaturePlugin()
-        ]
-        registry = FeatureRegistry(plugins: builtIns, preferences: loadedPreferences)
+        registry = FeatureRegistry(plugins: plugins, preferences: loadedPreferences)
         let storedOrder = Dictionary(uniqueKeysWithValues: loadedPreferences.order.enumerated().map { ($1, $0) })
-        plugins = builtIns.sorted {
+        self.plugins = plugins.sorted {
             let left = storedOrder[$0.manifest.id] ?? (loadedPreferences.order.count + $0.manifest.defaultOrder)
             let right = storedOrder[$1.manifest.id] ?? (loadedPreferences.order.count + $1.manifest.defaultOrder)
             return left < right
@@ -49,6 +42,10 @@ final class FeatureAreaStore: ObservableObject {
 
     var visiblePlugins: [any FeaturePlugin] {
         plugins.filter { !preferences.hidden.contains($0.manifest.id) }
+    }
+
+    func isEnabled(_ featureID: String) -> Bool {
+        !preferences.disabled.contains(featureID)
     }
 
     func shortcut(for featureID: String) -> TouchFeatureAPI.KeyboardShortcut {
@@ -75,6 +72,9 @@ final class FeatureAreaStore: ObservableObject {
             updateOrder()
         }
         persistOrder()
+        Task {
+            await registry.move(from: source, to: source < destination ? destination - 1 : destination)
+        }
     }
 
     func setHidden(_ hidden: Bool, for featureID: String) {
@@ -84,6 +84,22 @@ final class FeatureAreaStore: ObservableObject {
             preferences.hidden.remove(featureID)
         }
         persist()
+        Task { try? await registry.setVisibility(!hidden, for: featureID) }
+    }
+
+    func setEnabled(_ enabled: Bool, for featureID: String) async {
+        do {
+            try await registry.setEnabled(enabled, for: featureID)
+            if enabled {
+                preferences.disabled.remove(featureID)
+            } else {
+                preferences.disabled.insert(featureID)
+            }
+            persist()
+        } catch {
+            // Unknown plugins cannot be changed by the settings UI.
+        }
+        await refreshStates()
     }
 
     func updateFinderConfiguration<Value>(
@@ -119,6 +135,7 @@ final class FeatureAreaStore: ObservableObject {
 
         preferences.shortcuts[featureID] = shortcut
         persist()
+        Task { try? await registry.setShortcut(shortcut, for: featureID) }
         return nil
     }
 
@@ -127,9 +144,14 @@ final class FeatureAreaStore: ObservableObject {
         preferences.hidden.remove(featureID)
         plugins.sort { $0.manifest.defaultOrder < $1.manifest.defaultOrder }
         persistOrder()
+        Task { try? await registry.restoreDefaults(for: featureID) }
     }
 
     func perform(_ featureID: String) async {
+        guard isEnabled(featureID) else {
+            openSettings(for: featureID)
+            return
+        }
         states[featureID] = .running
         do {
             let result = try await registry.perform(id: featureID)

@@ -1,10 +1,22 @@
 import TouchFeatureAPI
 
-public struct ScreenshotFeaturePlugin: FeaturePlugin {
-    private let captureService: any ScreenshotCapturing
+public enum ScreenshotPluginAction: Equatable, Sendable {
+    case captureDefaultMode
+}
 
-    public init(captureService: any ScreenshotCapturing = ScreenCaptureService()) {
-        self.captureService = captureService
+@MainActor
+public protocol ScreenshotActionRouting: AnyObject, Sendable {
+    func featureState() -> FeatureState
+    func route(_ action: ScreenshotPluginAction) async throws -> FeatureActionResult
+    func activate() async
+    func deactivate() async
+}
+
+public struct ScreenshotFeaturePlugin: FeaturePlugin, FeatureLifecycleHandling {
+    private let router: any ScreenshotActionRouting
+
+    public init(router: any ScreenshotActionRouting) {
+        self.router = router
     }
 
     public let manifest = FeatureManifest(
@@ -17,17 +29,18 @@ public struct ScreenshotFeaturePlugin: FeaturePlugin {
     )
 
     public func initialState() async -> FeatureState {
-        if await captureService.hasScreenRecordingPermission() {
-            return .available
-        }
-        return .restricted(message: "需要配置屏幕录制权限")
+        await router.featureState()
     }
 
     public func perform() async throws -> FeatureActionResult {
-        guard await captureService.hasScreenRecordingPermission() else {
-            return .requiresSetup(message: "请允许触达录制屏幕")
-        }
-        try await captureService.capturePrimaryDisplay()
-        return .completed
+        try await router.route(.captureDefaultMode)
+    }
+
+    public func featureDidEnable() async {
+        await router.activate()
+    }
+
+    public func featureDidDisable() async {
+        await router.deactivate()
     }
 }

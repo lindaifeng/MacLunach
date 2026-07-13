@@ -242,7 +242,7 @@ Commit: `feat: add recoverable screenshot xpc service`
 - Modify: `TouchApp/Launcher/LauncherPanelController.swift`
 - Modify: `TouchApp/Settings/SettingsWindowController.swift`
 
-- [ ] **Step 1：写失败测试**
+- [x] **Step 1：写失败测试**
 
 覆盖：
 
@@ -253,17 +253,17 @@ Commit: `feat: add recoverable screenshot xpc service`
 - Coordinator 并发收到第二次请求时取消旧流程或明确返回 busy，不叠加选择层。
 - “隐藏启动页卡片”和“停用插件”是两个状态；停用后 registry 为 disabled、关闭 XPC 连接并注销截图快捷键，重新启用只恢复截图插件。
 
-- [ ] **Step 2：确认失败**
+- [x] **Step 2：确认失败**
 
 Run: `xcodebuild -project Touch.xcodeproj -scheme Touch -destination 'platform=macOS' -derivedDataPath /tmp/touch-phase3-task3 -only-testing:TouchTests/ScreenshotCoordinatorTests test`
 
 Expected: FAIL，因为 app-level coordinator 尚不存在。
 
-- [ ] **Step 3：注入单一环境并移除业务单例依赖**
+- [x] **Step 3：注入单一环境并移除业务单例依赖**
 
 由 `AppDelegate` 创建 `ScreenshotEnvironment` 和一个 `FeatureAreaStore`，显式注入 launcher/settings；禁止截图流程新增 `static shared`。插件只依赖 `ScreenshotActionRouting`。扩展 `FeaturePreferences` 的启用状态并由 `FeatureRegistry` 作为唯一生命周期来源；隐藏卡片不停止服务，停用才停止服务。现有主进程 `capturePrimaryDisplay()` 暂留为受测试保护的回退，Task 4 完成后删除。
 
-- [ ] **Step 4：共同门槛并提交**
+- [x] **Step 4：共同门槛并提交**
 
 Commit: `refactor: route screenshot actions through coordinator`
 

@@ -9,22 +9,40 @@ public enum ScreenshotCaptureError: Error, Equatable, Sendable {
 }
 
 public protocol ScreenshotCapturing: Sendable {
-    func hasScreenRecordingPermission() async -> Bool
     func capturePrimaryDisplay() async throws
 }
 
-public enum ScreenRecordingAuthorization {
-    public static var isGranted: Bool {
-        CGPreflightScreenCaptureAccess()
+@MainActor
+public protocol ScreenRecordingAuthorizing: AnyObject, Sendable {
+    var status: ScreenshotPermissionState { get }
+    func requestAccess() -> ScreenshotPermissionState
+    func openSystemSettings()
+}
+
+@MainActor
+public final class SystemScreenRecordingAuthorizer: ScreenRecordingAuthorizing {
+    public static let requestRecordedKey = "me.touch.screenshot.screen-recording-requested.v1"
+
+    private let defaults: UserDefaults
+
+    public init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
     }
 
-    @MainActor
-    public static func request() -> Bool {
-        CGRequestScreenCaptureAccess()
+    public var status: ScreenshotPermissionState {
+        if CGPreflightScreenCaptureAccess() {
+            return .authorized
+        }
+        return defaults.bool(forKey: Self.requestRecordedKey) ? .denied : .notRequested
     }
 
-    @MainActor
-    public static func openSystemSettings() {
+    public func requestAccess() -> ScreenshotPermissionState {
+        guard status == .notRequested else { return status }
+        defaults.set(true, forKey: Self.requestRecordedKey)
+        return CGRequestScreenCaptureAccess() ? .authorized : .denied
+    }
+
+    public func openSystemSettings() {
         guard let url = URL(
             string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
         ) else { return }
@@ -35,12 +53,8 @@ public enum ScreenRecordingAuthorization {
 public actor ScreenCaptureService: ScreenshotCapturing {
     public init() {}
 
-    public func hasScreenRecordingPermission() async -> Bool {
-        ScreenRecordingAuthorization.isGranted
-    }
-
     public func capturePrimaryDisplay() async throws {
-        guard ScreenRecordingAuthorization.isGranted else {
+        guard CGPreflightScreenCaptureAccess() else {
             throw ScreenshotCaptureError.permissionDenied
         }
 

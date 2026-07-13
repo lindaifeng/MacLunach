@@ -7,7 +7,11 @@ final class LauncherPanelController: NSObject {
     private let themeStore = ThemeStore()
     private let searchCoordinator: SearchCoordinator
 
-    init(searchEnvironment: SearchEnvironment) {
+    init(
+        searchEnvironment: SearchEnvironment,
+        featureStore: FeatureAreaStore,
+        screenshotEnvironment: ScreenshotEnvironment
+    ) {
         searchCoordinator = SearchCoordinator(environment: searchEnvironment)
         panel = LauncherPanel(
             contentRect: NSRect(x: 0, y: 0, width: 1080, height: 620),
@@ -29,7 +33,8 @@ final class LauncherPanelController: NSObject {
         panel.contentView = NSHostingView(
             rootView: LauncherView(searchCoordinator: searchCoordinator)
                 .environmentObject(themeStore)
-                .environmentObject(FeatureAreaStore.shared)
+                .environmentObject(featureStore)
+                .environmentObject(screenshotEnvironment)
         )
         NotificationCenter.default.addObserver(
             self,
@@ -116,5 +121,19 @@ final class LauncherPanelController: NSObject {
         try? output.write(to: outputURL, atomically: true, encoding: .utf8)
         hide()
         NSApp.terminate(nil)
+    }
+}
+
+extension LauncherPanelController: ScreenshotLauncherPresenting {
+    var isLauncherVisible: Bool {
+        isVisible
+    }
+
+    func hideLauncher() {
+        hide()
+    }
+
+    func showLauncher() {
+        show()
     }
 }

@@ -27,6 +27,7 @@ struct FeatureDetailSettingsView: View {
                 .font(.largeTitle.bold())
 
             Form {
+                Toggle("启用此功能", isOn: enabledBinding)
                 Toggle("在启动页显示", isOn: visibleBinding)
                 ShortcutRecorderView(
                     shortcut: featureStore.shortcut(for: featureID),
@@ -70,6 +71,15 @@ struct FeatureDetailSettingsView: View {
         )
     }
 
+    private var enabledBinding: Binding<Bool> {
+        Binding(
+            get: { featureStore.isEnabled(featureID) },
+            set: { enabled in
+                Task { await featureStore.setEnabled(enabled, for: featureID) }
+            }
+        )
+    }
+
     private func finderBinding(_ keyPath: WritableKeyPath<FinderFeatureConfiguration, Bool>) -> Binding<Bool> {
         Binding(
             get: { featureStore.configurations.finder[keyPath: keyPath] },
@@ -98,7 +108,11 @@ struct FeatureDetailSettingsView: View {
 
 private struct ScreenshotPermissionSettingsView: View {
     @EnvironmentObject private var featureStore: FeatureAreaStore
-    @State private var isGranted = ScreenRecordingAuthorization.isGranted
+    @EnvironmentObject private var screenshotEnvironment: ScreenshotEnvironment
+
+    private var isGranted: Bool {
+        screenshotEnvironment.permissionState == .authorized
+    }
 
     var body: some View {
         HStack {
@@ -109,17 +123,24 @@ private struct ScreenshotPermissionSettingsView: View {
             .foregroundStyle(isGranted ? .green : .orange)
             Spacer()
             if !isGranted {
-                Button("请求权限") {
-                    isGranted = ScreenRecordingAuthorization.request()
+                if screenshotEnvironment.permissionState == .notRequested {
+                    Button("请求权限") {
+                        screenshotEnvironment.requestPermission()
+                        Task { await featureStore.retry(FeatureConfigurationStore.screenshotID) }
+                    }
+                }
+                Button("重新检查") {
+                    screenshotEnvironment.refreshPermissionState()
                     Task { await featureStore.retry(FeatureConfigurationStore.screenshotID) }
                 }
                 Button("打开系统设置") {
-                    ScreenRecordingAuthorization.openSystemSettings()
+                    screenshotEnvironment.openSystemSettings()
                 }
             }
         }
         .onAppear {
-            isGranted = ScreenRecordingAuthorization.isGranted
+            screenshotEnvironment.refreshPermissionState()
+            Task { await featureStore.retry(FeatureConfigurationStore.screenshotID) }
         }
     }
 }

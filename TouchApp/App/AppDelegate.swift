@@ -1,4 +1,7 @@
 import AppKit
+import FinderFeature
+import ScreenshotFeature
+import SuperRightFeature
 import TouchCore
 import TouchFeatureAPI
 
@@ -7,16 +10,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var launcherPanelController: LauncherPanelController?
     private var settingsWindowController: SettingsWindowController?
     let searchEnvironment = SearchEnvironment.makeForCurrentProcess()
+    private(set) var screenshotEnvironment: ScreenshotEnvironment!
+    private(set) var featureStore: FeatureAreaStore!
     private var shouldRestoreLauncherAfterSettingsClose = false
-    private let globalHotKeyController = GlobalHotKeyController()
+    private let globalHotKeyController = GlobalHotKeyController(identifier: 1)
+    private let screenshotHotKeyController = GlobalHotKeyController(identifier: 2)
+
+    override init() {
+        super.init()
+
+        let environment = ScreenshotEnvironment(
+            registerShortcuts: { [weak self] in self?.registerScreenshotShortcut() },
+            unregisterShortcuts: { [weak self] in self?.screenshotHotKeyController.stop() }
+        )
+        screenshotEnvironment = environment
+        featureStore = FeatureAreaStore(
+            plugins: [
+                FinderFeaturePlugin(),
+                ScreenshotFeaturePlugin(router: environment.coordinator),
+                SuperRightFeaturePlugin()
+            ]
+        )
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         Task {
             await searchEnvironment.prepare()
         }
-        launcherPanelController = LauncherPanelController(searchEnvironment: searchEnvironment)
-        settingsWindowController = SettingsWindowController(searchEnvironment: searchEnvironment) { [weak self] in
+        let launcher = LauncherPanelController(
+            searchEnvironment: searchEnvironment,
+            featureStore: featureStore,
+            screenshotEnvironment: screenshotEnvironment
+        )
+        launcherPanelController = launcher
+        screenshotEnvironment.coordinator.attachLauncher(launcher)
+        settingsWindowController = SettingsWindowController(
+            searchEnvironment: searchEnvironment,
+            featureStore: featureStore,
+            screenshotEnvironment: screenshotEnvironment
+        ) { [weak self] in
             self?.restoreLauncherAfterSettingsClose()
         }
         NotificationCenter.default.addObserver(
@@ -58,6 +91,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         globalHotKeyController.stop()
+        screenshotHotKeyController.stop()
+        Task { [screenshotEnvironment] in
+            await screenshotEnvironment?.coordinator.deactivate()
+        }
         NotificationCenter.default.removeObserver(self)
     }
 
@@ -71,6 +108,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func handleRebuildSearchIndex() {
         Task { [searchEnvironment] in await searchEnvironment.rebuildIndex() }
+    }
+
+    private func registerScreenshotShortcut() {
+        do {
+            try screenshotHotKeyController.start(
+                shortcut: featureStore.shortcut(for: FeatureConfigurationStore.screenshotID)
+            ) { [weak self] in
+                guard let self else { return }
+                Task { await self.featureStore.perform(FeatureConfigurationStore.screenshotID) }
+            }
+        } catch {
+            NSLog("Unable to register screenshot shortcut: %@", error.localizedDescription)
+        }
     }
 
     private func showSettings(section: TouchSettingsSection = .general) {

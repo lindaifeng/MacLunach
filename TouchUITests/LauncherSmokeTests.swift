@@ -4,7 +4,7 @@ import XCTest
 final class LauncherSmokeTests: XCTestCase {
     func testLauncherShowsThreeFeaturesAndSwitchesSearchMode() throws {
         let app = XCUIApplication()
-        app.launchArguments = ["--show-launcher"]
+        app.launchArguments = ["--show-launcher", "--search-fixture"]
         app.launch()
 
         XCTAssertTrue(app.buttons["feature.me.touch.finder"].waitForExistence(timeout: 2))
@@ -16,7 +16,12 @@ final class LauncherSmokeTests: XCTestCase {
         searchField.typeText("finder")
         app.typeKey(.tab, modifierFlags: [])
 
-        XCTAssertTrue(app.buttons["search.mode.file"].isSelected)
+        let fileMode = app.buttons["search.mode.file"]
+        let selected = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "selected == true"),
+            object: fileMode
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [selected], timeout: 2), .completed)
         XCTAssertEqual(searchField.value as? String, "finder")
     }
 

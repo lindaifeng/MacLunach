@@ -4,9 +4,14 @@ import TouchFeatureAPI
 
 @MainActor
 final class GlobalHotKeyController {
+    private let identifier: UInt32
     private var eventHandler: EventHandlerRef?
     private var hotKey: EventHotKeyRef?
     private var onPress: (@MainActor () -> Void)?
+
+    init(identifier: UInt32 = 1) {
+        self.identifier = identifier
+    }
 
     func start(shortcut: KeyboardShortcut, onPress: @escaping @MainActor () -> Void) throws {
         stop()
@@ -27,8 +32,8 @@ final class GlobalHotKeyController {
             throw NSError(domain: "Touch.GlobalHotKey", code: Int(installStatus))
         }
 
-        let identifier = EventHotKeyID(signature: OSType(0x544F5543), id: 1)
-        let registerStatus = RegisterEventHotKey(value.keyCode, value.modifiers, identifier, GetApplicationEventTarget(), 0, &hotKey)
+        let hotKeyIdentifier = EventHotKeyID(signature: OSType(0x544F5543), id: identifier)
+        let registerStatus = RegisterEventHotKey(value.keyCode, value.modifiers, hotKeyIdentifier, GetApplicationEventTarget(), 0, &hotKey)
         guard registerStatus == noErr else {
             stop()
             throw NSError(domain: "Touch.GlobalHotKey", code: Int(registerStatus))
