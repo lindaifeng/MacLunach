@@ -107,6 +107,22 @@ public protocol ScreenshotAtomicWriting: Sendable {
     func write(_ data: Data, to destinationURL: URL) throws
 }
 
+public enum AnnotationProjectLoadStatus: Equatable, Sendable {
+    case loaded
+    case recoveredFromMissingProject
+    case recoveredFromCorruptProject
+}
+
+public struct AnnotationProjectLoadResult: Equatable, Sendable {
+    public let document: AnnotationDocument
+    public let status: AnnotationProjectLoadStatus
+
+    public init(document: AnnotationDocument, status: AnnotationProjectLoadStatus) {
+        self.document = document
+        self.status = status
+    }
+}
+
 public struct POSIXAtomicFileWriter: ScreenshotAtomicWriting {
     public typealias Observer = @Sendable (AtomicFileOperation) -> Void
     private let observer: Observer
@@ -257,6 +273,75 @@ public actor ScreenshotFileStore {
             sha256: digest,
             displays: displays
         )
+    }
+
+    /// 将项目 JSON 与原图分离，并复用截图文件的 fsync + rename 原子写入协议。
+    @discardableResult
+    public func saveAnnotationProject(_ document: AnnotationDocument) throws -> String {
+        try Task.checkCancellation()
+        let relativePath = "Projects/\(document.id.uuidString.lowercased()).touch-annotation.json"
+        let destination = try projectURL(for: relativePath)
+        do {
+            try fileManager.createDirectory(
+                at: destination.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            let encoder = JSONEncoder()
+            encoder.dateEncodingStrategy = .millisecondsSince1970
+            encoder.outputFormatting = [.sortedKeys]
+            let data = try encoder.encode(document)
+            try Task.checkCancellation()
+            try writer.write(data, to: destination)
+            return relativePath
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            throw ScreenshotFeatureError.storageFailed(message: String(describing: error))
+        }
+    }
+
+    /// 读取失败或 JSON 损坏时返回仅含原图引用的文档，让编辑器仍能打开原截图。
+    public func loadAnnotationProject(
+        relativePath: String,
+        fallbackDocument: AnnotationDocument
+    ) throws -> AnnotationProjectLoadResult {
+        let source = try projectURL(for: relativePath)
+        guard fileManager.fileExists(atPath: source.path) else {
+            return .init(
+                document: fallbackDocument.restoringOriginalImage(
+                    updatedAt: fallbackDocument.updatedAt
+                ),
+                status: .recoveredFromMissingProject
+            )
+        }
+        do {
+            let data = try Data(contentsOf: source, options: [.mappedIfSafe])
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .millisecondsSince1970
+            let document = try decoder.decode(AnnotationDocument.self, from: data)
+            return .init(document: document, status: .loaded)
+        } catch {
+            return .init(
+                document: fallbackDocument.restoringOriginalImage(
+                    updatedAt: fallbackDocument.updatedAt
+                ),
+                status: .recoveredFromCorruptProject
+            )
+        }
+    }
+
+    private func projectURL(for relativePath: String) throws -> URL {
+        let components = NSString(string: relativePath).pathComponents
+        guard components.count == 2,
+              components.first == "Projects",
+              relativePath.hasSuffix(".touch-annotation.json") else {
+            throw ScreenshotFeatureError.storageFailed(message: "Invalid annotation project path")
+        }
+        do {
+            return try ScreenshotFeaturePaths(rootURL: rootURL).resolve(relativePath: relativePath)
+        } catch {
+            throw ScreenshotFeatureError.storageFailed(message: String(describing: error))
+        }
     }
 
     private func storeThumbnail(image: CGImage, artifactID: UUID) throws -> String {

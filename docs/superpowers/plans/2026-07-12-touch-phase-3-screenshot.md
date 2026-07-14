@@ -1,6 +1,6 @@
 # 触达阶段三：截图、标注与钉图实施计划
 
-**状态（2026-07-14）：实施中。Task 1–3 已完成；Task 4–5 已完成主要生产链路与最小单元测试，真实 XPC/实机验收待补；QQ 式选区工具栏已接入，十三类可见标注/效果工具进入捕获链路，服务端另完成模糊、放大镜和非破坏裁剪；“钉至桌面”已形成基础真实窗口链路，其余视频工具继续实施。**
+**状态（2026-07-14）：实施中。Task 1–3、11 已完成；Task 4–5 已完成主要生产链路与最小单元测试，真实 XPC/实机验收待补；QQ 式选区工具栏已接入，十三类可见标注/效果工具进入捕获链路，服务端另完成模糊、放大镜和非破坏裁剪；“钉至桌面”已形成基础真实窗口链路，其余视频工具继续实施。**
 
 > **执行说明：** 由当前模型自主规划并逐项执行；不使用 Superpowers 技能或子代理。步骤使用 checkbox 跟踪。以参考视频为交互与工具顺序依据；滚动截图和 GIF 录制已纳入本阶段后续任务，不再作为明确排除项。自动化先跑最小相关集合，只在关键节点跑全量回归；XCUI/Computer Use 等纯基础设施问题设置排查上限，并与产品代码缺陷分开记录。
 
@@ -541,15 +541,17 @@ Commit: `feat: add floating screenshot workflow`
 - Create: `Packages/TouchKit/Tests/ScreenshotFeatureTests/AnnotationCommandHistoryTests.swift`
 - Modify: `Packages/TouchKit/Sources/ScreenshotServiceCore/ScreenshotFileStore.swift`
 
-- [ ] **Step 1：写失败测试**
+- [x] **Step 1：写失败测试**
 
 覆盖所有 layer 类型：箭头、直线、矩形、圆形、画笔、高亮、文字、编号、马赛克、模糊、放大镜和裁剪；颜色、粗细、字体、透明度、z-order、圆角、阴影、边距、渐变背景均可序列化。覆盖 add/remove/update/reorder/crop 的撤销重做、redo 分支清空、合并连续拖动命令、损坏项目回退原图、未知新字段向前兼容。
 
-- [ ] **Step 2：确认失败并实现不可变文档 + 命令栈**
+- [x] **Step 2：确认失败并实现不可变文档 + 命令栈**
 
 项目 JSON 与原图分离并原子保存；不在 undo stack 内复制位图。保存前始终保留可编辑 layer，导出不修改项目。
 
-- [ ] **Step 3：共同门槛并提交**
+- [x] **Step 3：共同门槛并提交**
+
+增量状态（2026-07-14）：已完成不可变 `AnnotationDocument`、覆盖全部既有标注类型的可编辑 `AnnotationLayer`、add/remove/update/reorder/crop 命令历史、undo/redo、连续拖动合并和 redo 分支清空。项目 JSON 与原图分离保存到插件目录 `Projects/`，复用同目录临时文件、`fsync`、`rename` 的原子写入协议；缺失或损坏项目均回退为保留原图引用且无可疑图层的文档，路径解析拒绝越界。目标测试 9 个、TouchKit 全量 151 个及应用单元测试 118 个均无失败（其中真实 XPC 屏幕录制测试因宿主无权限跳过 1 个）；Release 应用与 XPC 均为 `x86_64 arm64`。完整内建编辑器 UI 接入属于后续 Task 14，不在本 Task 内宣称完成。
 
 Commit: `feat: add nondestructive annotation documents`
 

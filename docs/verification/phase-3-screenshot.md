@@ -2,7 +2,7 @@
 
 ## 当前边界（2026-07-14）
 
-阶段三仍在实施，不能标记完成。当前已打通：版本化模型、XPC 服务、ScreenCaptureKit 捕获与原子文件、QQ 式直接拖拽选区、窗口吸附、拖满屏自动推断全屏、选区后工具栏、3/5/10 秒非阻塞可见倒计时与 Esc/插件停用取消链路、`Command+Shift+2` 所有显示器真实捕获及可配置快捷键、真实产物写入系统剪贴板，以及十三类 QQ 可见标注/效果（矩形、圆形、直线、箭头、绘画、荧光笔、文本、数字点、备注、贴纸、马赛克、水印、美化）的预览、撤销/重做、请求传输和最终像素渲染。屏幕取色已接入默认 `Control+Option+C` 快捷键和同一屏幕录制权限链路，提供跨显示器透明取色层、十字光标、QQ 风格像素放大镜、HEX/RGB/HSL、Retina 物理像素定位、边缘避让、Display P3 到标准 sRGB 转换、节流和旧请求取消，单击会以当前点重新采样并复制 HEX，Esc 或停用插件可取消；该链路只返回内存数据，不创建截图文件或历史记录。OCR/二维码链路现也已接通：选区以 `.ocrRegion` 捕获后由 XPC 内 Vision accurate 模式识别，最多并发 2 个任务，支持取消、方向元数据、置信度过滤、历史 OCR 摘要、默认复制文字和可重试结果面板；二维码链接会在主应用重新校验且必须经用户确认后才打开。服务端非破坏性模型与渲染器另已纳入模糊、放大镜、裁剪，共覆盖十六类图层；模糊使用复用的 `CIContext` 与局部 mask，放大镜使用圆形 mask 和倍率限制，裁剪保持左上角 point 坐标、只采用最后一个有效裁剪，并在美化扩边之前执行。文本使用选区内联编辑，数字点自动递增，备注支持换行并以 `Command+Return` 完成；贴纸提供 6 个系统 emoji 预设并在选区内点击放置；马赛克使用自由路径画笔，预览显示棋盘块，最终产物对画笔覆盖区域执行真实像素化且不改变路径外像素；水印提供 4 个文字预设，在完整选区内以透明、倾斜、交错布局重复绘制；美化提供 4 个完整预设，导出时真实扩展四边边距并绘制多色渐变、圆角和阴影。视频中的“钉至桌面”已接入基础真实链路：选择后捕获产物直接创建无边框置顶、等比缩放、可拖动、跨 Space 的独立钉图窗口，右键可复制或关闭。
+阶段三仍在实施，不能标记完成。当前已打通：版本化模型、XPC 服务、ScreenCaptureKit 捕获与原子文件、QQ 式直接拖拽选区、窗口吸附、拖满屏自动推断全屏、选区后工具栏、3/5/10 秒非阻塞可见倒计时与 Esc/插件停用取消链路、`Command+Shift+2` 所有显示器真实捕获及可配置快捷键、真实产物写入系统剪贴板，以及十三类 QQ 可见标注/效果（矩形、圆形、直线、箭头、绘画、荧光笔、文本、数字点、备注、贴纸、马赛克、水印、美化）的预览、撤销/重做、请求传输和最终像素渲染。屏幕取色已接入默认 `Control+Option+C` 快捷键和同一屏幕录制权限链路，提供跨显示器透明取色层、十字光标、QQ 风格像素放大镜、HEX/RGB/HSL、Retina 物理像素定位、边缘避让、Display P3 到标准 sRGB 转换、节流和旧请求取消，单击会以当前点重新采样并复制 HEX，Esc 或停用插件可取消；该链路只返回内存数据，不创建截图文件或历史记录。OCR/二维码链路现也已接通：选区以 `.ocrRegion` 捕获后由 XPC 内 Vision accurate 模式识别，最多并发 2 个任务，支持取消、方向元数据、置信度过滤、历史 OCR 摘要、默认复制文字和可重试结果面板；二维码链接会在主应用重新校验且必须经用户确认后才打开。服务端非破坏性模型与渲染器另已纳入模糊、放大镜、裁剪，共覆盖十六类图层；模糊使用复用的 `CIContext` 与局部 mask，放大镜使用圆形 mask 和倍率限制，裁剪保持左上角 point 坐标、只采用最后一个有效裁剪，并在美化扩边之前执行。文本使用选区内联编辑，数字点自动递增，备注支持换行并以 `Command+Return` 完成；贴纸提供 6 个系统 emoji 预设并在选区内点击放置；马赛克使用自由路径画笔，预览显示棋盘块，最终产物对画笔覆盖区域执行真实像素化且不改变路径外像素；水印提供 4 个文字预设，在完整选区内以透明、倾斜、交错布局重复绘制；美化提供 4 个完整预设，导出时真实扩展四边边距并绘制多色渐变、圆角和阴影。非破坏性项目层现已补齐不可变文档、可序列化图层、命令历史和独立原子项目 JSON；项目丢失或损坏时保留原图引用并清空可疑图层。视频中的“钉至桌面”已接入基础真实链路：选择后捕获产物直接创建无边框置顶、等比缩放、可拖动、跨 Space 的独立钉图窗口，右键可复制或关闭。
 
 捕获后工作流也已接通：服务端生成最大 `360×240` 的独立 PNG 缩略图，主应用可按配置执行“复制并显示缩略图”“仅保存”“复制并保存”或“标注”，浮动缩略图支持右下角堆叠、0/3/5/10 秒与永不隐藏、键盘复制/删除/关闭、右键动作、单击标注、双击钉图以及 Finder 文件 promise 拖放。复制会同时提供 PNG、TIFF 和文件 URL；导出、删除与回收仍通过 XPC 服务执行。
 
@@ -37,6 +37,8 @@
 - 捕获引擎产物集成：`ScreenCaptureEngineTests.annotationsAreRenderedIntoStoredArtifact` 通过，重新读取原子写入文件并验证标注像素，证明不是仅有 overlay 预览。
 - 标注坐标、文本载荷、undo/redo 与协调器请求传递：最新最小 Xcode 测试通过；结果位于 `/tmp/touch-qq-text-tools/Logs/Test/`，日志 `/tmp/touch-qq-text-tools-final.log`。
 - 关键组合回归：SelectionToolbar、SelectionGeometry、SelectionAnnotation、ScreenshotClipboardWriter、ScreenshotCoordinator 共 32 个测试通过，结果位于 `/tmp/touch-qq-final-nine-tools/Logs/Test/`，日志 `/tmp/touch-qq-final-nine-tools.log`。
+- Task 11 非破坏性项目：`AnnotationDocumentTests` 与 `AnnotationCommandHistoryTests` 共 6 个测试通过，覆盖全部既有标注类型及通用外观序列化、未知字段兼容、稳定 z-order、不可变编辑、add/remove/update/reorder/crop 撤销重做、拖动合并和 redo 分支清空；`AnnotationProjectPersistenceTests` 3 个测试通过，覆盖独立原子 JSON、缺失/损坏回退和路径越界拒绝。
+- Task 11 共同门槛：TouchKit 全量 151 个测试通过；`TouchTests` 共执行 118 个，117 个通过、1 个真实 XPC 集成测试因当前测试宿主无屏幕录制权限跳过，0 失败，结果 `/tmp/touch-phase3-task11-derived/Logs/Test/Test-Touch-2026.07.14_21-31-33-+0800.xcresult`。Release 的 `触达.app` 与 `ScreenshotService` 均验证包含 `x86_64 arm64`；fixture 缩略图 30 次 P50 13.348 ms、P95 25.678 ms，低于 300 ms 门槛。该性能数据仍不替代真实 ScreenCaptureKit 采样，完整内建编辑器 UI 属于 Task 14。
 
 所有 `/tmp` 证据不提交仓库。关键节点再运行 SelectionToolbar、SelectionGeometry、ScreenshotClipboardWriter、ScreenshotCoordinator、SelectionAnnotation 的组合回归；不在每个小改动后运行全量 UI 测试。
 
