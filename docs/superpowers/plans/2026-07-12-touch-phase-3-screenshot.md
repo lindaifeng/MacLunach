@@ -559,6 +559,8 @@ Commit: `feat: add nondestructive annotation documents`
 
 **依赖：** Task 11。
 
+**完成状态（2026-07-14）：** 已建立独立 `AnnotationGeometry` 作为左上角 point、Retina pixel 与 Core Graphics 坐标转换的统一入口；`AnnotationRenderer` 现可直接消费 Task 11 的 `AnnotationDocument`/`AnnotationLayer`，按稳定 `zIndex` 合成并应用图层透明度、字体、圆角和阴影。预览与最终导出可复用同一文档渲染及输出尺寸 API；输出继承源图 RGB 色彩空间，Core Image 效果显式保留 Display P3。渲染在分配前检查尺寸溢出和 512 MiB 默认工作内存上限，在 `autoreleasepool` 内逐层响应取消；XPC 继续只返回文件 artifact 元数据，不传位图。确定性像素测试覆盖图层顺序/透明度、重复渲染、Retina、文字基线、空路径、非有限几何、极小图、Display P3、取消和分配前拒绝。
+
 **Files:**
 
 - Create: `Packages/TouchKit/Sources/ScreenshotServiceCore/AnnotationRenderer.swift`
@@ -567,15 +569,15 @@ Commit: `feat: add nondestructive annotation documents`
 - Add: `Packages/TouchKit/Tests/ScreenshotServiceCoreTests/Fixtures/annotation-golden/`
 - Modify: `Services/ScreenshotService/ScreenshotServiceEndpoint.swift`
 
-- [ ] **Step 1：写失败测试**
+- [x] **Step 1：写失败测试**
 
 对箭头、线、矩形、圆、画笔、高亮、文字、自动递增编号做确定性 golden image 或像素区域比较；覆盖 Retina scale、文字基线、空路径、极小图、透明度、颜色空间、layer 顺序和取消。Golden 更新必须人工查看差异，不能用无条件覆盖脚本作为通过手段。
 
-- [ ] **Step 2：实现服务端统一渲染**
+- [x] **Step 2：实现服务端统一渲染**
 
 Core Graphics/Core Text 渲染保持原图色彩空间，预览和最终导出共用同一 renderer 参数。大图采用 autoreleasepool 和有界内存，不在 XPC 响应中返回位图。
 
-- [ ] **Step 3：共同门槛并提交**
+- [x] **Step 3：共同门槛并提交**
 
 Commit: `feat: render screenshot annotation layers`
 

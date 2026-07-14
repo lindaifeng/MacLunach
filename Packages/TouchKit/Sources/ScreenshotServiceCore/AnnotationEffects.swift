@@ -24,7 +24,12 @@ public final class AnnotationEffects: @unchecked Sendable {
         filter.setValue(input.clampedToExtent(), forKey: kCIInputImageKey)
         filter.setValue(min(max(radius.isFinite ? radius : 0, 0), 256), forKey: kCIInputRadiusKey)
         guard let output = filter.outputImage?.cropped(to: input.extent),
-              let image = context.createCGImage(output, from: input.extent) else {
+              let image = context.createCGImage(
+                output,
+                from: input.extent,
+                format: .RGBA8,
+                colorSpace: image.colorSpace ?? CGColorSpace(name: CGColorSpace.sRGB)
+              ) else {
             throw ScreenshotFeatureError.encodingFailed
         }
         return image
