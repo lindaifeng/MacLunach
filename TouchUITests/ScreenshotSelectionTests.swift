@@ -3,6 +3,28 @@ import XCTest
 
 @MainActor
 final class ScreenshotSelectionTests: XCTestCase {
+    func testCommittedSelectionShowsQQToolbarAndCopyCompletesCapture() throws {
+        let outputURL = temporaryOutputURL()
+        let app = launchSelectionFixture(outputURL: outputURL, preselected: true)
+        let toolbar = app.descendants(matching: .any)["screenshot.selection.toolbar"]
+
+        XCTAssertTrue(toolbar.waitForExistence(timeout: 3))
+        XCTAssertTrue(app.buttons["screenshot.selection.toolbar.rectangle"].exists)
+        XCTAssertTrue(app.buttons["screenshot.selection.toolbar.recognizeText"].exists)
+        XCTAssertTrue(app.buttons["screenshot.selection.toolbar.copy"].exists)
+        XCTAssertFalse(app.staticTexts["screenshot.selection.size-label"].exists)
+
+        app.buttons["screenshot.selection.toolbar.rectangle"].click()
+        let status = app.staticTexts["screenshot.selection.toolbar.status"]
+        XCTAssertTrue(status.waitForExistence(timeout: 2))
+        XCTAssertTrue(status.label.contains("矩形"), status.label)
+
+        app.buttons["screenshot.selection.toolbar.copy"].click()
+        XCTAssertTrue(waitForFile(at: outputURL, timeout: 3))
+        let result = try String(contentsOf: outputURL, encoding: .utf8)
+        XCTAssertTrue(result.contains("region"), result)
+    }
+
     func testDragKeyboardNudgeAndEnterCompletesSelection() throws {
         let outputURL = temporaryOutputURL()
         let app = launchSelectionFixture(outputURL: outputURL)
@@ -80,13 +102,19 @@ final class ScreenshotSelectionTests: XCTestCase {
         XCTAssertFalse(result.contains("990001"), result)
     }
 
-    private func launchSelectionFixture(outputURL: URL) -> XCUIApplication {
+    private func launchSelectionFixture(
+        outputURL: URL,
+        preselected: Bool = false
+    ) -> XCUIApplication {
         try? FileManager.default.removeItem(at: outputURL)
         let app = XCUIApplication()
         app.launchArguments = [
             "--screenshot-selection-fixture",
             "--screenshot-selection-output=\(outputURL.path)"
         ]
+        if preselected {
+            app.launchArguments.append("--screenshot-selection-preselected")
+        }
         app.launch()
         return app
     }

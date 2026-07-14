@@ -13,7 +13,15 @@ public actor XPCScreenCaptureService: ScreenshotCapturing {
     }
 
     public func capture(_ request: ScreenshotCaptureRequest) async throws {
-        _ = try await client.capture(request)
+        _ = try await captureArtifact(request)
+    }
+
+    public func captureArtifact(_ request: ScreenshotCaptureRequest) async throws -> ScreenshotArtifact? {
+        try await client.capture(request)
+    }
+
+    public func sampleColor(_ request: ScreenshotColorSampleRequest) async throws -> ScreenshotColorSample {
+        try await client.sampleColor(request)
     }
 
     public func capturePrimaryDisplay() async throws {

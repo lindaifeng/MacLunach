@@ -12,9 +12,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     let searchEnvironment = SearchEnvironment.makeForCurrentProcess()
     private(set) var screenshotEnvironment: ScreenshotEnvironment!
     private(set) var featureStore: FeatureAreaStore!
-    private var shouldRestoreLauncherAfterSettingsClose = false
     private let globalHotKeyController = GlobalHotKeyController(identifier: 1)
     private let screenshotHotKeyController = GlobalHotKeyController(identifier: 2)
+    private let allDisplaysScreenshotHotKeyController = GlobalHotKeyController(identifier: 3)
+    private let colorPickerHotKeyController = GlobalHotKeyController(identifier: 4)
     private let isScreenshotSelectionFixture: Bool
 
     override init() {
@@ -35,12 +36,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 captureService: ScreenshotSelectionFixtureCaptureService(
                     content: ScreenshotSelectionFixtureContent.make(),
                     outputURL: URL(fileURLWithPath: String(outputPath))
-                )
+                ),
+                selectionFactory: {
+                    SelectionOverlayController(
+                        startsWithCommittedSelection: CommandLine.arguments.contains(
+                            "--screenshot-selection-preselected"
+                        )
+                    )
+                }
             )
         } else {
             environment = ScreenshotEnvironment(
-                registerShortcuts: { [weak self] in self?.registerScreenshotShortcut() },
-                unregisterShortcuts: { [weak self] in self?.screenshotHotKeyController.stop() }
+                registerShortcuts: { [weak self] in self?.registerScreenshotShortcuts() },
+                unregisterShortcuts: { [weak self] in self?.unregisterScreenshotShortcuts() }
             )
         }
         screenshotEnvironment = environment
@@ -84,6 +92,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             name: .rebuildTouchSearchIndex,
             object: nil
         )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleScreenshotShortcutsDidChange),
+            name: .screenshotShortcutsDidChange,
+            object: nil
+        )
 
         if isScreenshotSelectionFixture {
             Task { @MainActor [weak self] in
@@ -120,11 +134,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         globalHotKeyController.stop()
-        screenshotHotKeyController.stop()
+        unregisterScreenshotShortcuts()
         Task { [screenshotEnvironment] in
             await screenshotEnvironment?.coordinator.deactivate()
         }
         NotificationCenter.default.removeObserver(self)
+    }
+
+    func applicationShouldHandleReopen(
+        _ sender: NSApplication,
+        hasVisibleWindows flag: Bool
+    ) -> Bool {
+        // 双击应用或通过 `open` 再次唤起时，启动器始终是首要界面。
+        // 设置窗口可能仍在后台可见，不能让它拦截应用的再次唤起。
+        settingsWindowController?.window?.orderOut(nil)
+        launcherPanelController?.show()
+        return false
+    }
+
+    func applicationShouldRestoreApplicationState(_ app: NSApplication) -> Bool {
+        false
+    }
+
+    func applicationShouldSaveApplicationState(_ app: NSApplication) -> Bool {
+        false
     }
 
     @objc private func handleOpenSettings(_ notification: Notification) {
@@ -139,16 +172,68 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task { [searchEnvironment] in await searchEnvironment.rebuildIndex() }
     }
 
-    private func registerScreenshotShortcut() {
+    @objc private func handleScreenshotShortcutsDidChange() {
+        guard featureStore.isEnabled(FeatureConfigurationStore.screenshotID) else { return }
+        registerScreenshotShortcuts()
+    }
+
+    private func registerScreenshotShortcuts() {
+        unregisterScreenshotShortcuts()
         do {
             try screenshotHotKeyController.start(
                 shortcut: featureStore.shortcut(for: FeatureConfigurationStore.screenshotID)
             ) { [weak self] in
-                guard let self else { return }
-                Task { await self.featureStore.perform(FeatureConfigurationStore.screenshotID) }
+                self?.performScreenshot(.captureDefaultMode)
             }
         } catch {
             NSLog("Unable to register screenshot shortcut: %@", error.localizedDescription)
+        }
+
+        if let shortcut = featureStore.configurations.screenshot.modeShortcuts[.allDisplays] {
+            do {
+                try allDisplaysScreenshotHotKeyController.start(shortcut: shortcut) { [weak self] in
+                    self?.performScreenshot(.captureAllDisplays)
+                }
+            } catch {
+                NSLog("Unable to register all-displays screenshot shortcut: %@", error.localizedDescription)
+            }
+        }
+
+        if let shortcut = featureStore.configurations.screenshot.modeShortcuts[.colorPicker] {
+            do {
+                try colorPickerHotKeyController.start(shortcut: shortcut) { [weak self] in
+                    self?.performScreenshot(.pickColor)
+                }
+            } catch {
+                NSLog("Unable to register color-picker shortcut: %@", error.localizedDescription)
+            }
+        }
+    }
+
+    private func unregisterScreenshotShortcuts() {
+        screenshotHotKeyController.stop()
+        allDisplaysScreenshotHotKeyController.stop()
+        colorPickerHotKeyController.stop()
+    }
+
+    private func performScreenshot(_ action: ScreenshotPluginAction) {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let result = try await screenshotEnvironment.coordinator.route(action)
+                if case .requiresSetup = result {
+                    showSettings(
+                        destination: .init(
+                            section: .featureArea,
+                            featureID: FeatureConfigurationStore.screenshotID
+                        )
+                    )
+                }
+            } catch ScreenshotCoordinatorError.busy {
+                NSSound.beep()
+            } catch {
+                NSLog("Screenshot shortcut action failed: %@", error.localizedDescription)
+            }
         }
     }
 
@@ -157,16 +242,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func showSettings(destination: TouchSettingsDestination) {
-        shouldRestoreLauncherAfterSettingsClose = launcherPanelController?.isVisible ?? false
-        if shouldRestoreLauncherAfterSettingsClose {
-            launcherPanelController?.hide()
-        }
+        launcherPanelController?.hide()
         settingsWindowController?.show(destination: destination)
     }
 
     private func restoreLauncherAfterSettingsClose() {
-        guard shouldRestoreLauncherAfterSettingsClose else { return }
-        shouldRestoreLauncherAfterSettingsClose = false
         launcherPanelController?.show()
     }
 }

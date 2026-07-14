@@ -3,12 +3,26 @@ import ScreenshotFeature
 
 @MainActor
 protocol ScreenshotSelectionPresenting: AnyObject, Sendable {
-    func select(from content: ScreenshotSelectionContent) async -> ScreenshotCaptureTarget?
+    func select(from content: ScreenshotSelectionContent) async -> ScreenshotSelectionResult?
     func cancel()
 }
 
+enum ScreenshotSelectionCompletionAction: Equatable, Sendable {
+    case copy
+    case pin
+    case scrollingCapture
+    case gifRecording
+}
+
+struct ScreenshotSelectionResult: Equatable, Sendable {
+    var target: ScreenshotCaptureTarget
+    var completionAction: ScreenshotSelectionCompletionAction
+    var windowShadow: ScreenshotWindowShadow
+    var annotations: [ScreenshotAnnotation] = []
+}
+
 @MainActor
-final class SelectionOverlayController: ScreenshotSelectionPresenting {
+final class SelectionOverlayController: ScreenshotSelectionPresenting, SelectionToolbarViewDelegate {
     private enum DragSession {
         case create(anchor: CGPoint)
         case resize(handle: SelectionHandle)
@@ -18,7 +32,7 @@ final class SelectionOverlayController: ScreenshotSelectionPresenting {
 
     private var panels: [SelectionOverlayPanel] = []
     private var views: [UInt32: SelectionOverlayView] = [:]
-    private var continuation: CheckedContinuation<ScreenshotCaptureTarget?, Never>?
+    private var continuation: CheckedContinuation<ScreenshotSelectionResult?, Never>?
     private var content = ScreenshotSelectionContent(displays: [], windows: [])
     private var resolver = WindowSnapResolver(windows: [])
     private var selection: CGRect?
@@ -27,8 +41,20 @@ final class SelectionOverlayController: ScreenshotSelectionPresenting {
     private var pointer = CGPoint.zero
     private var dragSession: DragSession?
     private var isSpacePressed = false
+    private var isSelectionCommitted = false
+    private var selectedToolbarItem: SelectionToolbarItem?
+    private var windowShadowIncluded = true
+    private var toolbarStatus = ""
+    private var annotationHistory = SelectionAnnotationHistory()
+    private var activeAnnotationID: UUID?
+    private var selectedSticker = SelectionSticker.smile.rawValue
+    private let startsWithCommittedSelection: Bool
 
-    func select(from content: ScreenshotSelectionContent) async -> ScreenshotCaptureTarget? {
+    init(startsWithCommittedSelection: Bool = false) {
+        self.startsWithCommittedSelection = startsWithCommittedSelection
+    }
+
+    func select(from content: ScreenshotSelectionContent) async -> ScreenshotSelectionResult? {
         await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in
                 self.continuation = continuation
@@ -69,6 +95,19 @@ final class SelectionOverlayController: ScreenshotSelectionPresenting {
     func mouseDown(on displayID: UInt32, at point: CGPoint) {
         pointer = point
         activeDisplayID = displayID
+        if beginAnnotation(on: displayID, at: point) {
+            updateViews()
+            return
+        }
+        if isSelectionCommitted,
+           selection?.contains(point) == true,
+           selectedToolbarItem != nil {
+            toolbarStatus = "该工具暂未完成，选区保持不变"
+            updateViews()
+            return
+        }
+        isSelectionCommitted = false
+        toolbarStatus = ""
         if let match = snappedWindow {
             dragSession = .snapped(anchor: point, match: match)
             return
@@ -92,6 +131,10 @@ final class SelectionOverlayController: ScreenshotSelectionPresenting {
 
     func mouseDragged(on displayID: UInt32, to point: CGPoint) {
         pointer = point
+        if updateActiveAnnotation(to: point) {
+            updateViews()
+            return
+        }
         guard let session = dragSession else { return }
 
         if isSpacePressed, selection != nil {
@@ -144,11 +187,25 @@ final class SelectionOverlayController: ScreenshotSelectionPresenting {
     }
 
     func mouseUp() {
+        if finishActiveAnnotation() {
+            updateViews()
+            return
+        }
         dragSession = nil
+        isSelectionCommitted = selection.map { $0.width > 0 && $0.height > 0 } ?? false
         updateViews()
     }
 
     func keyDown(_ event: NSEvent) {
+        if event.modifierFlags.contains(.command),
+           event.charactersIgnoringModifiers?.lowercased() == "z" {
+            if event.modifierFlags.contains(.shift) {
+                redoAnnotation()
+            } else {
+                undoAnnotation()
+            }
+            return
+        }
         switch event.keyCode {
         case 53:
             cancel()
@@ -165,7 +222,9 @@ final class SelectionOverlayController: ScreenshotSelectionPresenting {
         case 126:
             nudge(.up, accelerated: event.modifierFlags.contains(.shift))
         default:
-            break
+            if let item = toolbarItem(for: event) {
+                selectionToolbarItemChosen(item)
+            }
         }
     }
 
@@ -182,6 +241,12 @@ final class SelectionOverlayController: ScreenshotSelectionPresenting {
         activeDisplayID = nil
         dragSession = nil
         isSpacePressed = false
+        isSelectionCommitted = false
+        selectedToolbarItem = nil
+        windowShadowIncluded = true
+        toolbarStatus = ""
+        annotationHistory.reset()
+        activeAnnotationID = nil
 
         for display in content.displays {
             guard let screen = screen(for: display.id) else { continue }
@@ -219,38 +284,59 @@ final class SelectionOverlayController: ScreenshotSelectionPresenting {
             ?? content.displays.first?.id
         if let preferredID, let view = views[preferredID], let panel = view.window {
             activeDisplayID = preferredID
+            if startsWithCommittedSelection {
+                let displayBounds = bounds(for: preferredID)
+                selection = CGRect(
+                    x: displayBounds.minX + displayBounds.width * 0.18,
+                    y: displayBounds.minY + displayBounds.height * 0.2,
+                    width: displayBounds.width * 0.56,
+                    height: displayBounds.height * 0.46
+                )
+                pointer = CGPoint(x: selection?.maxX ?? 0, y: selection?.maxY ?? 0)
+                isSelectionCommitted = true
+                updateViews()
+            }
             panel.makeFirstResponder(view)
             panel.makeKey()
         }
     }
 
-    private func completeSelection() {
+    private func completeSelection(action: ScreenshotSelectionCompletionAction = .copy) {
+        commitInlineTextEditing()
         guard let selection, selection.width > 0, selection.height > 0 else { return }
+        let target: ScreenshotCaptureTarget
         if let snappedWindow {
-            finish(with: .window(windowID: snappedWindow.windowID))
-            return
+            target = .window(windowID: snappedWindow.windowID)
+        } else {
+            guard let displayID = activeDisplayID,
+                  bounds(for: displayID).intersects(selection) else { return }
+            let displayBounds = bounds(for: displayID)
+            if SelectionGeometry.covers(selection, displayBounds) {
+                target = .display(displayID: displayID)
+            } else {
+                target = .region(
+                    displayID: displayID,
+                    rect: ScreenshotRect(
+                        x: selection.minX,
+                        y: selection.minY,
+                        width: selection.width,
+                        height: selection.height
+                    )
+                )
+            }
         }
-        guard let displayID = activeDisplayID,
-              bounds(for: displayID).intersects(selection) else { return }
-        let displayBounds = bounds(for: displayID)
-        if SelectionGeometry.covers(selection, displayBounds) {
-            finish(with: .display(displayID: displayID))
-            return
-        }
-        finish(with: .region(
-            displayID: displayID,
-            rect: ScreenshotRect(
-                x: selection.minX,
-                y: selection.minY,
-                width: selection.width,
-                height: selection.height
-            )
+        finish(with: ScreenshotSelectionResult(
+            target: target,
+            completionAction: action,
+            windowShadow: windowShadowIncluded ? .included : .excluded,
+            annotations: annotationHistory.annotations.map { $0.captureAnnotation(relativeTo: selection) }
         ))
     }
 
     private func nudge(_ direction: SelectionNudgeDirection, accelerated: Bool) {
         guard let selection, let displayID = activeDisplayID else { return }
         snappedWindow = nil
+        isSelectionCommitted = true
         self.selection = SelectionGeometry.nudge(
             selection,
             direction: direction,
@@ -260,14 +346,14 @@ final class SelectionOverlayController: ScreenshotSelectionPresenting {
         updateViews()
     }
 
-    private func finish(with target: ScreenshotCaptureTarget?) {
+    private func finish(with result: ScreenshotSelectionResult?) {
         guard let continuation else {
             closePanels()
             return
         }
         self.continuation = nil
         closePanels()
-        continuation.resume(returning: target)
+        continuation.resume(returning: result)
     }
 
     private func closePanels() {
@@ -283,7 +369,13 @@ final class SelectionOverlayController: ScreenshotSelectionPresenting {
                 selection: selection,
                 pointer: pointer,
                 scaleFactor: scaleFactor(for: displayID),
-                showsLabel: isActive
+                showsLabel: isActive,
+                showsToolbar: isActive && isSelectionCommitted && dragSession == nil,
+                selectedToolbarItem: selectedToolbarItem,
+                windowShadowIncluded: windowShadowIncluded,
+                showsWindowShadow: snappedWindow != nil,
+                toolbarStatus: toolbarStatus,
+                annotations: annotationHistory.annotations
             )
             if isActive, view.window?.firstResponder !== view {
                 view.window?.makeFirstResponder(view)
@@ -311,6 +403,260 @@ final class SelectionOverlayController: ScreenshotSelectionPresenting {
             guard let number = screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")]
                     as? NSNumber else { return false }
             return number.uint32Value == displayID
+        }
+    }
+
+    func selectionToolbar(_ toolbar: SelectionToolbarView, didChoose item: SelectionToolbarItem) {
+        selectionToolbarItemChosen(item)
+    }
+
+    func selectionToolbar(_ toolbar: SelectionToolbarView, didChooseSticker value: String) {
+        guard isSelectionCommitted else { return }
+        commitInlineTextEditing()
+        selectedSticker = value
+        selectedToolbarItem = .sticker
+        toolbarStatus = "已选择贴纸 \(value)，请在选区内点击"
+        updateViews()
+    }
+
+    func selectionToolbar(_ toolbar: SelectionToolbarView, didChooseWatermark value: String) {
+        guard isSelectionCommitted, let selection else { return }
+        commitInlineTextEditing()
+        annotationHistory.add(.init(
+            kind: .watermark,
+            points: [selection.origin, CGPoint(x: selection.maxX, y: selection.maxY)],
+            style: .init(color: .red, lineWidth: 1),
+            watermark: .init(
+                value: value,
+                fontSize: 16,
+                opacity: 0.22,
+                angleDegrees: -24,
+                spacing: 72
+            )
+        ))
+        selectedToolbarItem = nil
+        toolbarStatus = "已添加“\(value)”水印，可用 Command+Z 撤销"
+        updateViews()
+    }
+
+    func selectionToolbar(
+        _ toolbar: SelectionToolbarView,
+        didChooseBeautify preset: SelectionBeautifyPreset
+    ) {
+        guard isSelectionCommitted, let selection else { return }
+        commitInlineTextEditing()
+        annotationHistory.add(.init(
+            kind: .beautify,
+            points: [selection.origin, CGPoint(x: selection.maxX, y: selection.maxY)],
+            style: .init(color: .red, lineWidth: 1),
+            beautify: preset.style
+        ))
+        selectedToolbarItem = nil
+        toolbarStatus = "已应用“\(preset.title)”美化，可用 Command+Z 撤销"
+        updateViews()
+    }
+
+    func selectionToolbar(
+        _ toolbar: SelectionToolbarView,
+        setWindowShadowIncluded included: Bool
+    ) {
+        windowShadowIncluded = included
+        toolbarStatus = included ? "已保留窗口阴影" : "已去除窗口阴影"
+        updateViews()
+    }
+
+    private func selectionToolbarItemChosen(_ item: SelectionToolbarItem) {
+        guard isSelectionCommitted else { return }
+        if item != .cancel { commitInlineTextEditing() }
+        switch item {
+        case .cancel:
+            cancel()
+        case .copy, .pin, .scrollingCapture, .gifRecording:
+            if let action = item.selectionCompletionAction {
+                completeSelection(action: action)
+            }
+        default:
+            if item.isImplementedAnnotationTool {
+                selectedToolbarItem = selectedToolbarItem == item ? nil : item
+                if selectedToolbarItem == nil {
+                    toolbarStatus = "已退出“\(item.title)”"
+                } else if item == .numberedMarker {
+                    toolbarStatus = "已选择“数字点”，请在选区内点击"
+                } else if item == .text || item == .note {
+                    toolbarStatus = "已选择“\(item.title)”，请在选区内点击并输入"
+                } else {
+                    toolbarStatus = "已选择“\(item.title)”，请在选区内拖动"
+                }
+            } else {
+                selectedToolbarItem = item
+                toolbarStatus = "“\(item.title)”正在接入"
+            }
+            updateViews()
+        }
+    }
+
+    private func beginAnnotation(on displayID: UInt32, at point: CGPoint) -> Bool {
+        guard isSelectionCommitted,
+              let selection,
+              selection.contains(point),
+              let item = selectedToolbarItem else { return false }
+
+        if item == .numberedMarker {
+            let number = annotationHistory.annotations.filter { $0.kind == .numberedMarker }.count + 1
+            annotationHistory.add(.init(
+                kind: .numberedMarker,
+                points: [point],
+                style: .init(color: .red, lineWidth: 2),
+                text: .init(value: String(number), fontSize: 15)
+            ))
+            toolbarStatus = "已添加数字点 \(number)"
+            return true
+        }
+
+
+        if item == .sticker {
+            annotationHistory.add(.init(
+                kind: .sticker,
+                points: [point],
+                style: .init(color: .red, lineWidth: 1),
+                sticker: .init(value: selectedSticker, size: 36)
+            ))
+            toolbarStatus = "已添加贴纸 \(selectedSticker)"
+            return true
+        }
+
+        if item == .text || item == .note {
+            let kind: ScreenshotAnnotationKind = item == .note ? .note : .text
+            guard views[displayID]?.beginTextEditing(
+                at: point,
+                kind: kind,
+                completion: { [weak self] value, frame in
+                    self?.finishTextAnnotation(kind: kind, value: value, frame: frame)
+                }
+            ) == true else { return false }
+            toolbarStatus = kind == .note
+                ? "正在输入备注，Command+Return 完成"
+                : "正在输入文本，Return 完成"
+            return true
+        }
+
+        guard let kind = item.drawableAnnotationKind else { return false }
+        let style: ScreenshotAnnotationStyle
+        switch kind {
+        case .highlighter:
+            style = .init(color: .yellow, lineWidth: 14)
+        case .mosaic:
+            style = .init(color: .red, lineWidth: 28)
+        default:
+            style = .init(color: .red, lineWidth: 3)
+        }
+        let id = UUID()
+        let points = kind == .freehand || kind == .highlighter || kind == .mosaic
+            ? [point]
+            : [point, point]
+        annotationHistory.add(.init(
+            id: id,
+            kind: kind,
+            points: points,
+            style: style,
+            mosaic: kind == .mosaic ? .init(blockSize: 9) : nil
+        ))
+        activeAnnotationID = id
+        toolbarStatus = "正在绘制“\(item.title)”"
+        return true
+    }
+
+    private func finishTextAnnotation(
+        kind: ScreenshotAnnotationKind,
+        value: String,
+        frame: CGRect
+    ) {
+        let points: [CGPoint] = kind == .note
+            ? [frame.origin, CGPoint(x: frame.maxX, y: frame.maxY)]
+            : [frame.origin]
+        annotationHistory.add(.init(
+            kind: kind,
+            points: points,
+            style: .init(color: .red, lineWidth: 2),
+            text: .init(value: value, fontSize: kind == .note ? 14 : 18)
+        ))
+        toolbarStatus = kind == .note ? "已添加备注" : "已添加文本"
+        updateViews()
+    }
+
+    private func commitInlineTextEditing() {
+        for view in views.values { view.commitInlineTextEditing() }
+    }
+
+    private func updateActiveAnnotation(to point: CGPoint) -> Bool {
+        guard let activeAnnotationID,
+              let selection,
+              annotationHistory.annotations.contains(where: { $0.id == activeAnnotationID }) else {
+            return false
+        }
+        let clipped = CGPoint(
+            x: min(max(point.x, selection.minX), selection.maxX),
+            y: min(max(point.y, selection.minY), selection.maxY)
+        )
+        return annotationHistory.update(id: activeAnnotationID) { annotation in
+            switch annotation.kind {
+            case .freehand, .highlighter, .mosaic:
+                if let last = annotation.points.last,
+                   hypot(last.x - clipped.x, last.y - clipped.y) >= 0.75 {
+                    annotation.points.append(clipped)
+                }
+            default:
+                if annotation.points.count == 1 {
+                    annotation.points.append(clipped)
+                } else {
+                    annotation.points[annotation.points.count - 1] = clipped
+                }
+            }
+        }
+    }
+
+    private func finishActiveAnnotation() -> Bool {
+        guard let activeAnnotationID,
+              let annotation = annotationHistory.annotations.first(where: { $0.id == activeAnnotationID }) else {
+            return false
+        }
+        let isVisible: Bool
+        if let first = annotation.points.first, let last = annotation.points.last {
+            isVisible = annotation.points.count >= 2 && hypot(first.x - last.x, first.y - last.y) >= 1
+        } else {
+            isVisible = false
+        }
+        if !isVisible { annotationHistory.remove(id: activeAnnotationID) }
+        self.activeAnnotationID = nil
+        isSelectionCommitted = true
+        toolbarStatus = isVisible ? "已添加“\(selectedToolbarItem?.title ?? "标注")”" : "未创建标注"
+        return true
+    }
+
+    private func undoAnnotation() {
+        guard activeAnnotationID == nil, annotationHistory.undo() != nil else { return }
+        toolbarStatus = "已撤销标注"
+        updateViews()
+    }
+
+    private func redoAnnotation() {
+        guard activeAnnotationID == nil, annotationHistory.redo() != nil else { return }
+        toolbarStatus = "已重做标注"
+        updateViews()
+    }
+
+    private func toolbarItem(for event: NSEvent) -> SelectionToolbarItem? {
+        guard isSelectionCommitted,
+              let key = event.charactersIgnoringModifiers?.lowercased() else { return nil }
+        return switch key {
+        case "r": .rectangle
+        case "o": .ellipse
+        case "l": .line
+        case "t": .text
+        case "1": .numberedMarker
+        case "n": .note
+        case "p": .pin
+        default: nil
         }
     }
 }

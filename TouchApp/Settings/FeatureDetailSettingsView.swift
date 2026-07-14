@@ -4,6 +4,8 @@ import ScreenshotFeature
 struct FeatureDetailSettingsView: View {
     @EnvironmentObject private var featureStore: FeatureAreaStore
     @State private var shortcutError: String?
+    @State private var allDisplaysShortcutError: String?
+    @State private var colorPickerShortcutError: String?
     let featureID: String
     let onBack: () -> Void
 
@@ -51,6 +53,38 @@ struct FeatureDetailSettingsView: View {
             Toggle("优先复用现有访达窗口", isOn: finderBinding(\.reuseExistingWindow))
         case FeatureConfigurationStore.screenshotID:
             ScreenshotPermissionSettingsView()
+            if let shortcut = featureStore.configurations.screenshot.modeShortcuts[.allDisplays] {
+                ShortcutRecorderView(
+                    title: "所有显示器截图快捷键",
+                    shortcut: shortcut,
+                    errorMessage: allDisplaysShortcutError
+                ) { shortcut in
+                    allDisplaysShortcutError = featureStore.updateScreenshotModeShortcut(
+                        shortcut,
+                        for: .allDisplays
+                    )
+                }
+            }
+            if let shortcut = featureStore.configurations.screenshot.modeShortcuts[.colorPicker] {
+                ShortcutRecorderView(
+                    title: "屏幕取色快捷键",
+                    shortcut: shortcut,
+                    errorMessage: colorPickerShortcutError
+                ) { shortcut in
+                    colorPickerShortcutError = featureStore.updateScreenshotModeShortcut(
+                        shortcut,
+                        for: .colorPicker
+                    )
+                }
+            }
+            Picker(
+                "截图延时",
+                selection: screenshotValueBinding(\.defaultDelay)
+            ) {
+                ForEach(ScreenshotCaptureDelay.allCases, id: \.self) { delay in
+                    Text(delay.settingsTitle).tag(delay)
+                }
+            }
             Toggle("截图后显示标注工具栏", isOn: screenshotBinding(\.showsAnnotationToolbar))
             Toggle("截图后自动复制到剪贴板", isOn: screenshotBinding(\.copiesToClipboard))
             Toggle("显示钉图操作", isOn: screenshotBinding(\.showsPinAction))
@@ -96,6 +130,15 @@ struct FeatureDetailSettingsView: View {
         )
     }
 
+    private func screenshotValueBinding<Value>(
+        _ keyPath: WritableKeyPath<ScreenshotFeatureConfiguration, Value>
+    ) -> Binding<Value> {
+        Binding(
+            get: { featureStore.configurations.screenshot[keyPath: keyPath] },
+            set: { featureStore.updateScreenshotConfiguration(keyPath, to: $0) }
+        )
+    }
+
     private func superRightBinding(
         _ keyPath: WritableKeyPath<SuperRightFeatureConfiguration, Bool>
     ) -> Binding<Bool> {
@@ -103,6 +146,17 @@ struct FeatureDetailSettingsView: View {
             get: { featureStore.configurations.superRight[keyPath: keyPath] },
             set: { featureStore.updateSuperRightConfiguration(keyPath, to: $0) }
         )
+    }
+}
+
+private extension ScreenshotCaptureDelay {
+    var settingsTitle: String {
+        switch self {
+        case .none: "无延时"
+        case .threeSeconds: "3 秒"
+        case .fiveSeconds: "5 秒"
+        case .tenSeconds: "10 秒"
+        }
     }
 }
 

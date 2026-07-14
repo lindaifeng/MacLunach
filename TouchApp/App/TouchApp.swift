@@ -1,15 +1,14 @@
-import SwiftUI
+import AppKit
 
 @main
-struct TouchApp: App {
-    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-
-    var body: some Scene {
-        Settings {
-            SettingsRootView(searchEnvironment: appDelegate.searchEnvironment)
-                .environmentObject(appDelegate.featureStore)
-                .environmentObject(appDelegate.screenshotEnvironment)
-                .frame(minWidth: 760, minHeight: 540)
+enum TouchApp {
+    @MainActor
+    static func main() {
+        let application = NSApplication.shared
+        let appDelegate = AppDelegate()
+        application.delegate = appDelegate
+        withExtendedLifetime(appDelegate) {
+            application.run()
         }
     }
 }

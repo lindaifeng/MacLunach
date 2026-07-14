@@ -26,8 +26,10 @@ struct SearchQueryField: NSViewRepresentable {
         textView.textContainer?.maximumNumberOfLines = 1
         textView.textContainer?.lineBreakMode = .byTruncatingTail
         textView.font = .systemFont(ofSize: 18, weight: .medium)
-        textView.textColor = .labelColor
-        textView.insertionPointColor = .labelColor
+        textView.applyAppearance(
+            textColor: .white,
+            placeholderColor: NSColor.white.withAlphaComponent(0.56)
+        )
         textView.placeholderString = "搜索应用、文件、动作"
         textView.setAccessibilityRole(.textField)
         textView.setAccessibilityIdentifier("search.query")
@@ -37,6 +39,10 @@ struct SearchQueryField: NSViewRepresentable {
 
     func updateNSView(_ textView: SearchTextView, context: Context) {
         context.coordinator.text = $text
+        textView.applyAppearance(
+            textColor: .white,
+            placeholderColor: NSColor.white.withAlphaComponent(0.56)
+        )
         if text.isEmpty, !textView.string.isEmpty {
             textView.string = ""
             textView.unmarkText()
@@ -73,6 +79,17 @@ final class SearchTextView: NSTextView {
     var placeholderString = "" {
         didSet { needsDisplay = true }
     }
+    var placeholderColor = NSColor.placeholderTextColor {
+        didSet { needsDisplay = true }
+    }
+
+    func applyAppearance(textColor: NSColor, placeholderColor: NSColor) {
+        self.textColor = textColor
+        insertionPointColor = textColor
+        self.placeholderColor = placeholderColor
+        typingAttributes[.foregroundColor] = textColor
+        needsDisplay = true
+    }
 
     override func setMarkedText(
         _ string: Any,
@@ -98,7 +115,7 @@ final class SearchTextView: NSTextView {
         guard string.isEmpty, !placeholderString.isEmpty else { return }
         let attributes: [NSAttributedString.Key: Any] = [
             .font: font ?? NSFont.systemFont(ofSize: 18, weight: .medium),
-            .foregroundColor: NSColor.placeholderTextColor
+            .foregroundColor: placeholderColor
         ]
         NSString(string: placeholderString).draw(
             at: NSPoint(x: textContainerInset.width + 4, y: textContainerInset.height),

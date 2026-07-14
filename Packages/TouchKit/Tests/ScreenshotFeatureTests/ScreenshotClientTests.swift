@@ -381,3 +381,33 @@ private final class MockScreenshotServiceConnection: ScreenshotServiceConnection
 
     #expect(received == artifact)
 }
+
+@Test func screenshotClientSendsColorSamplePayloadAndDecodesSample() async throws {
+    let request = ScreenshotColorSampleRequest(
+        displayID: 9,
+        desktopPoint: .init(x: 42.5, y: 18.25),
+        loupePixelDiameter: 11
+    )
+    let sample = ScreenshotColorSample(
+        color: .init(red: 12, green: 34, blue: 56),
+        loupeRGBA: Data([12, 34, 56, 255]),
+        loupePixelSize: .init(width: 1, height: 1),
+        centerPixel: .init(x: 0, y: 0)
+    )
+    let connection = MockScreenshotServiceConnection { _, data, reply, _ in
+        let serviceRequest = try! JSONDecoder().decode(ScreenshotServiceRequest.self, from: data)
+        #expect(serviceRequest.action.name == "sampleColor")
+        #expect(serviceRequest.action.isIdempotent)
+        #expect(try! JSONDecoder().decode(
+            ScreenshotColorSampleRequest.self,
+            from: serviceRequest.action.payload!
+        ) == request)
+        reply(try! makeResponse(
+            for: data,
+            payload: .colorSample(try! JSONEncoder().encode(sample))
+        ))
+    }
+    let client = ScreenshotClient(connectionFactory: { connection })
+
+    #expect(try await client.sampleColor(request, timeout: .seconds(1)) == sample)
+}

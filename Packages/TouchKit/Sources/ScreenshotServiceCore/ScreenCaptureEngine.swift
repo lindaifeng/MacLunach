@@ -114,17 +114,20 @@ public actor ScreenCaptureEngine {
     private let fileStore: ScreenshotFileStore
     private let exclusions: ScreenshotCaptureExclusions
     private let artifactRecorder: any ScreenshotArtifactRecording
+    private let annotationRenderer: AnnotationRenderer
 
     public init(
         backend: any ScreenCaptureBackend = LiveScreenCaptureBackend(),
         fileStore: ScreenshotFileStore,
         exclusions: ScreenshotCaptureExclusions = .touchDefaults,
-        artifactRecorder: any ScreenshotArtifactRecording = NullScreenshotArtifactRecorder()
+        artifactRecorder: any ScreenshotArtifactRecording = NullScreenshotArtifactRecorder(),
+        annotationRenderer: AnnotationRenderer = AnnotationRenderer()
     ) {
         self.backend = backend
         self.fileStore = fileStore
         self.exclusions = exclusions
         self.artifactRecorder = artifactRecorder
+        self.annotationRenderer = annotationRenderer
     }
 
     public func capture(_ request: ScreenshotCaptureRequest) async throws -> ScreenshotArtifact {
@@ -153,10 +156,18 @@ public actor ScreenCaptureEngine {
         }
 
         try Task.checkCancellation()
-        let artifact = try await fileStore.store(
+        let renderedImage = try annotationRenderer.render(
             image: output.image,
-            request: request,
             pointSize: output.pointSize,
+            annotations: request.annotations
+        )
+        let artifact = try await fileStore.store(
+            image: renderedImage,
+            request: request,
+            pointSize: annotationRenderer.outputPointSize(
+                source: output.pointSize,
+                annotations: request.annotations
+            ),
             displays: output.displays
         )
         try Task.checkCancellation()
@@ -169,6 +180,45 @@ public actor ScreenCaptureEngine {
         return ScreenshotSelectionContent(
             displays: content.displays,
             windows: content.windows
+        )
+    }
+
+    /// 通过 ScreenCaptureKit 后端采集鼠标附近的小块物理像素，并统一转换为标准 sRGB RGBA8。
+    /// 该路径只返回内存数据，不会创建截图文件或历史记录。
+    public func sampleColor(
+        _ request: ScreenshotColorSampleRequest
+    ) async throws -> ScreenshotColorSample {
+        try Task.checkCancellation()
+        let content = try await backend.availableContent()
+        let display = try requireDisplay(request.displayID, in: content)
+        let geometry = try colorSampleGeometry(for: request, on: display)
+        let captured = try await backend.capture(displayPlan(
+            for: display,
+            sourceRect: geometry.sourceRect,
+            pixelSize: geometry.pixelSize
+        ))
+        try Task.checkCancellation()
+
+        let width = Int(geometry.pixelSize.width)
+        let height = Int(geometry.pixelSize.height)
+        let rgba = try standardSRGBBytes(from: captured.image, width: width, height: height)
+        let centerX = Int(geometry.centerPixel.x)
+        let centerY = Int(geometry.centerPixel.y)
+        let offset = ((centerY * width) + centerX) * 4
+        guard offset >= 0, offset + 3 < rgba.count else {
+            throw ScreenshotFeatureError.encodingFailed
+        }
+
+        return ScreenshotColorSample(
+            color: .init(
+                red: rgba[offset],
+                green: rgba[offset + 1],
+                blue: rgba[offset + 2],
+                alpha: rgba[offset + 3]
+            ),
+            loupeRGBA: Data(rgba),
+            loupePixelSize: geometry.pixelSize,
+            centerPixel: geometry.centerPixel
         )
     }
 
@@ -280,6 +330,89 @@ public actor ScreenCaptureEngine {
             throw ScreenshotFeatureError.targetUnavailable
         }
         return display
+    }
+
+    private struct ColorSampleGeometry {
+        let sourceRect: ScreenshotRect
+        let pixelSize: ScreenshotSize
+        let centerPixel: ScreenshotPoint
+    }
+
+    private func colorSampleGeometry(
+        for request: ScreenshotColorSampleRequest,
+        on display: ScreenshotDisplayDescriptor
+    ) throws -> ColorSampleGeometry {
+        let scale = display.scaleFactor
+        let displayPixelWidth = Int(display.pixelSize.width.rounded(.down))
+        let displayPixelHeight = Int(display.pixelSize.height.rounded(.down))
+        let localX = request.desktopPoint.x - display.frame.x
+        let localY = request.desktopPoint.y - display.frame.y
+        guard scale > 0,
+              displayPixelWidth > 0,
+              displayPixelHeight > 0,
+              localX >= 0,
+              localY >= 0,
+              localX < display.frame.width,
+              localY < display.frame.height else {
+            throw ScreenshotFeatureError.targetUnavailable
+        }
+
+        var diameter = min(31, max(1, request.loupePixelDiameter))
+        if diameter.isMultiple(of: 2) {
+            diameter = min(31, diameter + 1)
+        }
+        let width = min(diameter, displayPixelWidth)
+        let height = min(diameter, displayPixelHeight)
+        let targetX = min(displayPixelWidth - 1, max(0, Int(floor(localX * scale))))
+        let targetY = min(displayPixelHeight - 1, max(0, Int(floor(localY * scale))))
+        let originX = min(max(0, targetX - width / 2), displayPixelWidth - width)
+        let originY = min(max(0, targetY - height / 2), displayPixelHeight - height)
+
+        return ColorSampleGeometry(
+            sourceRect: .init(
+                x: Double(originX) / scale,
+                y: Double(originY) / scale,
+                width: Double(width) / scale,
+                height: Double(height) / scale
+            ),
+            pixelSize: .init(width: Double(width), height: Double(height)),
+            centerPixel: .init(
+                x: Double(targetX - originX),
+                y: Double(targetY - originY)
+            )
+        )
+    }
+
+    private func standardSRGBBytes(
+        from image: CGImage,
+        width: Int,
+        height: Int
+    ) throws -> [UInt8] {
+        guard width > 0,
+              height > 0,
+              let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) else {
+            throw ScreenshotFeatureError.encodingFailed
+        }
+        var bytes = [UInt8](repeating: 0, count: width * height * 4)
+        guard let context = CGContext(
+            data: &bytes,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+                | CGBitmapInfo.byteOrder32Big.rawValue
+        ) else {
+            throw ScreenshotFeatureError.encodingFailed
+        }
+
+        // 将返回数据定义为左上原点，便于主应用按行绘制像素放大镜。
+        context.translateBy(x: 0, y: CGFloat(height))
+        context.scaleBy(x: 1, y: -1)
+        context.interpolationQuality = .none
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        return bytes
     }
 
     private func displayPlan(

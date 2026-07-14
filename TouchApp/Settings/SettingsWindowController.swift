@@ -27,6 +27,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         window.minSize = NSSize(width: 760, height: 540)
         window.center()
         window.isReleasedWhenClosed = false
+        window.isRestorable = false
         window.standardWindowButton(.closeButton)?.identifier = NSUserInterfaceItemIdentifier("settings.close")
         super.init(window: window)
         window.delegate = self

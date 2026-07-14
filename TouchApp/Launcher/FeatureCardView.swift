@@ -14,32 +14,45 @@ struct FeatureCardView: View {
 
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 14) {
+            HStack(spacing: 12) {
                 Image(systemName: plugin.manifest.symbolName)
-                    .font(.system(size: 27, weight: .medium))
-                    .frame(width: 40)
+                    .font(.system(size: 22, weight: .semibold))
+                    .frame(width: 34, height: 34)
                     .foregroundStyle(palette.accent)
-                VStack(alignment: .leading, spacing: 4) {
+                    .background(
+                        palette.accent.opacity(0.13),
+                        in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    )
+                VStack(alignment: .leading, spacing: 3) {
                     Text(plugin.manifest.name)
-                        .font(.system(size: 19, weight: .semibold))
+                        .font(.system(size: 16, weight: .semibold))
                     if let statusLabel {
                         Label(statusLabel.text, systemImage: statusLabel.symbol)
-                            .font(.system(size: 11, weight: .medium))
+                            .font(.system(size: 10, weight: .medium))
                             .foregroundStyle(statusLabel.color)
                     }
                 }
-                Spacer()
+                Spacer(minLength: 6)
                 Text(shortcut.displayValue)
-                    .font(.system(size: 15, weight: .medium, design: .monospaced))
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 6)
-                    .background(.white.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
+                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(
+                        .white.opacity(0.10),
+                        in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    )
             }
             .foregroundStyle(palette.primaryText)
-            .padding(.horizontal, 22)
-            .frame(width: 260, height: 86)
-            .background(palette.cardFill, in: RoundedRectangle(cornerRadius: 20))
-            .overlay(RoundedRectangle(cornerRadius: 20).stroke(palette.border, lineWidth: 1))
+            .padding(.horizontal, 16)
+            .frame(width: 224, height: 72)
+            .background(
+                palette.cardFill,
+                in: RoundedRectangle(cornerRadius: 17, style: .continuous)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 17, style: .continuous)
+                    .stroke(palette.border, lineWidth: 1)
+            }
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("feature.\(plugin.manifest.id)")

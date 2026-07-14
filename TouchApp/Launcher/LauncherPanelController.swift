@@ -14,7 +14,7 @@ final class LauncherPanelController: NSObject {
     ) {
         searchCoordinator = SearchCoordinator(environment: searchEnvironment)
         panel = LauncherPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 1080, height: 620),
+            contentRect: NSRect(x: 0, y: 0, width: 980, height: 500),
             styleMask: [.borderless, .fullSizeContentView],
             backing: .buffered,
             defer: false
@@ -22,10 +22,11 @@ final class LauncherPanelController: NSObject {
         super.init()
         panel.isFloatingPanel = true
         panel.level = .floating
-        panel.hidesOnDeactivate = false
+        panel.hidesOnDeactivate = true
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = true
+        panel.isRestorable = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.searchKeyHandler = { [weak self] event in
             self?.handleSearchKey(event) ?? false

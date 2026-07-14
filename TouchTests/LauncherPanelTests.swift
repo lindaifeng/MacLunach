@@ -4,6 +4,18 @@ import XCTest
 
 @MainActor
 final class LauncherPanelTests: XCTestCase {
+    func testSearchTextViewAppliesReadableAppearance() {
+        let textView = SearchTextView(frame: NSRect(x: 0, y: 0, width: 320, height: 32))
+        let textColor = NSColor(calibratedWhite: 1, alpha: 1)
+        let placeholderColor = NSColor(calibratedWhite: 1, alpha: 0.64)
+
+        textView.applyAppearance(textColor: textColor, placeholderColor: placeholderColor)
+
+        XCTAssertEqual(textView.textColor, textColor)
+        XCTAssertEqual(textView.insertionPointColor, textColor)
+        XCTAssertEqual(textView.placeholderColor, placeholderColor)
+    }
+
     func testMarkedTextKeepsNavigationKeysInInputMethod() throws {
         let panel = LauncherPanel(
             contentRect: NSRect(x: 0, y: 0, width: 320, height: 120),

@@ -8,7 +8,7 @@ struct FeatureGridView: View {
     let palette: ThemePalette
 
     var body: some View {
-        HStack(spacing: 24) {
+        HStack(spacing: 18) {
             ForEach(featureStore.visiblePlugins, id: \.manifest.id) { plugin in
                 FeatureCardView(
                     plugin: plugin,

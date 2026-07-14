@@ -55,6 +55,88 @@ struct ScreenCaptureEngineTests {
         }
     }
 
+    @Test("Retina 取色按物理像素对齐并返回中心像素")
+    func colorSampleUsesRetinaPixelGeometry() async throws {
+        let display = descriptor(
+            id: 7,
+            frame: .init(x: 100, y: 50, width: 10, height: 8),
+            pixels: .init(width: 20, height: 16),
+            scale: 2
+        )
+        let backend = RecordingCaptureBackend(
+            snapshot: .init(displays: [display], windows: []),
+            images: [7: solidImage(width: 5, height: 5, red: 12, green: 34, blue: 56)]
+        )
+        let fixture = try makeEngineFixture(backend: backend)
+
+        let sample = try await fixture.engine.sampleColor(.init(
+            displayID: 7,
+            desktopPoint: .init(x: 102.25, y: 51.75),
+            loupePixelDiameter: 5
+        ))
+
+        let plan = try #require(await backend.recordedPlans.first)
+        #expect(plan.sourceRect == .init(x: 1, y: 0.5, width: 2.5, height: 2.5))
+        #expect(plan.pixelSize == .init(width: 5, height: 5))
+        #expect(sample.centerPixel == .init(x: 2, y: 2))
+        #expect(sample.color == .init(red: 12, green: 34, blue: 56))
+        #expect(sample.loupeRGBA.count == 5 * 5 * 4)
+    }
+
+    @Test("屏幕边缘取色平移采样框且中心索引保持目标像素")
+    func colorSampleClampsAtDisplayEdge() async throws {
+        let display = descriptor(
+            id: 8,
+            frame: .init(x: -10, y: -8, width: 10, height: 8),
+            pixels: .init(width: 20, height: 16),
+            scale: 2
+        )
+        let backend = RecordingCaptureBackend(
+            snapshot: .init(displays: [display], windows: []),
+            images: [8: solidImage(width: 5, height: 5, red: 200, green: 100, blue: 50)]
+        )
+        let fixture = try makeEngineFixture(backend: backend)
+
+        let sample = try await fixture.engine.sampleColor(.init(
+            displayID: 8,
+            desktopPoint: .init(x: -0.01, y: -0.01),
+            loupePixelDiameter: 5
+        ))
+
+        let plan = try #require(await backend.recordedPlans.first)
+        #expect(plan.sourceRect == .init(x: 7.5, y: 5.5, width: 2.5, height: 2.5))
+        #expect(sample.centerPixel == .init(x: 4, y: 4))
+        #expect(sample.color == .init(red: 200, green: 100, blue: 50))
+    }
+
+    @Test("Display P3 采样统一转换为标准 sRGB")
+    func colorSampleConvertsDisplayP3ToSRGB() async throws {
+        let display = descriptor(id: 9, frame: .init(x: 0, y: 0, width: 1, height: 1))
+        let components: [CGFloat] = [0.8, 0.4, 0.2, 1]
+        let backend = RecordingCaptureBackend(
+            snapshot: .init(displays: [display], windows: []),
+            images: [9: try p3SolidImage(components: components)]
+        )
+        let fixture = try makeEngineFixture(backend: backend)
+        let sample = try await fixture.engine.sampleColor(.init(
+            displayID: 9,
+            desktopPoint: .init(x: 0.5, y: 0.5),
+            loupePixelDiameter: 1
+        ))
+        let p3 = try #require(CGColorSpace(name: CGColorSpace.displayP3))
+        let sRGB = try #require(CGColorSpace(name: CGColorSpace.sRGB))
+        let source = try #require(CGColor(colorSpace: p3, components: components))
+        let converted = try #require(source.converted(
+            to: sRGB,
+            intent: .relativeColorimetric,
+            options: nil
+        )?.components)
+
+        #expect(abs(Int(sample.color.red) - Int((converted[0] * 255).rounded())) <= 1)
+        #expect(abs(Int(sample.color.green) - Int((converted[1] * 255).rounded())) <= 1)
+        #expect(abs(Int(sample.color.blue) - Int((converted[2] * 255).rounded())) <= 1)
+    }
+
     @Test("窗口捕获使用独立窗口 filter 并控制阴影")
     func windowCaptureUsesDesktopIndependentFilterAndShadowPolicy() async throws {
         let window = ScreenshotWindowDescriptor(
@@ -214,6 +296,114 @@ struct ScreenCaptureEngineTests {
             "me.touch.launcher", "me.touch.launcher.ScreenshotService"
         ])
         #expect(Set(plan.excludedWindowIDs) == [101, 102, 103, 104])
+    }
+
+    @Test("标注通过捕获引擎写入最终截图产物")
+    func annotationsAreRenderedIntoStoredArtifact() async throws {
+        let display = descriptor(id: 1, frame: .init(x: 0, y: 0, width: 20, height: 20))
+        let backend = RecordingCaptureBackend(
+            snapshot: .init(displays: [display], windows: []),
+            images: [1: solidImage(width: 20, height: 20, red: 255, green: 255, blue: 255)]
+        )
+        let fixture = try makeEngineFixture(backend: backend)
+        let annotation = ScreenshotAnnotation(
+            kind: .line,
+            points: [.init(x: 2, y: 2), .init(x: 18, y: 2)],
+            style: .init(color: .red, lineWidth: 3)
+        )
+
+        let artifact = try await fixture.engine.capture(.init(
+            mode: .fullScreen,
+            target: .display(displayID: 1),
+            annotations: [annotation]
+        ))
+
+        let artifactURL = fixture.root.appendingPathComponent(artifact.relativePath)
+        let source = try #require(CGImageSourceCreateWithURL(artifactURL as CFURL, nil))
+        let image = try #require(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        let markedPixel = rgba(atX: 10, y: 2, in: image)
+        #expect(markedPixel.red > 200)
+        #expect(markedPixel.green < 100)
+        #expect(markedPixel.blue < 100)
+    }
+
+    @Test("美化后的产物同时记录扩展后的 point 与 pixel 尺寸")
+    func beautifyUpdatesStoredArtifactDimensions() async throws {
+        let display = descriptor(
+            id: 1,
+            frame: .init(x: 0, y: 0, width: 40, height: 20),
+            pixels: .init(width: 80, height: 40),
+            scale: 2
+        )
+        let backend = RecordingCaptureBackend(
+            snapshot: .init(displays: [display], windows: []),
+            images: [1: solidImage(width: 80, height: 40, red: 255, green: 255, blue: 255)]
+        )
+        let fixture = try makeEngineFixture(backend: backend)
+        let beautify = ScreenshotAnnotation(
+            kind: .beautify,
+            points: [.init(x: 0, y: 0), .init(x: 40, y: 20)],
+            style: .init(color: .red, lineWidth: 1),
+            beautify: .init(
+                cornerRadius: 6,
+                shadowRadius: 4,
+                shadowOpacity: 0.2,
+                shadowOffsetX: 0,
+                shadowOffsetY: 2,
+                insets: .init(top: 5, right: 10, bottom: 15, left: 20),
+                backgroundGradient: .init(
+                    colors: [
+                        .init(red: 0.2, green: 0.3, blue: 0.8),
+                        .init(red: 0.2, green: 0.8, blue: 0.7)
+                    ],
+                    angleDegrees: 0
+                )
+            )
+        )
+
+        let artifact = try await fixture.engine.capture(.init(
+            mode: .fullScreen,
+            target: .display(displayID: 1),
+            annotations: [beautify]
+        ))
+
+        #expect(artifact.pointSize == .init(width: 70, height: 40))
+        #expect(artifact.pixelSize == .init(width: 140, height: 80))
+    }
+
+    @Test("裁剪后的产物同时记录裁剪后的 point 与 Retina pixel 尺寸")
+    func cropUpdatesStoredArtifactDimensions() async throws {
+        let display = descriptor(
+            id: 1,
+            frame: .init(x: 0, y: 0, width: 100, height: 80),
+            pixels: .init(width: 200, height: 160),
+            scale: 2
+        )
+        let backend = RecordingCaptureBackend(
+            snapshot: .init(displays: [display], windows: []),
+            images: [1: solidImage(width: 200, height: 160, red: 255, green: 255, blue: 255)]
+        )
+        let fixture = try makeEngineFixture(backend: backend)
+        let crop = ScreenshotAnnotation(
+            kind: .crop,
+            points: [.init(x: 20, y: 10), .init(x: 80, y: 60)],
+            style: .init(color: .red, lineWidth: 1)
+        )
+
+        let artifact = try await fixture.engine.capture(.init(
+            mode: .fullScreen,
+            target: .display(displayID: 1),
+            annotations: [crop]
+        ))
+
+        #expect(artifact.pointSize == .init(width: 60, height: 50))
+        #expect(artifact.pixelSize == .init(width: 120, height: 100))
+
+        let artifactURL = fixture.root.appendingPathComponent(artifact.relativePath)
+        let source = try #require(CGImageSourceCreateWithURL(artifactURL as CFURL, nil))
+        let image = try #require(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        #expect(image.width == 120)
+        #expect(image.height == 100)
     }
 
     @Test("取消会停止捕获且不会写文件或记录历史")
@@ -384,6 +574,22 @@ private func solidImage(width: Int, height: Int, red: UInt8, green: UInt8, blue:
     context.setFillColor(red: CGFloat(red) / 255, green: CGFloat(green) / 255, blue: CGFloat(blue) / 255, alpha: 1)
     context.fill(CGRect(x: 0, y: 0, width: width, height: height))
     return context.makeImage()!
+}
+
+private func p3SolidImage(components: [CGFloat]) throws -> CGImage {
+    let colorSpace = try #require(CGColorSpace(name: CGColorSpace.displayP3))
+    let context = try #require(CGContext(
+        data: nil,
+        width: 1,
+        height: 1,
+        bitsPerComponent: 8,
+        bytesPerRow: 4,
+        space: colorSpace,
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    ))
+    context.setFillColor(try #require(CGColor(colorSpace: colorSpace, components: components)))
+    context.fill(CGRect(x: 0, y: 0, width: 1, height: 1))
+    return try #require(context.makeImage())
 }
 
 private func verticalBandsImage(

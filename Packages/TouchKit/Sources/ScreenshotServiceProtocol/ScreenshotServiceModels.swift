@@ -29,6 +29,10 @@ public struct ScreenshotServiceAction: Codable, Equatable, Sendable {
     public static func capture(requestData: Data) -> Self {
         .init(name: "capture", isIdempotent: false, payload: requestData)
     }
+
+    public static func sampleColor(requestData: Data) -> Self {
+        .init(name: "sampleColor", isIdempotent: true, payload: requestData)
+    }
 }
 
 public struct ScreenshotPong: Codable, Equatable, Sendable {

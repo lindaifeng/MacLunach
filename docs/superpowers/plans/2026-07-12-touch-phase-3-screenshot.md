@@ -1,8 +1,8 @@
 # 触达阶段三：截图、标注与钉图实施计划
 
-**状态（2026-07-13）：计划已创建，等待按任务顺序实施。**
+**状态（2026-07-14）：实施中。Task 1–3 已完成；Task 4–5 已完成主要生产链路与最小单元测试，真实 XPC/实机验收待补；QQ 式选区工具栏已接入，十三类可见标注/效果工具进入捕获链路，服务端另完成模糊、放大镜和非破坏裁剪；“钉至桌面”已形成基础真实窗口链路，其余视频工具继续实施。**
 
-> **执行说明：** 由当前模型自主规划并逐项执行；不使用 Superpowers 技能或子代理。步骤使用 checkbox 跟踪。除明确列入 V1.1 的滚动截图、录屏和 GIF 外，不得把本计划内功能推迟到后续阶段。
+> **执行说明：** 由当前模型自主规划并逐项执行；不使用 Superpowers 技能或子代理。步骤使用 checkbox 跟踪。以参考视频为交互与工具顺序依据；滚动截图和 GIF 录制已纳入本阶段后续任务，不再作为明确排除项。自动化先跑最小相关集合，只在关键节点跑全量回归；XCUI/Computer Use 等纯基础设施问题设置排查上限，并与产品代码缺陷分开记录。
 
 **Goal:** 交付独立、可恢复、全键盘可操作的截图插件：区域、窗口、全屏、多显示器与延时捕获，浮动缩略图、非破坏性标注、OCR、二维码、取色、钉图和本地历史全部可用，并且任何权限或 `ScreenshotService` 故障都不影响启动器、搜索或其他插件。
 
@@ -283,7 +283,7 @@ Commit: `refactor: route screenshot actions through coordinator`
 - Modify: `Services/ScreenshotService/ScreenshotServiceEndpoint.swift`
 - Delete after parity: `Packages/TouchKit/Sources/ScreenshotFeature/ScreenCaptureService.swift`
 
-- [ ] **Step 1：写失败测试**
+- [x] **Step 1：写失败测试**
 
 覆盖：
 
@@ -296,13 +296,13 @@ Commit: `refactor: route screenshot actions through coordinator`
 - PNG、JPEG、HEIF 输出 UTType、扩展名和 alpha 策略一致。
 - 捕获取消会停止工作且不创建历史记录。
 
-- [ ] **Step 2：确认失败**
+- [x] **Step 2：确认失败**
 
 Run: `swift test --package-path Packages/TouchKit --filter ScreenCaptureEngineTests`
 
 Expected: FAIL。
 
-- [ ] **Step 3：实现所有像素捕获模式**
+- [x] **Step 3：实现所有像素捕获模式**
 
 ScreenCaptureKit 路径只使用 macOS 14 可用 API。屏幕/窗口枚举与实际 capture 分开，目标在用户确认后消失时返回 `targetUnavailable`。禁止将整张图通过 XPC 返回；服务写入插件 Captures 目录并响应 `ScreenshotArtifact`。
 
@@ -329,7 +329,7 @@ Commit: `feat: capture all screenshot targets in xpc`
 - Create: `TouchUITests/ScreenshotSelectionTests.swift`
 - Modify: `TouchApp/Screenshot/ScreenshotCoordinator.swift`
 
-- [ ] **Step 1：写失败单元与 UI 测试**
+- [x] **Step 1：写失败单元与 UI 测试**
 
 覆盖：
 
@@ -341,50 +341,60 @@ Commit: `feat: capture all screenshot targets in xpc`
 - 光标旁尺寸标签不会越出当前屏且有 VoiceOver 描述。
 - 所有 overlay 同时出现在各屏，触达已有窗口在显示 overlay 前隐藏。
 
-- [ ] **Step 2：确认失败**
+- [x] **Step 2：确认失败**
 
 Run: `xcodebuild -project Touch.xcodeproj -scheme Touch -destination 'platform=macOS' -derivedDataPath /tmp/touch-phase3-task5 -only-testing:TouchTests/SelectionGeometryTests -only-testing:TouchUITests/ScreenshotSelectionTests test`
 
 Expected: FAIL。
 
-- [ ] **Step 3：实现透明无边框 overlay**
+- [x] **Step 3：实现透明无边框 overlay**
 
 每个 `NSScreen` 一个不激活其他应用的 overlay panel，统一由 controller 管理虚拟桌面坐标。选择完成后先关闭全部 overlay，再把规范化请求交给 XPC。窗口吸附使用服务枚举的共享窗口描述，不在 UI 线程调用耗时 ScreenCaptureKit。
 
 - [ ] **Step 4：共同门槛并实机验收**
 
-真实操作鼠标、Space、八点控制、方向键、Shift、Esc、Enter，并在可用多屏与不同缩放下记录截图。
+真实操作鼠标、Space、八点控制、方向键、Shift、Esc、Enter，并在可用多屏与不同缩放下记录截图。当前 XCUITest Runner 停在 `Timed out while enabling automation mode`，Computer Use 无法读取全屏透明 `NSPanel`；两者记录为基础设施限制，不据此判定产品失败，也不继续无限全量重跑。
 
 Commit: `feat: add keyboard accessible screenshot selection`
 
-## Task 6：实现模式菜单、窗口/全屏/多屏、延时与独立快捷键
+## Task 6：实现 QQ 式直接拖拽、选区工具栏、延时与扩展捕获入口
 
 **依赖：** Task 5。
 
 **Files:**
 
-- Create: `TouchApp/Screenshot/ScreenshotModeMenu.swift`
+- Create: `TouchApp/Screenshot/SelectionToolbarModel.swift`
+- Create: `TouchApp/Screenshot/SelectionToolbarLayout.swift`
+- Create: `TouchApp/Screenshot/SelectionToolbarView.swift`
 - Create: `TouchApp/Screenshot/CaptureCountdownPanel.swift`
+- Create: `TouchTests/Screenshot/SelectionToolbarTests.swift`
 - Create: `TouchTests/Screenshot/CaptureCountdownTests.swift`
 - Create: `TouchUITests/ScreenshotModeTests.swift`
+- Modify: `TouchApp/Screenshot/SelectionOverlayController.swift`
 - Modify: `TouchApp/Screenshot/ScreenshotCoordinator.swift`
 - Modify: `TouchApp/Launcher/GlobalHotKeyController.swift`
 - Modify: `TouchApp/FeatureArea/FeatureConfigurationStore.swift`
 - Modify: `TouchApp/Settings/ShortcutRecorderView.swift`
 
-- [ ] **Step 1：写失败测试**
+- [x] **Step 1：实现 QQ 式直接拖拽和选区后工具栏**
 
-覆盖区域、窗口、全屏、多显示器四个像素捕获入口，以及 3/5/10 秒倒计时、Esc 取消、目标失效、倒计时不阻塞主线程、每模式快捷键冲突保持旧值。窗口模式可切换阴影；全屏可选显示器；多屏会列出参与显示器。测试时钟使延时测试即时确定完成。
+点击截图后直接进入跨屏 overlay，不出现“区域/全屏”前置菜单。用户自行拖动：选区覆盖整块显示器时自动生成 `.display`，否则生成 `.region`；窗口悬停吸附仍生成 `.window`。鼠标松开确认选区后才显示工具栏，创建、移动和调整选区期间隐藏。工具顺序、名称及视频中明确出现的快捷键与参考视频一致；窗口阴影控制位于选区工具栏。
 
-- [ ] **Step 2：确认失败并实现**
+- [x] **Step 2：写最小状态、顺序和几何测试**
 
-模式菜单必须可键盘导航和 VoiceOver；倒计时 panel 不进入截图且每秒更新。全局热键回调只调度 coordinator，不直接执行服务。用户停用截图插件时注销所有截图模式快捷键。
+覆盖工具顺序、快捷键、工具栏上下避让、拖满屏推断全屏、区域拖拽、窗口阴影传递、Esc/拷贝闭环。当前只把已存在生产代码与已通过的最小测试标记完成；真实视觉验收仍留在 Step 4。
 
-- [ ] **Step 3：共同门槛并实机验收**
+- [ ] **Step 3：实现延时、多屏、滚动截图和 GIF 扩展入口**
 
-真实等待 3/5/10 秒各一次，验证取消、窗口阴影、指定屏幕和所有屏幕。
+3/5/10 秒倒计时不阻塞主线程且可 Esc 取消。多屏与后续滚动截图/GIF 从工具栏或独立快捷键进入，不能重新引入“区域/全屏”前置菜单。全局热键只调度 coordinator；停用插件时注销全部截图快捷键。
 
-Commit: `feat: add screenshot modes and delayed capture`
+增量状态（2026-07-14）：3/5/10 秒可见 HUD、设置入口、主线程非阻塞等待、Esc 与插件停用取消、倒计时结束后立即请求 XPC 捕获均已实现；所有显示器截图现提供默认 `Command+Shift+2` 独立快捷键，配置页可重录并检测插件内外冲突，协调器会读取当前显示器列表并发送真实 `.allDisplays` 请求，产物写入剪贴板。滚动截图与 GIF 工具栏项也已从 UI 占位提示进入可取消的协调器扩展路由，且不会误捕获静态图片。当前关键组合回归 47 个测试通过。滚动截图拼接与 GIF 帧录制/编码尚未完成，因此本 Step 保持未勾选。
+
+- [ ] **Step 4：共同门槛并实机验收**
+
+真实验证直接拖拽区域、拖满屏、窗口吸附与阴影、工具栏避让、延时取消、多屏和各扩展入口。XCUI 自动化模式和 Computer Use 透明 panel 识别失败按基础设施问题限时排查，改用可复核的最小单元/集成证据并保留真实操作待办。
+
+Commit: `feat: add qq-style screenshot selection toolbar`
 
 ## Task 7：实现屏幕取色
 
@@ -399,13 +409,15 @@ Commit: `feat: add screenshot modes and delayed capture`
 - Modify: `Packages/TouchKit/Sources/ScreenshotServiceCore/ScreenCaptureEngine.swift`
 - Modify: `TouchApp/Screenshot/ScreenshotCoordinator.swift`
 
-- [ ] **Step 1：写失败测试**
+- [x] **Step 1：写失败测试**
 
 覆盖 sRGB/Display P3 到标准 sRGB 的转换、HEX/RGB/HSL 文本、Retina 像素定位、边缘采样、Esc 取消、单击复制。像素 loupe 不显示触达自身内容，连续采样有节流且旧请求可取消。
 
-- [ ] **Step 2：实现 1×1/小区域 SCK 取样和 loupe**
+- [x] **Step 2：实现 1×1/小区域 SCK 取样和 loupe**
 
 不得使用绕过权限的私有 API；没有屏幕录制权限时与截图共用单一引导。
+
+增量状态（2026-07-14）：已完成默认 `Control+Option+C` 快捷键、跨显示器透明取色层、十字光标、约 30fps 连续采样、旧请求取消与响应防回跳、Retina 物理像素定位、屏幕边缘放大镜避让、Display P3 到标准 sRGB 转换、HEX/RGB/HSL 展示、单击重新采样并复制 HEX、Esc/插件停用取消，以及 XPC 排除触达自身窗口；取色只返回内存数据，不创建截图文件或历史记录。恢复验证后，颜色模型 2 个测试、`ScreenCaptureEngineTests` 17 个测试、`ColorPickerControllerTests` 与 `ScreenshotCoordinatorTests` 25 个测试均为 0 失败。最新 Debug 应用和已知色块已通过 Computer Use 启动，但其合成 `Control+Option+C` 仍不能触发 Carbon 全局快捷键，且透明取色 panel 无法由 AX 稳定识别；该限制已达到排查上限，不作为产品缺陷。Step 3 保留真实键盘、边缘视觉及可用硬件上的跨屏验收待办，不阻塞后续服务层开发。
 
 - [ ] **Step 3：共同门槛并实机验收**
 
@@ -565,6 +577,8 @@ Commit: `feat: render screenshot annotation layers`
 
 **依赖：** Task 12。
 
+**增量进度（2026-07-14）：** 马赛克画笔、贴纸、水印和美化已进入同一非破坏性图层链路。模糊、放大镜和裁剪现也已完成领域模型、Codable/XPC 载荷、服务端渲染和尺寸元数据：`CIContext` 跨请求复用；模糊只修改矩形 mask；放大镜按受限倍率在圆形 mask 内重采样；裁剪夹紧到画布、只使用最后一个有效图层并在美化前执行。透明图、非有限参数、极小区域、越界/无效裁剪、多个裁剪、裁剪后美化及 2x Retina point/pixel 产物尺寸已有确定性测试。Task 13 的 Core Image/Graphics 增量已完成；完整编辑器交互属于 Task 14，6K 连续导出内存门槛仍待执行，因此本 Task 暂不整体勾选完成。
+
 **Files:**
 
 - Create: `Packages/TouchKit/Sources/ScreenshotServiceCore/AnnotationEffects.swift`
@@ -572,11 +586,11 @@ Commit: `feat: render screenshot annotation layers`
 - Modify: `Packages/TouchKit/Sources/ScreenshotServiceCore/AnnotationRenderer.swift`
 - Modify: `Packages/TouchKit/Sources/ScreenshotFeature/AnnotationDocument.swift`
 
-- [ ] **Step 1：写失败测试**
+- [x] **Step 1：写失败测试**
 
 覆盖马赛克块大小、Gaussian blur 边界裁剪、放大镜倍率与圆形 mask、非破坏裁剪、圆角、阴影、四边边距和多色渐变背景。测试极小/超大区域、透明图、超出画布坐标和无效 crop；渲染结果尺寸与元数据必须确定。
 
-- [ ] **Step 2：实现 Core Image/Graphics 效果**
+- [x] **Step 2：实现 Core Image/Graphics 效果**
 
 CIContext 在服务内复用；效果使用选区 mask，不改变原始图。渲染失败返回 layer ID 和结构化错误，原项目仍可打开并禁用问题图层。
 
@@ -616,6 +630,8 @@ Commit: `feat: add complete screenshot annotation editor`
 ## Task 15：实现钉图窗口、多图、穿透恢复和持久化
 
 **依赖：** Task 8、10。
+
+**增量进度（2026-07-14）：** QQ 工具栏的“钉至桌面”已不再是占位提示。完成选区后会捕获真实产物并交给独立窗口管理器，创建无边框置顶、等比缩放、可拖动、跨 Space 的钉图窗口；多张图按 artifact ID 独立持有，右键支持复制和关闭。透明度、折叠/展开、鼠标穿透与全局恢复、重启持久化和引用计数仍未完成，因此 Task 15 保持未勾选。
 
 **Files:**
 

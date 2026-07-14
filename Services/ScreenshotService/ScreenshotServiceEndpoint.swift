@@ -47,8 +47,10 @@ final class ScreenshotServiceEndpoint: NSObject, ScreenshotXPCProtocol, @uncheck
             return
         }
 
-        let isAsynchronousAction = request.action.name == "capture"
-            && request.action.payload != nil
+        let isAsynchronousAction = (
+            request.action.name == "capture"
+                || request.action.name == "sampleColor"
+        ) && request.action.payload != nil
             || request.action.name == ScreenshotServiceAction.availableContent.name
         guard request.protocolVersion == ScreenshotServiceProtocolVersion.current,
               isAsynchronousAction else {
@@ -70,6 +72,8 @@ final class ScreenshotServiceEndpoint: NSObject, ScreenshotXPCProtocol, @uncheck
             let response: ScreenshotServiceResponse
             if request.action.name == "capture" {
                 response = await processCapture(request)
+            } else if request.action.name == "sampleColor" {
+                response = await processColorSample(request)
             } else {
                 response = await processAvailableContent(request)
             }
@@ -88,6 +92,35 @@ final class ScreenshotServiceEndpoint: NSObject, ScreenshotXPCProtocol, @uncheck
             return true
         }
         if !shouldKeepTask { task.cancel() }
+    }
+
+    private func processColorSample(
+        _ serviceRequest: ScreenshotServiceRequest
+    ) async -> ScreenshotServiceResponse {
+        do {
+            try Task.checkCancellation()
+            guard let payload = serviceRequest.action.payload else {
+                return .init(
+                    requestID: serviceRequest.id,
+                    payload: .failure(.malformedRequest("sampleColor action is missing its payload"))
+                )
+            }
+            let request = try JSONDecoder().decode(ScreenshotColorSampleRequest.self, from: payload)
+            let sample = try await engine.sampleColor(request)
+            return .init(
+                requestID: serviceRequest.id,
+                payload: .colorSample(try JSONEncoder().encode(sample))
+            )
+        } catch is CancellationError {
+            return .init(requestID: serviceRequest.id, payload: .failure(.cancelled))
+        } catch let error as ScreenshotFeatureError {
+            return .init(requestID: serviceRequest.id, payload: .failure(map(error)))
+        } catch {
+            return .init(
+                requestID: serviceRequest.id,
+                payload: .failure(.internalFailure(String(describing: error)))
+            )
+        }
     }
 
     func cancel(requestID: String) {

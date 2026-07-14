@@ -133,6 +133,36 @@ public actor ScreenshotClient {
         }
     }
 
+    public func sampleColor(
+        _ request: ScreenshotColorSampleRequest,
+        timeout: Duration = .seconds(5)
+    ) async throws -> ScreenshotColorSample {
+        let requestData: Data
+        do {
+            requestData = try JSONEncoder().encode(request)
+        } catch {
+            throw ScreenshotFeatureError.serviceFailed(
+                message: "color sample request encoding failed: \(error)"
+            )
+        }
+        let payload = try await perform(
+            action: .sampleColor(requestData: requestData),
+            timeout: timeout
+        )
+        guard case let .colorSample(sampleData) = payload else {
+            throw ScreenshotFeatureError.serviceFailed(
+                message: "sampleColor returned an unexpected payload"
+            )
+        }
+        do {
+            return try JSONDecoder().decode(ScreenshotColorSample.self, from: sampleData)
+        } catch {
+            throw ScreenshotFeatureError.serviceFailed(
+                message: "color sample decoding failed: \(error)"
+            )
+        }
+    }
+
     public func perform(
         action: ScreenshotServiceAction,
         timeout: Duration = .seconds(2)
@@ -409,6 +439,12 @@ public actor ScreenshotClient {
             guard case .capture = payload else {
                 throw ScreenshotFeatureError.serviceFailed(
                     message: "capture returned an unexpected payload"
+                )
+            }
+        case "sampleColor":
+            guard case .colorSample = payload else {
+                throw ScreenshotFeatureError.serviceFailed(
+                    message: "sampleColor returned an unexpected payload"
                 )
             }
         default:

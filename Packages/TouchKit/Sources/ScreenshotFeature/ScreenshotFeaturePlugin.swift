@@ -2,6 +2,8 @@ import TouchFeatureAPI
 
 public enum ScreenshotPluginAction: Equatable, Sendable {
     case captureDefaultMode
+    case captureAllDisplays
+    case pickColor
 }
 
 @MainActor

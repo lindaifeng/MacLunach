@@ -189,7 +189,10 @@ public struct ScreenshotFeatureConfiguration: Codable, Equatable, Sendable {
         defaultMode: ScreenshotCaptureMode = .region,
         defaultDelay: ScreenshotCaptureDelay = .none,
         windowShadow: ScreenshotWindowShadow = .included,
-        modeShortcuts: [ScreenshotCaptureMode: KeyboardShortcut] = [:],
+        modeShortcuts: [ScreenshotCaptureMode: KeyboardShortcut] = [
+            .allDisplays: .init(modifiers: [.command, .shift], key: "2"),
+            .colorPicker: .init(modifiers: [.control, .option], key: "c")
+        ],
         saveLocation: ScreenshotSaveLocation = .pluginDirectory,
         namingTemplate: String = "触达-{date}-{time}",
         output: ScreenshotOutputOptions = .init(),

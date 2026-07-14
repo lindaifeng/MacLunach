@@ -37,6 +37,59 @@ final class LauncherSmokeTests: XCTestCase {
         XCTAssertTrue(app.menuItems["修改快捷键"].waitForExistence(timeout: 2))
     }
 
+    func testLauncherHidesWhenAnotherApplicationBecomesActive() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["--show-launcher"]
+        app.launch()
+
+        let searchField = app.textFields["search.query"]
+        XCTAssertTrue(searchField.waitForExistence(timeout: 2))
+
+        XCUIApplication(bundleIdentifier: "com.apple.finder").activate()
+
+        let launcherHidden = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == false"),
+            object: searchField
+        )
+        XCTAssertEqual(XCTWaiter.wait(for: [launcherHidden], timeout: 2), .completed)
+    }
+
+    func testLauncherUsesBalancedCompactLayout() throws {
+        let app = XCUIApplication()
+        app.launchArguments = ["--show-launcher"]
+        app.launch()
+
+        let applicationMode = app.buttons["search.mode.application"]
+        let fileMode = app.buttons["search.mode.file"]
+        let searchField = app.textFields["search.query"]
+        let tabHint = app.staticTexts["search.hint.tab"]
+        let featureCards = [
+            app.buttons["feature.me.touch.finder"],
+            app.buttons["feature.me.touch.screenshot"],
+            app.buttons["feature.me.touch.super-right"]
+        ]
+
+        XCTAssertTrue(applicationMode.waitForExistence(timeout: 2))
+        XCTAssertTrue(fileMode.exists)
+        XCTAssertTrue(searchField.exists)
+        XCTAssertTrue(tabHint.exists)
+        XCTAssertTrue(featureCards.allSatisfy(\.exists))
+
+        XCTAssertGreaterThanOrEqual(applicationMode.frame.width, 36)
+        XCTAssertLessThanOrEqual(applicationMode.frame.width, 42)
+        XCTAssertGreaterThanOrEqual(fileMode.frame.width, 36)
+        XCTAssertLessThanOrEqual(fileMode.frame.width, 42)
+        XCTAssertLessThanOrEqual(fileMode.frame.minX - applicationMode.frame.maxX, 8)
+        XCTAssertLessThan(abs(applicationMode.frame.midY - searchField.frame.midY), 4)
+        XCTAssertLessThan(abs(fileMode.frame.midY - searchField.frame.midY), 4)
+        XCTAssertLessThan(tabHint.frame.maxX, searchField.frame.minX)
+
+        for card in featureCards {
+            XCTAssertLessThanOrEqual(card.frame.width, 232)
+            XCTAssertLessThanOrEqual(card.frame.height, 76)
+        }
+    }
+
     func testLauncherControlsExposeLabelsWithReducedTransparency() throws {
         let app = XCUIApplication()
         app.launchArguments = ["--show-launcher", "--reduce-transparency"]

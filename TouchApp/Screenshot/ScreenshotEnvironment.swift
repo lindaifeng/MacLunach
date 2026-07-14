@@ -11,7 +11,11 @@ final class ScreenshotEnvironment: ObservableObject {
         defaults: UserDefaults = .standard,
         authorization: (any ScreenRecordingAuthorizing)? = nil,
         captureService: (any ScreenshotCapturing)? = nil,
+        clipboardWriter: (any ScreenshotClipboardWriting)? = nil,
         client: ScreenshotClient = ScreenshotClient(),
+        selectionFactory: @escaping ScreenshotCoordinator.SelectionFactory = {
+            SelectionOverlayController()
+        },
         registerShortcuts: @escaping ScreenshotCoordinator.ShortcutAction = {},
         unregisterShortcuts: @escaping ScreenshotCoordinator.ShortcutAction = {}
     ) {
@@ -21,6 +25,11 @@ final class ScreenshotEnvironment: ObservableObject {
         coordinator = ScreenshotCoordinator(
             authorization: authorizer,
             captureService: captureService,
+            clipboardWriter: clipboardWriter ?? SystemScreenshotClipboardWriter(),
+            selectionFactory: selectionFactory,
+            configurationProvider: {
+                FeatureConfigurationStore(defaults: defaults).load().screenshot
+            },
             invalidateService: { await client.shutdown() },
             registerShortcuts: registerShortcuts,
             unregisterShortcuts: unregisterShortcuts

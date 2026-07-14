@@ -118,6 +118,25 @@ final class FeatureAreaStore: ObservableObject {
         try? configurationStore.save(configurations.screenshot)
     }
 
+    func updateScreenshotModeShortcut(
+        _ shortcut: TouchFeatureAPI.KeyboardShortcut,
+        for mode: ScreenshotCaptureMode
+    ) -> String? {
+        if let conflict = plugins.first(where: { self.shortcut(for: $0.manifest.id) == shortcut }) {
+            return "与“\(conflict.manifest.name)”的快捷键冲突"
+        }
+        if let conflict = configurations.screenshot.modeShortcuts.first(where: {
+            $0.key != mode && $0.value == shortcut
+        }) {
+            return "与“\(conflict.key.settingsTitle)”快捷键冲突"
+        }
+
+        configurations.screenshot.modeShortcuts[mode] = shortcut
+        try? configurationStore.save(configurations.screenshot)
+        notificationCenter.post(name: .screenshotShortcutsDidChange, object: nil)
+        return nil
+    }
+
     func updateSuperRightConfiguration<Value>(
         _ keyPath: WritableKeyPath<SuperRightFeatureConfiguration, Value>,
         to value: Value
@@ -136,6 +155,9 @@ final class FeatureAreaStore: ObservableObject {
         preferences.shortcuts[featureID] = shortcut
         persist()
         Task { try? await registry.setShortcut(shortcut, for: featureID) }
+        if featureID == FeatureConfigurationStore.screenshotID {
+            notificationCenter.post(name: .screenshotShortcutsDidChange, object: nil)
+        }
         return nil
     }
 
@@ -199,5 +221,24 @@ final class FeatureAreaStore: ObservableObject {
     private func persist() {
         try? preferencesStore.save(preferences)
         objectWillChange.send()
+    }
+}
+
+extension Notification.Name {
+    static let screenshotShortcutsDidChange = Notification.Name(
+        "me.touch.screenshot.shortcuts-did-change"
+    )
+}
+
+private extension ScreenshotCaptureMode {
+    var settingsTitle: String {
+        switch self {
+        case .region: "区域截图"
+        case .window: "窗口截图"
+        case .fullScreen: "全屏截图"
+        case .allDisplays: "所有显示器截图"
+        case .ocrRegion: "文字识别"
+        case .colorPicker: "屏幕取色"
+        }
     }
 }

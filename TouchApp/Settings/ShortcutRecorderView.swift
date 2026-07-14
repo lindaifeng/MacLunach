@@ -3,6 +3,7 @@ import SwiftUI
 import TouchFeatureAPI
 
 struct ShortcutRecorderView: View {
+    var title = "快捷键"
     let shortcut: TouchFeatureAPI.KeyboardShortcut
     let errorMessage: String?
     let onCapture: (TouchFeatureAPI.KeyboardShortcut) -> Void
@@ -13,7 +14,7 @@ struct ShortcutRecorderView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text("快捷键")
+                Text(title)
                 Spacer()
                 Button(isRecording ? "请按下组合键…" : shortcut.displayValue) {
                     isRecording.toggle()

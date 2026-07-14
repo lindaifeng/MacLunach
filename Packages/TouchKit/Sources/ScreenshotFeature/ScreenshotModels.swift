@@ -125,6 +125,7 @@ public struct ScreenshotCaptureRequest: Codable, Equatable, Sendable, Identifiab
     public var target: ScreenshotCaptureTarget
     public var windowShadow: ScreenshotWindowShadow
     public var output: ScreenshotOutputOptions
+    public var annotations: [ScreenshotAnnotation]
 
     public init(
         id: UUID = UUID(),
@@ -132,7 +133,8 @@ public struct ScreenshotCaptureRequest: Codable, Equatable, Sendable, Identifiab
         delay: ScreenshotCaptureDelay = .none,
         target: ScreenshotCaptureTarget,
         windowShadow: ScreenshotWindowShadow = .included,
-        output: ScreenshotOutputOptions = .init()
+        output: ScreenshotOutputOptions = .init(),
+        annotations: [ScreenshotAnnotation] = []
     ) {
         self.id = id
         self.mode = mode
@@ -140,6 +142,31 @@ public struct ScreenshotCaptureRequest: Codable, Equatable, Sendable, Identifiab
         self.target = target
         self.windowShadow = windowShadow
         self.output = output
+        self.annotations = annotations
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, mode, delay, target, windowShadow, output, annotations
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        mode = try container.decode(ScreenshotCaptureMode.self, forKey: .mode)
+        delay = try container.decodeIfPresent(ScreenshotCaptureDelay.self, forKey: .delay) ?? .none
+        target = try container.decode(ScreenshotCaptureTarget.self, forKey: .target)
+        windowShadow = try container.decodeIfPresent(
+            ScreenshotWindowShadow.self,
+            forKey: .windowShadow
+        ) ?? .included
+        output = try container.decodeIfPresent(
+            ScreenshotOutputOptions.self,
+            forKey: .output
+        ) ?? .init()
+        annotations = try container.decodeIfPresent(
+            [ScreenshotAnnotation].self,
+            forKey: .annotations
+        ) ?? []
     }
 }
 

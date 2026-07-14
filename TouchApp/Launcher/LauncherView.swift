@@ -16,14 +16,14 @@ struct LauncherView: View {
             palette.tint
 
             VStack(spacing: 0) {
-                HStack(spacing: 14) {
+                HStack(spacing: 12) {
                     Image(systemName: "sparkles")
-                        .font(.system(size: 34, weight: .semibold))
+                        .font(.system(size: 29, weight: .semibold))
                         .foregroundStyle(.linearGradient(colors: [palette.primaryText, palette.accent], startPoint: .top, endPoint: .bottom))
                     Text("触达")
-                        .font(.system(size: 32, weight: .bold))
+                        .font(.system(size: 28, weight: .bold))
                     Text("心之所想，一触即达")
-                        .font(.system(size: 18, weight: .medium))
+                        .font(.system(size: 15, weight: .medium))
                         .foregroundStyle(palette.secondaryText)
                     Spacer()
                     Button { themeStore.cycle() } label: { Image(systemName: "paintpalette") }
@@ -38,37 +38,37 @@ struct LauncherView: View {
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("打开设置")
-                    .accessibilityIdentifier("launcher.settings")
+                        .accessibilityIdentifier("launcher.settings")
                 }
-                .font(.system(size: 20, weight: .medium))
+                .font(.system(size: 18, weight: .medium))
                 .foregroundStyle(palette.primaryText)
-                .padding(.horizontal, 58)
-                .padding(.top, 46)
+                .padding(.horizontal, 48)
+                .padding(.top, 36)
 
                 SearchBarView(
                     mode: $searchCoordinator.mode,
                     query: $searchCoordinator.query,
                     palette: palette
                 )
-                .padding(.top, 104)
-                .padding(.horizontal, 190)
+                .frame(width: 760)
+                .padding(.top, 70)
 
                 if searchCoordinator.query.isEmpty {
                     FeatureGridView(palette: palette)
-                        .padding(.top, 100)
+                        .padding(.top, 54)
                         .transition(.opacity)
                 } else {
                     SearchResultsView(coordinator: searchCoordinator, palette: palette)
-                        .padding(.top, 20)
-                        .padding(.horizontal, 190)
+                        .frame(width: 760)
+                        .padding(.top, 18)
                         .transition(.opacity)
                 }
 
                 Spacer()
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 36))
-        .overlay(RoundedRectangle(cornerRadius: 36).stroke(palette.border, lineWidth: 1))
+        .clipShape(RoundedRectangle(cornerRadius: 32, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 32, style: .continuous).stroke(palette.border, lineWidth: 1))
         .padding(1)
         .animation(.easeInOut(duration: 0.08), value: searchCoordinator.query.isEmpty)
         .onAppear(perform: finishPerformanceIntervalAfterRender)

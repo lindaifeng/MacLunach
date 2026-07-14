@@ -84,6 +84,198 @@ final class ScreenshotCoordinatorTests: XCTestCase {
         XCTAssertEqual(capture.captureCount, 1)
     }
 
+    func testWindowShadowChoiceFromSelectionIsForwardedToCaptureRequest() async throws {
+        let capture = CaptureStub {}
+        let selection = SelectionStub(
+            target: .window(windowID: 42),
+            windowShadow: .excluded
+        )
+        let coordinator = makeCoordinator(capture: capture, selection: selection)
+
+        _ = try await coordinator.route(.captureDefaultMode)
+
+        XCTAssertEqual(capture.lastRequest?.mode, .window)
+        XCTAssertEqual(capture.lastRequest?.target, .window(windowID: 42))
+        XCTAssertEqual(capture.lastRequest?.windowShadow, .excluded)
+    }
+
+    func testAllDisplaysShortcutCapturesEveryAdvertisedDisplayAndCopiesArtifact() async throws {
+        let capture = CaptureStub(
+            content: ScreenshotSelectionContent(
+                displays: [
+                    .init(
+                        id: 1,
+                        frame: .init(x: 0, y: 0, width: 1440, height: 900),
+                        pixelSize: .init(width: 2880, height: 1800),
+                        scaleFactor: 2
+                    ),
+                    .init(
+                        id: 2,
+                        frame: .init(x: 1440, y: 0, width: 1920, height: 1080),
+                        pixelSize: .init(width: 1920, height: 1080),
+                        scaleFactor: 1
+                    )
+                ],
+                windows: []
+            ),
+            artifact: makeArtifact(relativePath: "Captures/all.png"),
+            handler: {}
+        )
+        let clipboard = ClipboardWriterStub()
+        let coordinator = makeCoordinator(
+            capture: capture,
+            clipboardWriter: clipboard
+        )
+
+        let result = try await coordinator.route(.captureAllDisplays)
+        XCTAssertEqual(result, .completed)
+        XCTAssertEqual(
+            capture.lastRequest?.target,
+            .allDisplays(displayIDs: [1, 2])
+        )
+        XCTAssertEqual(capture.lastRequest?.mode, .allDisplays)
+        XCTAssertEqual(clipboard.artifacts.count, 1)
+    }
+
+    func testToolbarExtensionActionsAreRoutedWithoutCapturingAStillImage() async throws {
+        let router = CaptureExtensionRouterStub()
+        let scrollingCapture = CaptureStub {}
+        let scrollingCoordinator = makeCoordinator(
+            capture: scrollingCapture,
+            extensionRouter: router,
+            selection: SelectionStub(completionAction: .scrollingCapture)
+        )
+
+        let scrollingResult = try await scrollingCoordinator.route(.captureDefaultMode)
+        XCTAssertEqual(scrollingResult, .completed)
+        XCTAssertEqual(router.requests.map(\.kind), [.scrollingCapture])
+        XCTAssertEqual(scrollingCapture.captureCount, 0)
+
+        let gifRouter = CaptureExtensionRouterStub()
+        let gifCapture = CaptureStub {}
+        let gifCoordinator = makeCoordinator(
+            capture: gifCapture,
+            extensionRouter: gifRouter,
+            selection: SelectionStub(completionAction: .gifRecording)
+        )
+        let gifResult = try await gifCoordinator.route(.captureDefaultMode)
+        XCTAssertEqual(gifResult, .completed)
+        XCTAssertEqual(gifRouter.requests.map(\.kind), [.gifRecording])
+        XCTAssertEqual(gifCapture.captureCount, 0)
+    }
+
+    func testSelectionAnnotationsAreForwardedToCaptureRequest() async throws {
+        let annotation = ScreenshotAnnotation(
+            kind: .arrow,
+            points: [.init(x: 5, y: 8), .init(x: 80, y: 60)],
+            style: .init(color: .red, lineWidth: 3)
+        )
+        let capture = CaptureStub {}
+        let selection = SelectionStub(annotations: [annotation])
+        let coordinator = makeCoordinator(capture: capture, selection: selection)
+
+        _ = try await coordinator.route(.captureDefaultMode)
+
+        XCTAssertEqual(capture.lastRequest?.annotations, [annotation])
+    }
+
+    func testConfiguredDelayUsesVisibleCountdownThenCapturesImmediatelyWithConfiguredOutput() async throws {
+        let capture = CaptureStub {}
+        let countdown = CountdownPresenterStub()
+        let configuration = ScreenshotFeatureConfiguration(
+            defaultDelay: .fiveSeconds,
+            output: .init(format: .jpeg, quality: 0.73)
+        )
+        let coordinator = makeCoordinator(
+            capture: capture,
+            countdownPresenter: countdown,
+            configuration: configuration
+        )
+
+        _ = try await coordinator.route(.captureDefaultMode)
+
+        XCTAssertEqual(countdown.requestedDelays, [.fiveSeconds])
+        XCTAssertEqual(capture.lastRequest?.delay, ScreenshotCaptureDelay.none)
+        XCTAssertEqual(capture.lastRequest?.output, configuration.output)
+    }
+
+    func testNoDelaySkipsCountdown() async throws {
+        let capture = CaptureStub {}
+        let countdown = CountdownPresenterStub()
+        let coordinator = makeCoordinator(
+            capture: capture,
+            countdownPresenter: countdown,
+            configuration: .init(defaultDelay: .none)
+        )
+
+        _ = try await coordinator.route(.captureDefaultMode)
+
+        XCTAssertTrue(countdown.requestedDelays.isEmpty)
+        XCTAssertEqual(capture.captureCount, 1)
+    }
+
+    func testDeactivationCancelsVisibleCountdownBeforeAnyCaptureStarts() async {
+        let capture = CaptureStub {}
+        let countdown = BlockingCountdownPresenterStub()
+        let coordinator = makeCoordinator(
+            capture: capture,
+            countdownPresenter: countdown,
+            configuration: .init(defaultDelay: .tenSeconds)
+        )
+        let routeTask = Task { try await coordinator.route(.captureDefaultMode) }
+        while !countdown.didStart {
+            await Task.yield()
+        }
+
+        await coordinator.deactivate()
+        _ = try? await routeTask.value
+
+        XCTAssertGreaterThanOrEqual(countdown.cancelCount, 1)
+        XCTAssertEqual(capture.captureCount, 0)
+        XCTAssertEqual(coordinator.featureState(), .disabled)
+    }
+
+    func testCopyCompletionWritesReturnedCaptureArtifactToClipboard() async throws {
+        let artifact = makeArtifact(relativePath: "Captures/copied.png")
+        let capture = CaptureStub(artifact: artifact) {}
+        let clipboard = ClipboardWriterStub()
+        let coordinator = makeCoordinator(capture: capture, clipboardWriter: clipboard)
+
+        _ = try await coordinator.route(.captureDefaultMode)
+
+        XCTAssertEqual(clipboard.artifacts, [artifact])
+    }
+
+    func testPinCompletionPresentsArtifactWithoutOverwritingClipboard() async throws {
+        let artifact = makeArtifact(relativePath: "Captures/pin.png")
+        let capture = CaptureStub(artifact: artifact) {}
+        let clipboard = ClipboardWriterStub()
+        let pinPresenter = PinPresenterStub()
+        let selection = SelectionStub(completionAction: .pin)
+        let coordinator = makeCoordinator(
+            capture: capture,
+            clipboardWriter: clipboard,
+            pinPresenter: pinPresenter,
+            selection: selection
+        )
+
+        _ = try await coordinator.route(.captureDefaultMode)
+
+        XCTAssertTrue(clipboard.artifacts.isEmpty)
+        XCTAssertEqual(pinPresenter.artifacts, [artifact])
+    }
+
+    func testCaptureServiceWithoutArtifactRemainsCompatibleAndDoesNotWriteClipboard() async throws {
+        let capture = CaptureStub {}
+        let clipboard = ClipboardWriterStub()
+        let coordinator = makeCoordinator(capture: capture, clipboardWriter: clipboard)
+
+        _ = try await coordinator.route(.captureDefaultMode)
+
+        XCTAssertEqual(capture.captureCount, 1)
+        XCTAssertTrue(clipboard.artifacts.isEmpty)
+    }
+
     func testConcurrentCaptureReturnsBusyInsteadOfStackingFlows() async throws {
         let gate = CaptureGate()
         let coordinator = makeCoordinator(capture: CaptureStub { try await gate.wait() })
@@ -104,6 +296,100 @@ final class ScreenshotCoordinatorTests: XCTestCase {
         await gate.release()
         let firstResult = try await first.value
         XCTAssertEqual(firstResult, .completed)
+    }
+
+    func testColorPickerUsesScreenRecordingAuthorization() async throws {
+        let authorization = AuthorizationStub(status: .notRequested, requestResult: .denied)
+        let picker = ColorPickerStub(color: .init(red: 12, green: 34, blue: 56))
+        let coordinator = makeCoordinator(
+            authorization: authorization,
+            capture: CaptureStub(),
+            colorPicker: picker
+        )
+
+        let result = try await coordinator.route(.pickColor)
+
+        XCTAssertEqual(result, .requiresSetup(message: "请允许触达录制屏幕"))
+        XCTAssertEqual(authorization.requestCount, 1)
+        XCTAssertEqual(picker.pickCount, 0)
+    }
+
+    func testColorPickerCopiesSelectedColorAndLeavesLauncherHiddenAfterSuccess() async throws {
+        let color = ScreenshotColor(red: 255, green: 128, blue: 0)
+        let picker = ColorPickerStub(color: color)
+        let clipboard = ColorClipboardWriterStub()
+        let events = EventRecorder()
+        let launcher = LauncherStub(isVisible: true, events: events)
+        let coordinator = makeCoordinator(
+            capture: CaptureStub(),
+            colorClipboardWriter: clipboard,
+            colorPicker: picker
+        )
+        coordinator.attachLauncher(launcher)
+
+        let result = try await coordinator.route(.pickColor)
+
+        XCTAssertEqual(result, .completed)
+        XCTAssertEqual(picker.pickCount, 1)
+        XCTAssertEqual(clipboard.colors, [color])
+        XCTAssertEqual(events.values(), ["hide"])
+        XCTAssertFalse(launcher.isLauncherVisible)
+    }
+
+    func testColorPickerCancellationDoesNotWriteClipboardAndRestoresLauncher() async throws {
+        let picker = ColorPickerStub(color: nil)
+        let clipboard = ColorClipboardWriterStub()
+        let events = EventRecorder()
+        let launcher = LauncherStub(isVisible: true, events: events)
+        let coordinator = makeCoordinator(
+            capture: CaptureStub(),
+            colorClipboardWriter: clipboard,
+            colorPicker: picker
+        )
+        coordinator.attachLauncher(launcher)
+
+        let result = try await coordinator.route(.pickColor)
+
+        XCTAssertEqual(result, .completed)
+        XCTAssertTrue(clipboard.colors.isEmpty)
+        XCTAssertEqual(events.values(), ["hide", "show"])
+        XCTAssertTrue(launcher.isLauncherVisible)
+    }
+
+    func testDeactivationCancelsActiveColorPicker() async {
+        let picker = BlockingColorPickerStub()
+        let coordinator = makeCoordinator(capture: CaptureStub(), colorPicker: picker)
+        let routeTask = Task { try await coordinator.route(.pickColor) }
+        while !picker.didStart {
+            await Task.yield()
+        }
+
+        await coordinator.deactivate()
+        _ = try? await routeTask.value
+
+        XCTAssertGreaterThanOrEqual(picker.cancelCount, 1)
+        XCTAssertEqual(coordinator.featureState(), .disabled)
+    }
+
+    func testActiveColorPickerMakesOtherScreenshotActionsBusy() async {
+        let picker = BlockingColorPickerStub()
+        let coordinator = makeCoordinator(capture: CaptureStub(), colorPicker: picker)
+        let routeTask = Task { try await coordinator.route(.pickColor) }
+        while !picker.didStart {
+            await Task.yield()
+        }
+
+        do {
+            _ = try await coordinator.route(.captureDefaultMode)
+            XCTFail("取色期间不应启动第二条截图流程")
+        } catch let error as ScreenshotCoordinatorError {
+            XCTAssertEqual(error, .busy)
+        } catch {
+            XCTFail("收到非预期错误：\(error)")
+        }
+
+        picker.cancel()
+        _ = try? await routeTask.value
     }
 
     func testCancelledSelectionDoesNotCaptureAndRestoresLauncher() async throws {
@@ -182,7 +468,14 @@ final class ScreenshotCoordinatorTests: XCTestCase {
     private func makeCoordinator(
         authorization: AuthorizationStub = AuthorizationStub(status: .authorized),
         capture: CaptureStub,
+        clipboardWriter: any ScreenshotClipboardWriting = ClipboardWriterStub(),
+        colorClipboardWriter: any ScreenshotColorClipboardWriting = ColorClipboardWriterStub(),
+        pinPresenter: any ScreenshotPinPresenting = PinPresenterStub(),
+        countdownPresenter: any ScreenshotCaptureCountdownPresenting = CountdownPresenterStub(),
+        extensionRouter: any ScreenshotCaptureExtensionRouting = PendingScreenshotCaptureExtensionRouter(),
         selection: any ScreenshotSelectionPresenting = SelectionStub(),
+        colorPicker: any ScreenshotColorPickerPresenting = ColorPickerStub(color: nil),
+        configuration: ScreenshotFeatureConfiguration = .init(),
         invalidateService: @escaping @Sendable () async -> Void = {},
         registerShortcuts: @escaping @MainActor @Sendable () -> Void = {},
         unregisterShortcuts: @escaping @MainActor @Sendable () -> Void = {}
@@ -190,11 +483,69 @@ final class ScreenshotCoordinatorTests: XCTestCase {
         ScreenshotCoordinator(
             authorization: authorization,
             captureService: capture,
+            clipboardWriter: clipboardWriter,
+            colorClipboardWriter: colorClipboardWriter,
+            pinPresenter: pinPresenter,
+            countdownPresenter: countdownPresenter,
+            extensionRouter: extensionRouter,
             selectionFactory: { selection },
+            colorPickerFactory: { colorPicker },
+            configurationProvider: { configuration },
             invalidateService: invalidateService,
             registerShortcuts: registerShortcuts,
             unregisterShortcuts: unregisterShortcuts
         )
+    }
+
+
+    private func makeArtifact(relativePath: String) -> ScreenshotArtifact {
+        ScreenshotArtifact(
+            id: UUID(),
+            createdAt: Date(timeIntervalSince1970: 1_700_000_000),
+            captureMode: .region,
+            relativePath: relativePath,
+            thumbnailRelativePath: nil,
+            pointSize: .init(width: 300, height: 200),
+            pixelSize: .init(width: 600, height: 400),
+            uniformTypeIdentifier: "public.png",
+            sha256: "test-sha",
+            displays: []
+        )
+    }
+}
+
+@MainActor
+private final class CountdownPresenterStub: ScreenshotCaptureCountdownPresenting {
+    private(set) var requestedDelays: [ScreenshotCaptureDelay] = []
+    private(set) var cancelCount = 0
+
+    func wait(for delay: ScreenshotCaptureDelay) async throws {
+        requestedDelays.append(delay)
+    }
+
+    func cancel() {
+        cancelCount += 1
+    }
+}
+
+@MainActor
+private final class BlockingCountdownPresenterStub: ScreenshotCaptureCountdownPresenting {
+    private var continuation: CheckedContinuation<Void, any Error>?
+    private(set) var didStart = false
+    private(set) var cancelCount = 0
+
+    func wait(for delay: ScreenshotCaptureDelay) async throws {
+        didStart = true
+        try await withCheckedThrowingContinuation { continuation in
+            self.continuation = continuation
+        }
+    }
+
+    func cancel() {
+        cancelCount += 1
+        let continuation = continuation
+        self.continuation = nil
+        continuation?.resume(throwing: CancellationError())
     }
 }
 
@@ -224,16 +575,17 @@ private final class AuthorizationStub: ScreenRecordingAuthorizing {
 private final class CaptureStub: ScreenshotCapturing, @unchecked Sendable {
     private let lock = NSLock()
     private let handler: @Sendable () async throws -> Void
+    private let artifact: ScreenshotArtifact?
+    private let content: ScreenshotSelectionContent
     private var storedCaptureCount = 0
+    private var storedLastRequest: ScreenshotCaptureRequest?
 
-    init(handler: @escaping @Sendable () async throws -> Void) {
-        self.handler = handler
-    }
-
-    var captureCount: Int { lock.withLock { storedCaptureCount } }
-
-    func availableSelectionContent() async throws -> ScreenshotSelectionContent {
-        ScreenshotSelectionContent(
+    init(
+        content: ScreenshotSelectionContent? = nil,
+        artifact: ScreenshotArtifact? = nil,
+        handler: @escaping @Sendable () async throws -> Void = {}
+    ) {
+        self.content = content ?? ScreenshotSelectionContent(
             displays: [
                 .init(
                     id: 1,
@@ -244,11 +596,28 @@ private final class CaptureStub: ScreenshotCapturing, @unchecked Sendable {
             ],
             windows: []
         )
+        self.artifact = artifact
+        self.handler = handler
+    }
+
+    var captureCount: Int { lock.withLock { storedCaptureCount } }
+    var lastRequest: ScreenshotCaptureRequest? { lock.withLock { storedLastRequest } }
+
+    func availableSelectionContent() async throws -> ScreenshotSelectionContent {
+        content
     }
 
     func capture(_ request: ScreenshotCaptureRequest) async throws {
-        lock.withLock { storedCaptureCount += 1 }
+        lock.withLock {
+            storedCaptureCount += 1
+            storedLastRequest = request
+        }
         try await handler()
+    }
+
+    func captureArtifact(_ request: ScreenshotCaptureRequest) async throws -> ScreenshotArtifact? {
+        try await capture(request)
+        return artifact
     }
 
     func capturePrimaryDisplay() async throws {
@@ -257,22 +626,112 @@ private final class CaptureStub: ScreenshotCapturing, @unchecked Sendable {
 }
 
 @MainActor
+private final class CaptureExtensionRouterStub: ScreenshotCaptureExtensionRouting {
+    private(set) var requests: [ScreenshotCaptureExtensionRequest] = []
+
+    func start(_ request: ScreenshotCaptureExtensionRequest) async throws -> FeatureActionResult {
+        requests.append(request)
+        return .completed
+    }
+
+    func cancel() {}
+}
+
+@MainActor
+private final class ClipboardWriterStub: ScreenshotClipboardWriting {
+    private(set) var artifacts: [ScreenshotArtifact] = []
+
+    func write(_ artifact: ScreenshotArtifact) throws {
+        artifacts.append(artifact)
+    }
+}
+
+@MainActor
+private final class ColorClipboardWriterStub: ScreenshotColorClipboardWriting {
+    private(set) var colors: [ScreenshotColor] = []
+
+    func write(_ color: ScreenshotColor) throws {
+        colors.append(color)
+    }
+}
+
+@MainActor
+private final class ColorPickerStub: ScreenshotColorPickerPresenting {
+    var color: ScreenshotColor?
+    private(set) var pickCount = 0
+    private(set) var cancelCount = 0
+
+    init(color: ScreenshotColor?) {
+        self.color = color
+    }
+
+    func pick(from content: ScreenshotSelectionContent) async -> ScreenshotColor? {
+        pickCount += 1
+        return color
+    }
+
+    func cancel() {
+        cancelCount += 1
+    }
+}
+
+@MainActor
+private final class BlockingColorPickerStub: ScreenshotColorPickerPresenting {
+    private var continuation: CheckedContinuation<ScreenshotColor?, Never>?
+    private(set) var didStart = false
+    private(set) var cancelCount = 0
+
+    func pick(from content: ScreenshotSelectionContent) async -> ScreenshotColor? {
+        didStart = true
+        return await withCheckedContinuation { continuation in
+            self.continuation = continuation
+        }
+    }
+
+    func cancel() {
+        cancelCount += 1
+        let continuation = continuation
+        self.continuation = nil
+        continuation?.resume(returning: nil)
+    }
+}
+
+@MainActor
+private final class PinPresenterStub: ScreenshotPinPresenting {
+    private(set) var artifacts: [ScreenshotArtifact] = []
+
+    func pin(_ artifact: ScreenshotArtifact) throws {
+        artifacts.append(artifact)
+    }
+}
+
+@MainActor
 private final class SelectionStub: ScreenshotSelectionPresenting {
-    var target: ScreenshotCaptureTarget?
+    var result: ScreenshotSelectionResult?
     private(set) var cancelCount = 0
     private let onSelect: @MainActor () -> Void
 
     init(target: ScreenshotCaptureTarget? = .region(
         displayID: 1,
         rect: .init(x: 10, y: 20, width: 300, height: 200)
-    ), onSelect: @escaping @MainActor () -> Void = {}) {
-        self.target = target
+    ), windowShadow: ScreenshotWindowShadow = .included,
+         completionAction: ScreenshotSelectionCompletionAction = .copy,
+         annotations: [ScreenshotAnnotation] = [],
+         onSelect: @escaping @MainActor () -> Void = {}) {
+        result = target.map {
+            ScreenshotSelectionResult(
+                target: $0,
+                completionAction: completionAction,
+                windowShadow: windowShadow,
+                annotations: annotations
+            )
+        }
         self.onSelect = onSelect
     }
 
-    func select(from content: ScreenshotSelectionContent) async -> ScreenshotCaptureTarget? {
+    func select(from content: ScreenshotSelectionContent) async -> ScreenshotSelectionResult? {
         onSelect()
-        return target
+        return result
     }
 
     func cancel() {
@@ -282,11 +741,11 @@ private final class SelectionStub: ScreenshotSelectionPresenting {
 
 @MainActor
 private final class BlockingSelectionStub: ScreenshotSelectionPresenting {
-    private var continuation: CheckedContinuation<ScreenshotCaptureTarget?, Never>?
+    private var continuation: CheckedContinuation<ScreenshotSelectionResult?, Never>?
     private(set) var didStart = false
     private(set) var cancelCount = 0
 
-    func select(from content: ScreenshotSelectionContent) async -> ScreenshotCaptureTarget? {
+    func select(from content: ScreenshotSelectionContent) async -> ScreenshotSelectionResult? {
         didStart = true
         return await withCheckedContinuation { continuation in
             self.continuation = continuation
