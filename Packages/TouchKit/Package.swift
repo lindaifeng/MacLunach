@@ -27,7 +27,11 @@ let package = Package(
             name: "ScreenshotFeature",
             dependencies: ["TouchFeatureAPI", "ScreenshotServiceProtocol"]
         ),
-        .target(name: "ScreenshotServiceCore", dependencies: ["ScreenshotFeature"]),
+        .target(
+            name: "ScreenshotServiceCore",
+            dependencies: ["ScreenshotFeature"],
+            linkerSettings: [.linkedLibrary("sqlite3")]
+        ),
         .target(name: "SuperRightFeature", dependencies: ["TouchFeatureAPI"]),
         .executableTarget(name: "SearchBenchmark", dependencies: ["TouchCore"]),
         .testTarget(name: "TouchFeatureAPITests", dependencies: ["TouchFeatureAPI"]),

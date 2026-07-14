@@ -122,9 +122,13 @@ final class ScreenshotCoordinatorTests: XCTestCase {
             handler: {}
         )
         let clipboard = ClipboardWriterStub()
+        let configuration = ScreenshotFeatureConfiguration(
+            history: .init(isEnabled: true, retentionDays: 7, maximumItemCount: 50)
+        )
         let coordinator = makeCoordinator(
             capture: capture,
-            clipboardWriter: clipboard
+            clipboardWriter: clipboard,
+            configuration: configuration
         )
 
         let result = try await coordinator.route(.captureAllDisplays)
@@ -134,6 +138,7 @@ final class ScreenshotCoordinatorTests: XCTestCase {
             .allDisplays(displayIDs: [1, 2])
         )
         XCTAssertEqual(capture.lastRequest?.mode, .allDisplays)
+        XCTAssertEqual(capture.lastRequest?.history, configuration.history)
         XCTAssertEqual(clipboard.artifacts.count, 1)
     }
 
@@ -184,7 +189,13 @@ final class ScreenshotCoordinatorTests: XCTestCase {
         let countdown = CountdownPresenterStub()
         let configuration = ScreenshotFeatureConfiguration(
             defaultDelay: .fiveSeconds,
-            output: .init(format: .jpeg, quality: 0.73)
+            output: .init(format: .jpeg, quality: 0.73),
+            history: .init(
+                isEnabled: true,
+                retentionDays: 14,
+                maximumItemCount: 120,
+                trashRetentionHours: 12
+            )
         )
         let coordinator = makeCoordinator(
             capture: capture,
@@ -197,6 +208,7 @@ final class ScreenshotCoordinatorTests: XCTestCase {
         XCTAssertEqual(countdown.requestedDelays, [.fiveSeconds])
         XCTAssertEqual(capture.lastRequest?.delay, ScreenshotCaptureDelay.none)
         XCTAssertEqual(capture.lastRequest?.output, configuration.output)
+        XCTAssertEqual(capture.lastRequest?.history, configuration.history)
     }
 
     func testNoDelaySkipsCountdown() async throws {

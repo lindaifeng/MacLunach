@@ -126,6 +126,7 @@ public struct ScreenshotCaptureRequest: Codable, Equatable, Sendable, Identifiab
     public var windowShadow: ScreenshotWindowShadow
     public var output: ScreenshotOutputOptions
     public var annotations: [ScreenshotAnnotation]
+    public var history: ScreenshotHistoryConfiguration
 
     public init(
         id: UUID = UUID(),
@@ -134,7 +135,8 @@ public struct ScreenshotCaptureRequest: Codable, Equatable, Sendable, Identifiab
         target: ScreenshotCaptureTarget,
         windowShadow: ScreenshotWindowShadow = .included,
         output: ScreenshotOutputOptions = .init(),
-        annotations: [ScreenshotAnnotation] = []
+        annotations: [ScreenshotAnnotation] = [],
+        history: ScreenshotHistoryConfiguration = .init()
     ) {
         self.id = id
         self.mode = mode
@@ -143,10 +145,11 @@ public struct ScreenshotCaptureRequest: Codable, Equatable, Sendable, Identifiab
         self.windowShadow = windowShadow
         self.output = output
         self.annotations = annotations
+        self.history = history
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, mode, delay, target, windowShadow, output, annotations
+        case id, mode, delay, target, windowShadow, output, annotations, history
     }
 
     public init(from decoder: any Decoder) throws {
@@ -167,6 +170,10 @@ public struct ScreenshotCaptureRequest: Codable, Equatable, Sendable, Identifiab
             [ScreenshotAnnotation].self,
             forKey: .annotations
         ) ?? []
+        history = try container.decodeIfPresent(
+            ScreenshotHistoryConfiguration.self,
+            forKey: .history
+        ) ?? .init()
     }
 }
 

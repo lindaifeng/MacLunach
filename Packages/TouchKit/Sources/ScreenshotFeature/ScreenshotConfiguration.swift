@@ -39,17 +39,20 @@ public struct ScreenshotHistoryConfiguration: Codable, Equatable, Sendable {
     public var retentionDays: Int
     public var maximumItemCount: Int
     public var trashRetentionHours: Int
+    public var keepsFilesWhenDisabled: Bool
 
     public init(
         isEnabled: Bool = true,
         retentionDays: Int = 30,
         maximumItemCount: Int = 500,
-        trashRetentionHours: Int = 24
+        trashRetentionHours: Int = 24,
+        keepsFilesWhenDisabled: Bool = true
     ) {
         self.isEnabled = isEnabled
         self.retentionDays = retentionDays
         self.maximumItemCount = maximumItemCount
         self.trashRetentionHours = trashRetentionHours
+        self.keepsFilesWhenDisabled = keepsFilesWhenDisabled
     }
 
     public init(from decoder: Decoder) throws {
@@ -58,6 +61,7 @@ public struct ScreenshotHistoryConfiguration: Codable, Equatable, Sendable {
         retentionDays = try values.decodeIfPresent(Int.self, forKey: .retentionDays) ?? 30
         maximumItemCount = try values.decodeIfPresent(Int.self, forKey: .maximumItemCount) ?? 500
         trashRetentionHours = try values.decodeIfPresent(Int.self, forKey: .trashRetentionHours) ?? 24
+        keepsFilesWhenDisabled = try values.decodeIfPresent(Bool.self, forKey: .keepsFilesWhenDisabled) ?? true
     }
 }
 

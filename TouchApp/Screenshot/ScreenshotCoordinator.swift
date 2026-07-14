@@ -225,7 +225,8 @@ final class ScreenshotCoordinator: ScreenshotActionRouting {
                 target: selection.target,
                 windowShadow: selection.windowShadow,
                 output: configuration.output,
-                annotations: selection.annotations
+                annotations: selection.annotations,
+                history: configuration.history
             )
             let artifact = try await captureService.captureArtifact(request)
             switch selection.completionAction {
@@ -290,7 +291,8 @@ final class ScreenshotCoordinator: ScreenshotActionRouting {
                 delay: .none,
                 target: .allDisplays(displayIDs: displayIDs),
                 windowShadow: configuration.windowShadow,
-                output: configuration.output
+                output: configuration.output,
+                history: configuration.history
             )
             if let artifact = try await captureService.captureArtifact(request) {
                 try clipboardWriter.write(artifact)

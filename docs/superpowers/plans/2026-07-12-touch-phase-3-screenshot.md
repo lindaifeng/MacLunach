@@ -437,7 +437,7 @@ Commit: `feat: add screen color picker and ocr region entry`
 - Create: `Packages/TouchKit/Tests/ScreenshotServiceCoreTests/ScreenshotRetentionControllerTests.swift`
 - Modify: `Services/ScreenshotService/ScreenshotServiceEndpoint.swift`
 
-- [ ] **Step 1：写失败测试**
+- [x] **Step 1：写失败测试**
 
 覆盖：
 
@@ -449,11 +449,13 @@ Commit: `feat: add screen color picker and ocr region entry`
 - 清空历史可选择保留钉图源；失败回滚数据库与文件移动。
 - 所有 SQL 使用绑定参数，路径永不越出插件根。
 
-- [ ] **Step 2：确认失败并实现 actor store**
+- [x] **Step 2：确认失败并实现 actor store**
 
 历史数据库独占 `History/history.sqlite`，不复用搜索数据库。服务启动和每次捕获后做有上限的清理，不在主线程运行。
 
-- [ ] **Step 3：共同门槛并提交**
+增量状态（2026-07-14）：已完成独立 SQLite v2 actor store、v1 迁移、损坏库及 WAL/SHM 隔离、绑定参数查询、组合搜索、pin 引用保护、`.Trash/<id>/` 恢复与过期物理删除、事务化批量移动回滚，以及 30 天/最大条数先达到者清理。历史配置已显式随 XPC 捕获请求传输，区域和所有显示器路径均接入；服务启动时限量清理过期回收区，每次成功捕获后在历史启用时原子入库并执行限量保留策略。历史故障只记录诊断，不覆盖已经成功的截图响应。路径同时拒绝遍历、绝对路径及中间符号链接越界。由于主进程必须先读取产物完成复制或钉图，`keepsFilesWhenDisabled == false` 不会在 XPC 响应前删除文件；该分支已在保留控制器单元测试覆盖，服务集成需等待客户端完成确认或临时文件 TTL 后再启用。
+
+- [x] **Step 3：共同门槛并提交**
 
 Commit: `feat: add recoverable screenshot history store`
 

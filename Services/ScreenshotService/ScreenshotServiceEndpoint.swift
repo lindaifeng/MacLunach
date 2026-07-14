@@ -11,6 +11,7 @@ final class ScreenshotServiceEndpoint: NSObject, ScreenshotXPCProtocol, @uncheck
 
     private let lock = NSLock()
     private let engine: ScreenCaptureEngine
+    private let retentionController: ScreenshotRetentionController?
     private var activeRequestIDs: Set<UUID> = []
     private var captureTasks: [UUID: Task<Void, Never>] = [:]
     private var pendingCancellationRequestIDs: Set<UUID> = []
@@ -26,11 +27,37 @@ final class ScreenshotServiceEndpoint: NSObject, ScreenshotXPCProtocol, @uncheck
             .appendingPathComponent("Touch", isDirectory: true)
             .appendingPathComponent("Features", isDirectory: true)
             .appendingPathComponent("me.touch.screenshot", isDirectory: true)
-        self.init(engine: ScreenCaptureEngine(fileStore: ScreenshotFileStore(rootURL: root)))
+        let retentionController: ScreenshotRetentionController?
+        do {
+            let store = try ScreenshotHistoryStore(rootURL: root)
+            retentionController = ScreenshotRetentionController(rootURL: root, store: store)
+        } catch {
+            NSLog("ScreenshotService history initialization failed: %@", String(describing: error))
+            retentionController = nil
+        }
+        self.init(
+            engine: ScreenCaptureEngine(fileStore: ScreenshotFileStore(rootURL: root)),
+            retentionController: retentionController
+        )
+        if let retentionController {
+            Task {
+                do {
+                    _ = try await retentionController.purgeExpiredTrash(
+                        retentionHours: ScreenshotHistoryConfiguration().trashRetentionHours
+                    )
+                } catch {
+                    NSLog("ScreenshotService startup trash cleanup failed: %@", String(describing: error))
+                }
+            }
+        }
     }
 
-    init(engine: ScreenCaptureEngine) {
+    init(
+        engine: ScreenCaptureEngine,
+        retentionController: ScreenshotRetentionController? = nil
+    ) {
         self.engine = engine
+        self.retentionController = retentionController
         super.init()
     }
 
@@ -149,6 +176,7 @@ final class ScreenshotServiceEndpoint: NSObject, ScreenshotXPCProtocol, @uncheck
             }
             let request = try JSONDecoder().decode(ScreenshotCaptureRequest.self, from: payload)
             let artifact = try await engine.capture(request)
+            await recordHistoryIfEnabled(artifact, configuration: request.history)
             let artifactData = try JSONEncoder().encode(artifact)
             return .init(requestID: serviceRequest.id, payload: .capture(artifactData))
         } catch is CancellationError {
@@ -160,6 +188,24 @@ final class ScreenshotServiceEndpoint: NSObject, ScreenshotXPCProtocol, @uncheck
                 requestID: serviceRequest.id,
                 payload: .failure(.internalFailure(String(describing: error)))
             )
+        }
+    }
+
+    private func recordHistoryIfEnabled(
+        _ artifact: ScreenshotArtifact,
+        configuration: ScreenshotHistoryConfiguration
+    ) async {
+        // 禁用历史时不能在 XPC 响应前删除捕获文件，否则主进程尚未来得及复制或钉图。
+        // keepsFilesWhenDisabled == false 留待客户端完成确认或临时文件 TTL 链路处理。
+        guard configuration.isEnabled, let retentionController else { return }
+        do {
+            try await retentionController.recordCapture(
+                artifact,
+                configuration: configuration
+            )
+        } catch {
+            // 截图产物已经成功生成；历史故障必须与捕获结果隔离，避免丢失用户截图。
+            NSLog("ScreenshotService history update failed: %@", String(describing: error))
         }
     }
 

@@ -14,13 +14,38 @@ import Testing
                     rect: ScreenshotRect(x: -320, y: 120, width: 1440, height: 900)
                 ),
                 windowShadow: .included,
-                output: ScreenshotOutputOptions(format: .png, quality: 0.92)
+                output: ScreenshotOutputOptions(format: .png, quality: 0.92),
+                history: .init(
+                    isEnabled: false,
+                    retentionDays: 14,
+                    maximumItemCount: 120,
+                    trashRetentionHours: 12,
+                    keepsFilesWhenDisabled: false
+                )
             )
 
             let data = try JSONEncoder().encode(request)
             #expect(try JSONDecoder().decode(ScreenshotCaptureRequest.self, from: data) == request)
         }
     }
+}
+
+@Test func legacyScreenshotRequestDefaultsMissingHistoryConfiguration() throws {
+    let request = ScreenshotCaptureRequest(
+        mode: .region,
+        target: .region(
+            displayID: 42,
+            rect: ScreenshotRect(x: 10, y: 20, width: 300, height: 200)
+        )
+    )
+    let encoded = try JSONEncoder().encode(request)
+    var object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+    object.removeValue(forKey: "history")
+    let legacyData = try JSONSerialization.data(withJSONObject: object)
+
+    let decoded = try JSONDecoder().decode(ScreenshotCaptureRequest.self, from: legacyData)
+
+    #expect(decoded.history == ScreenshotHistoryConfiguration())
 }
 
 @Test func screenshotArtifactPreservesDisplayAndPixelMetadata() throws {
