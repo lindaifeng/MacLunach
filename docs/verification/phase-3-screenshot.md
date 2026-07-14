@@ -6,7 +6,7 @@
 
 捕获后工作流也已接通：服务端生成最大 `360×240` 的独立 PNG 缩略图，主应用可按配置执行“复制并显示缩略图”“仅保存”“复制并保存”或“标注”，浮动缩略图支持右下角堆叠、0/3/5/10 秒与永不隐藏、键盘复制/删除/关闭、右键动作、单击标注、双击钉图以及 Finder 文件 promise 拖放。复制会同时提供 PNG、TIFF 和文件 URL；导出、删除与回收仍通过 XPC 服务执行。
 
-尚未完成：滚动截图拼接、GIF 帧录制与编码、翻译；OCR 结果面板尚待真实鼠标/键盘、VoiceOver 和用户实际截图视觉验收；模糊、放大镜、裁剪尚待完整编辑器 UI；捕获后 `.annotate` 当前仍由系统默认图片编辑器打开，不得宣称内建编辑器完成；无历史截图进入 `.Trash` 后尚无独立 TTL 清理；钉图尚待透明度、折叠/展开、穿透恢复、重启持久化；另需 6K 连续导出内存门槛以及完整实机/多屏/可访问性验收。滚动截图与 GIF 已进入真实、可取消的协调器扩展路由，但默认路由仍明确返回未完成状态，不得伪装成功。
+尚未完成：滚动截图拼接、GIF 帧录制与编码、翻译；OCR 结果面板尚待真实鼠标/键盘、VoiceOver 和用户实际截图视觉验收；模糊、放大镜、裁剪尚待完整编辑器 UI；捕获后 `.annotate` 当前仍由系统默认图片编辑器打开，不得宣称内建编辑器完成；无历史截图进入 `.Trash` 后尚无独立 TTL 清理；钉图尚待透明度、折叠/展开、穿透恢复、重启持久化；另需完整实机/多屏/可访问性验收。滚动截图与 GIF 已进入真实、可取消的协调器扩展路由，但默认路由仍明确返回未完成状态，不得伪装成功。
 
 ## QQ 参考视频
 
@@ -41,6 +41,8 @@
 - Task 11 共同门槛：TouchKit 全量 151 个测试通过；`TouchTests` 共执行 118 个，117 个通过、1 个真实 XPC 集成测试因当前测试宿主无屏幕录制权限跳过，0 失败，结果 `/tmp/touch-phase3-task11-derived/Logs/Test/Test-Touch-2026.07.14_21-31-33-+0800.xcresult`。Release 的 `触达.app` 与 `ScreenshotService` 均验证包含 `x86_64 arm64`；fixture 缩略图 30 次 P50 13.348 ms、P95 25.678 ms，低于 300 ms 门槛。该性能数据仍不替代真实 ScreenCaptureKit 采样，完整内建编辑器 UI 属于 Task 14。
 - Task 12 统一标注渲染：首次契约测试因缺少文档/图层渲染 API 红灯，日志 `/tmp/touch-phase3-task12-red.log`；最终 `AnnotationRendererContractTests` 7 个和 `AnnotationGeometryTests` 4 个全部通过，Task 12 相关渲染/几何/高级效果共 22 个通过。覆盖稳定 z-order、图层透明度、重复渲染确定性、Display P3、文字基线、Retina 坐标、空/非有限几何、极小图、取消和分配前工作内存上限；预览与导出可直接共用 `AnnotationDocument` 入口及最终 point 尺寸计算。
 - Task 12 共同门槛：TouchKit 全量 162 个测试通过，日志 `/tmp/touch-phase3-task12-unit.log`；部署目标一致为 macOS 14.0。`TouchTests` 执行 118 个，117 个通过、1 个真实 XPC 屏幕录制权限用例跳过、0 失败，结果 `/tmp/touch-phase3-task12-derived/Logs/Test/Test-Touch-2026.07.14_22-00-05-+0800.xcresult`。Release `触达.app` 与 `ScreenshotService` 均为 `x86_64 arm64`，日志 `/tmp/touch-phase3-task12-release.log`；fixture 缩略图 30 次 P50 15.550 ms、P95 37.780 ms，低于 300 ms，日志 `/tmp/touch-phase3-task12-performance.log`。完整 scheme 在应用单测通过后进入既有 XCUI 辅助功能树识别失败，按基础设施时间上限终止并以 `-only-testing:TouchTests` 取得干净结果；未将其判作 Task 12 产品缺陷。
+- Task 13 6K 连续导出内存：新增默认关闭的 `AnnotationEffectsMemoryTests`，显式以 `TOUCH_RUN_6K_EXPORT_TEST=1 swift test --package-path Packages/TouchKit --filter AnnotationEffectsMemoryTests` 运行。6144×3456、2x Retina fixture 通过真实捕获核心、统一渲染、PNG 编码、缩略图与原子写入链路连续导出 30 次，代表性图层同时包含 blur、mosaic、magnifier、crop 和 beautify；输出稳定为 5728×3168 pixel / 2864×1584 point。30 轮耗时 19.438 秒，稳定窗口 physical footprint 斜率 -0.134 MiB/轮，首末窗口增加 2.7 MiB，内部 `TASK_VM_INFO` 峰值 resident 539.2 MiB，无线性增长；日志 `/tmp/touch-phase3-task13-memory.log`。相关渲染、效果与几何共 23 项通过，其中重型测试在普通回归中按设计跳过，日志 `/tmp/touch-phase3-task13-related.log`。
+- Task 13 共同门槛：TouchKit 全量 163 个测试通过，日志 `/tmp/touch-phase3-task13-unit.log`；部署目标一致为 macOS 14.0，日志 `/tmp/touch-phase3-task13-deployment-targets.log`。`TouchTests` 执行 118 个，117 个通过、1 个真实 XPC 屏幕录制权限用例跳过、0 失败，结果 `/tmp/touch-phase3-task13-derived/Logs/Test/Test-Touch-2026.07.14_22-16-01-+0800.xcresult`，日志 `/tmp/touch-phase3-task13-app-unit.log`。Release `触达.app` 与 `ScreenshotService` 均为 `x86_64 arm64`，日志 `/tmp/touch-phase3-task13-release.log`；fixture 缩略图 30 次 P50 15.675 ms、P95 39.258 ms，低于 300 ms，且相对 Task 12 的 P95 回退约 3.9%，未超过 10% 停止线，日志 `/tmp/touch-phase3-task13-performance.log`。按已记录的 XCUI 基础设施上限，本任务未重复进入完整 `TouchUITests`。
 
 所有 `/tmp` 证据不提交仓库。关键节点再运行 SelectionToolbar、SelectionGeometry、ScreenshotClipboardWriter、ScreenshotCoordinator、SelectionAnnotation 的组合回归；不在每个小改动后运行全量 UI 测试。
 

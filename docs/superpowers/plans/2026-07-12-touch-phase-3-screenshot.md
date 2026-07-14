@@ -585,12 +585,13 @@ Commit: `feat: render screenshot annotation layers`
 
 **依赖：** Task 12。
 
-**增量进度（2026-07-14）：** 马赛克画笔、贴纸、水印和美化已进入同一非破坏性图层链路。模糊、放大镜和裁剪现也已完成领域模型、Codable/XPC 载荷、服务端渲染和尺寸元数据：`CIContext` 跨请求复用；模糊只修改矩形 mask；放大镜按受限倍率在圆形 mask 内重采样；裁剪夹紧到画布、只使用最后一个有效图层并在美化前执行。透明图、非有限参数、极小区域、越界/无效裁剪、多个裁剪、裁剪后美化及 2x Retina point/pixel 产物尺寸已有确定性测试。Task 13 的 Core Image/Graphics 增量已完成；完整编辑器交互属于 Task 14，6K 连续导出内存门槛仍待执行，因此本 Task 暂不整体勾选完成。
+**完成状态（2026-07-14）：** 马赛克画笔、贴纸、水印和美化已进入同一非破坏性图层链路。模糊、放大镜和裁剪也已完成领域模型、Codable/XPC 载荷、服务端渲染和尺寸元数据：`CIContext` 跨请求复用；模糊只修改矩形 mask；放大镜按受限倍率在圆形 mask 内重采样；裁剪夹紧到画布、只使用最后一个有效图层并在美化前执行。透明图、非有限参数、极小区域、越界/无效裁剪、多个裁剪、裁剪后美化及 2x Retina point/pixel 产物尺寸已有确定性测试。新增环境变量门控的真实导出内存门槛，使用 6144×3456 Retina fixture，经 `ScreenCaptureEngine → AnnotationRenderer → ImageIO → POSIX 原子写入` 连续导出 PNG 30 次，并同时覆盖 blur、mosaic、magnifier、crop 与 beautify；稳定窗口 physical footprint 回归斜率为 -0.134 MiB/轮，首末 5 轮均值仅增加 2.7 MiB，进程峰值 resident 为 539.2 MiB，无随导出次数线性增长。完整编辑器交互继续属于 Task 14。
 
 **Files:**
 
 - Create: `Packages/TouchKit/Sources/ScreenshotServiceCore/AnnotationEffects.swift`
 - Create: `Packages/TouchKit/Tests/ScreenshotServiceCoreTests/AnnotationEffectsTests.swift`
+- Create: `Packages/TouchKit/Tests/ScreenshotServiceCoreTests/AnnotationEffectsMemoryTests.swift`
 - Modify: `Packages/TouchKit/Sources/ScreenshotServiceCore/AnnotationRenderer.swift`
 - Modify: `Packages/TouchKit/Sources/ScreenshotFeature/AnnotationDocument.swift`
 
@@ -602,7 +603,7 @@ Commit: `feat: render screenshot annotation layers`
 
 CIContext 在服务内复用；效果使用选区 mask，不改变原始图。渲染失败返回 layer ID 和结构化错误，原项目仍可打开并禁用问题图层。
 
-- [ ] **Step 3：共同门槛与内存检查并提交**
+- [x] **Step 3：共同门槛与内存检查并提交**
 
 对 6K fixture 连续导出 30 次，记录峰值内存且不得线性增长。
 
