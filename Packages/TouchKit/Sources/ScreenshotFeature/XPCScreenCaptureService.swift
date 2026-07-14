@@ -24,6 +24,10 @@ public actor XPCScreenCaptureService: ScreenshotCapturing {
         try await client.sampleColor(request)
     }
 
+    public func recognize(_ request: ScreenshotRecognitionRequest) async throws -> ScreenshotRecognitionResult {
+        try await client.recognize(request)
+    }
+
     public func capturePrimaryDisplay() async throws {
         let request = ScreenshotCaptureRequest(
             mode: .fullScreen,

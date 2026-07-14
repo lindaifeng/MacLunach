@@ -50,3 +50,24 @@ final class SystemScreenshotClipboardWriter: ScreenshotClipboardWriting {
         }
     }
 }
+
+@MainActor
+protocol ScreenshotRecognizedTextClipboardWriting: AnyObject {
+    func writeRecognizedText(_ text: String) throws
+}
+
+@MainActor
+final class SystemScreenshotRecognizedTextClipboardWriter: ScreenshotRecognizedTextClipboardWriting {
+    private let pasteboard: NSPasteboard
+
+    init(pasteboard: NSPasteboard = .general) {
+        self.pasteboard = pasteboard
+    }
+
+    func writeRecognizedText(_ text: String) throws {
+        pasteboard.clearContents()
+        guard pasteboard.setString(text, forType: .string) else {
+            throw ScreenshotClipboardError.pasteboardWriteFailed
+        }
+    }
+}

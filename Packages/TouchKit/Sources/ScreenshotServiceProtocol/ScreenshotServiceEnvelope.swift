@@ -38,6 +38,7 @@ public enum ScreenshotServiceResponsePayload: Codable, Equatable, Sendable {
     case availableContent(Data)
     case capture(Data)
     case colorSample(Data)
+    case recognition(Data)
     case failure(ScreenshotServiceFailure)
 }
 

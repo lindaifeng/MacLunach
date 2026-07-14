@@ -125,15 +125,21 @@ public struct ScreenshotOCRConfiguration: Codable, Equatable, Sendable {
     public var recognitionLanguages: [String]
     public var copiesRecognizedText: Bool
     public var confirmsBeforeOpeningQRCode: Bool
+    public var minimumTextConfidence: Double
+    public var recognizesBarcodes: Bool
 
     public init(
         recognitionLanguages: [String] = ["zh-Hans", "en-US"],
         copiesRecognizedText: Bool = true,
-        confirmsBeforeOpeningQRCode: Bool = true
+        confirmsBeforeOpeningQRCode: Bool = true,
+        minimumTextConfidence: Double = 0.3,
+        recognizesBarcodes: Bool = true
     ) {
         self.recognitionLanguages = recognitionLanguages
         self.copiesRecognizedText = copiesRecognizedText
         self.confirmsBeforeOpeningQRCode = confirmsBeforeOpeningQRCode
+        self.minimumTextConfidence = min(max(minimumTextConfidence, 0), 1)
+        self.recognizesBarcodes = recognizesBarcodes
     }
 
     public init(from decoder: Decoder) throws {
@@ -142,6 +148,11 @@ public struct ScreenshotOCRConfiguration: Codable, Equatable, Sendable {
             ?? ["zh-Hans", "en-US"]
         copiesRecognizedText = try values.decodeIfPresent(Bool.self, forKey: .copiesRecognizedText) ?? true
         confirmsBeforeOpeningQRCode = try values.decodeIfPresent(Bool.self, forKey: .confirmsBeforeOpeningQRCode) ?? true
+        minimumTextConfidence = min(max(
+            try values.decodeIfPresent(Double.self, forKey: .minimumTextConfidence) ?? 0.3,
+            0
+        ), 1)
+        recognizesBarcodes = try values.decodeIfPresent(Bool.self, forKey: .recognizesBarcodes) ?? true
     }
 }
 

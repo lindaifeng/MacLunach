@@ -195,6 +195,17 @@ public actor ScreenshotHistoryStore {
         guard sqlite3_step(statement) == SQLITE_DONE else { throw lastError() }
     }
 
+    public func updateOCRSummary(id: UUID, summary: String) throws {
+        let statement = try prepare("UPDATE history_items SET ocr_summary = ? WHERE id = ?")
+        defer { sqlite3_finalize(statement) }
+        try bind(summary, to: statement, at: 1)
+        try bind(id.uuidString.lowercased(), to: statement, at: 2)
+        guard sqlite3_step(statement) == SQLITE_DONE else { throw lastError() }
+        guard sqlite3_changes(database) == 1 else {
+            throw ScreenshotHistoryStoreError.recordNotFound(id)
+        }
+    }
+
     public func item(id: UUID) throws -> ScreenshotHistoryItem? {
         let statement = try prepare("SELECT \(Self.selectColumns) FROM history_items WHERE id = ? LIMIT 1")
         defer { sqlite3_finalize(statement) }

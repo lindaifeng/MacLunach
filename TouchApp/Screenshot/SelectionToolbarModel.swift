@@ -265,6 +265,8 @@ enum SelectionToolbarItem: String, CaseIterable, Equatable, Sendable {
             .copy
         case .pin:
             .pin
+        case .recognizeText:
+            .recognizeText
         case .scrollingCapture:
             .scrollingCapture
         case .gifRecording:

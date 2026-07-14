@@ -33,6 +33,10 @@ public struct ScreenshotServiceAction: Codable, Equatable, Sendable {
     public static func sampleColor(requestData: Data) -> Self {
         .init(name: "sampleColor", isIdempotent: true, payload: requestData)
     }
+
+    public static func recognize(requestData: Data) -> Self {
+        .init(name: "recognize", isIdempotent: true, payload: requestData)
+    }
 }
 
 public struct ScreenshotPong: Codable, Equatable, Sendable {
@@ -63,5 +67,6 @@ public enum ScreenshotServiceFailure: Error, Codable, Equatable, Sendable {
     case noDisplayAvailable
     case targetUnavailable
     case encodingFailed
+    case recognitionFailed(String)
     case storageFailed(String)
 }

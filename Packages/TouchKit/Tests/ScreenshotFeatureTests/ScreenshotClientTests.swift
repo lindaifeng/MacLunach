@@ -411,3 +411,48 @@ private final class MockScreenshotServiceConnection: ScreenshotServiceConnection
 
     #expect(try await client.sampleColor(request, timeout: .seconds(1)) == sample)
 }
+
+@Test func screenshotClientSendsRecognitionPayloadAndDecodesResult() async throws {
+    let artifact = ScreenshotArtifact(
+        id: UUID(uuidString: "99999999-9999-9999-9999-999999999999")!,
+        createdAt: Date(timeIntervalSince1970: 1_700_000_100),
+        captureMode: .ocrRegion,
+        relativePath: "Captures/2026/07/ocr.png",
+        thumbnailRelativePath: nil,
+        pointSize: .init(width: 500, height: 300),
+        pixelSize: .init(width: 1_000, height: 600),
+        uniformTypeIdentifier: "public.png",
+        sha256: "ocr-fixture",
+        displays: []
+    )
+    let request = ScreenshotRecognitionRequest(
+        artifact: artifact,
+        configuration: .init(recognitionLanguages: ["zh-Hans", "en-US"], minimumTextConfidence: 0.4)
+    )
+    let result = ScreenshotRecognitionResult(
+        artifactID: artifact.id,
+        fullText: "你好 Touch",
+        textBlocks: [.init(
+            text: "你好 Touch",
+            confidence: 0.95,
+            normalizedBounds: .init(x: 0.1, y: 0.2, width: 0.8, height: 0.2)
+        )],
+        barcodes: []
+    )
+    let connection = MockScreenshotServiceConnection { _, data, reply, _ in
+        let serviceRequest = try! JSONDecoder().decode(ScreenshotServiceRequest.self, from: data)
+        #expect(serviceRequest.action.name == "recognize")
+        #expect(serviceRequest.action.isIdempotent)
+        #expect(try! JSONDecoder().decode(
+            ScreenshotRecognitionRequest.self,
+            from: serviceRequest.action.payload!
+        ) == request)
+        reply(try! makeResponse(
+            for: data,
+            payload: .recognition(try! JSONEncoder().encode(result))
+        ))
+    }
+    let client = ScreenshotClient(connectionFactory: { connection })
+
+    #expect(try await client.recognize(request, timeout: .seconds(1)) == result)
+}

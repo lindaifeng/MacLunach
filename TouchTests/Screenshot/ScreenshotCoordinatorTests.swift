@@ -477,11 +477,112 @@ final class ScreenshotCoordinatorTests: XCTestCase {
         XCTAssertEqual(recoveredResult, .completed)
     }
 
+    func testRecognizeTextCapturesOCRRegionAndCopiesRecognizedText() async throws {
+        let artifact = makeArtifact(relativePath: "Captures/ocr-region.png")
+        let recognition = ScreenshotRecognitionResult(
+            artifactID: artifact.id,
+            fullText: "你好 Touch",
+            textBlocks: [.init(
+                text: "你好 Touch",
+                confidence: 0.96,
+                normalizedBounds: .init(x: 0.1, y: 0.2, width: 0.8, height: 0.2)
+            )],
+            barcodes: []
+        )
+        let capture = CaptureStub(artifact: artifact, recognitionResult: recognition)
+        let textWriter = RecognizedTextClipboardWriterStub()
+        let recognitionPresenter = RecognitionPresenterStub()
+        let selection = SelectionStub(completionAction: .recognizeText)
+        let configuration = ScreenshotFeatureConfiguration(
+            ocr: .init(
+                recognitionLanguages: ["zh-Hans", "en-US"],
+                copiesRecognizedText: true,
+                minimumTextConfidence: 0.45
+            )
+        )
+        let coordinator = makeCoordinator(
+            capture: capture,
+            recognizedTextClipboardWriter: textWriter,
+            recognitionPresenter: recognitionPresenter,
+            selection: selection,
+            configuration: configuration
+        )
+
+        let result = try await coordinator.route(.captureDefaultMode)
+
+        XCTAssertEqual(result, .completed)
+        XCTAssertEqual(capture.lastRequest?.mode, .ocrRegion)
+        XCTAssertEqual(capture.lastRecognitionRequest?.artifact.id, artifact.id)
+        XCTAssertEqual(capture.lastRecognitionRequest?.configuration, configuration.ocr)
+        XCTAssertEqual(textWriter.texts, ["你好 Touch"])
+        XCTAssertEqual(recognitionPresenter.artifacts, [artifact])
+        XCTAssertEqual(recognitionPresenter.presentations, [.result(recognition)])
+    }
+
+    func testRecognitionFailureKeepsArtifactAndPresentsRetryableFailure() async throws {
+        let artifact = makeArtifact(relativePath: "Captures/ocr-failed.png")
+        let capture = CaptureStub(
+            artifact: artifact,
+            recognitionError: .recognitionFailed(message: "Vision 暂时不可用")
+        )
+        let recognitionPresenter = RecognitionPresenterStub()
+        let coordinator = makeCoordinator(
+            capture: capture,
+            recognitionPresenter: recognitionPresenter,
+            selection: SelectionStub(completionAction: .recognizeText)
+        )
+
+        let result = try await coordinator.route(.captureDefaultMode)
+
+        XCTAssertEqual(result, .completed)
+        XCTAssertEqual(capture.captureCount, 1)
+        XCTAssertEqual(recognitionPresenter.artifacts, [artifact])
+        guard case let .failure(message)? = recognitionPresenter.presentations.first else {
+            return XCTFail("识别失败后应显示可重试结果面板")
+        }
+        XCTAssertTrue(message.contains("Vision 暂时不可用"))
+        do {
+            _ = try await recognitionPresenter.retry()
+            XCTFail("失败后的重试应继续抛出识别错误")
+        } catch {
+            XCTAssertEqual(error as? ScreenshotFeatureError, .recognitionFailed(message: "Vision 暂时不可用"))
+        }
+    }
+
+    func testRecognitionPanelRetryUsesOriginalArtifactAndCopiesNewResult() async throws {
+        let artifact = makeArtifact(relativePath: "Captures/ocr-retry.png")
+        let recognition = ScreenshotRecognitionResult(
+            artifactID: artifact.id,
+            fullText: "重试结果",
+            textBlocks: [],
+            barcodes: []
+        )
+        let capture = CaptureStub(artifact: artifact, recognitionResult: recognition)
+        let textWriter = RecognizedTextClipboardWriterStub()
+        let recognitionPresenter = RecognitionPresenterStub()
+        let coordinator = makeCoordinator(
+            capture: capture,
+            recognizedTextClipboardWriter: textWriter,
+            recognitionPresenter: recognitionPresenter,
+            selection: SelectionStub(completionAction: .recognizeText)
+        )
+
+        _ = try await coordinator.route(.captureDefaultMode)
+        let retried = try await recognitionPresenter.retry()
+
+        XCTAssertEqual(retried, recognition)
+        XCTAssertEqual(capture.recognitionCount, 2)
+        XCTAssertEqual(capture.lastRecognitionRequest?.artifact, artifact)
+        XCTAssertEqual(textWriter.texts, ["重试结果", "重试结果"])
+    }
+
     private func makeCoordinator(
         authorization: AuthorizationStub = AuthorizationStub(status: .authorized),
         capture: CaptureStub,
         clipboardWriter: any ScreenshotClipboardWriting = ClipboardWriterStub(),
         colorClipboardWriter: any ScreenshotColorClipboardWriting = ColorClipboardWriterStub(),
+        recognizedTextClipboardWriter: any ScreenshotRecognizedTextClipboardWriting = RecognizedTextClipboardWriterStub(),
+        recognitionPresenter: any ScreenshotRecognitionPresenting = RecognitionPresenterStub(),
         pinPresenter: any ScreenshotPinPresenting = PinPresenterStub(),
         countdownPresenter: any ScreenshotCaptureCountdownPresenting = CountdownPresenterStub(),
         extensionRouter: any ScreenshotCaptureExtensionRouting = PendingScreenshotCaptureExtensionRouter(),
@@ -497,6 +598,8 @@ final class ScreenshotCoordinatorTests: XCTestCase {
             captureService: capture,
             clipboardWriter: clipboardWriter,
             colorClipboardWriter: colorClipboardWriter,
+            recognizedTextClipboardWriter: recognizedTextClipboardWriter,
+            recognitionPresenter: recognitionPresenter,
             pinPresenter: pinPresenter,
             countdownPresenter: countdownPresenter,
             extensionRouter: extensionRouter,
@@ -588,13 +691,19 @@ private final class CaptureStub: ScreenshotCapturing, @unchecked Sendable {
     private let lock = NSLock()
     private let handler: @Sendable () async throws -> Void
     private let artifact: ScreenshotArtifact?
+    private let recognitionResult: ScreenshotRecognitionResult?
+    private let recognitionError: ScreenshotFeatureError?
     private let content: ScreenshotSelectionContent
     private var storedCaptureCount = 0
     private var storedLastRequest: ScreenshotCaptureRequest?
+    private var storedLastRecognitionRequest: ScreenshotRecognitionRequest?
+    private var storedRecognitionCount = 0
 
     init(
         content: ScreenshotSelectionContent? = nil,
         artifact: ScreenshotArtifact? = nil,
+        recognitionResult: ScreenshotRecognitionResult? = nil,
+        recognitionError: ScreenshotFeatureError? = nil,
         handler: @escaping @Sendable () async throws -> Void = {}
     ) {
         self.content = content ?? ScreenshotSelectionContent(
@@ -609,11 +718,17 @@ private final class CaptureStub: ScreenshotCapturing, @unchecked Sendable {
             windows: []
         )
         self.artifact = artifact
+        self.recognitionResult = recognitionResult
+        self.recognitionError = recognitionError
         self.handler = handler
     }
 
     var captureCount: Int { lock.withLock { storedCaptureCount } }
     var lastRequest: ScreenshotCaptureRequest? { lock.withLock { storedLastRequest } }
+    var lastRecognitionRequest: ScreenshotRecognitionRequest? {
+        lock.withLock { storedLastRecognitionRequest }
+    }
+    var recognitionCount: Int { lock.withLock { storedRecognitionCount } }
 
     func availableSelectionContent() async throws -> ScreenshotSelectionContent {
         content
@@ -630,6 +745,16 @@ private final class CaptureStub: ScreenshotCapturing, @unchecked Sendable {
     func captureArtifact(_ request: ScreenshotCaptureRequest) async throws -> ScreenshotArtifact? {
         try await capture(request)
         return artifact
+    }
+
+    func recognize(_ request: ScreenshotRecognitionRequest) async throws -> ScreenshotRecognitionResult {
+        lock.withLock {
+            storedLastRecognitionRequest = request
+            storedRecognitionCount += 1
+        }
+        if let recognitionError { throw recognitionError }
+        guard let recognitionResult else { throw ScreenshotFeatureError.targetUnavailable }
+        return recognitionResult
     }
 
     func capturePrimaryDisplay() async throws {
@@ -664,6 +789,42 @@ private final class ColorClipboardWriterStub: ScreenshotColorClipboardWriting {
 
     func write(_ color: ScreenshotColor) throws {
         colors.append(color)
+    }
+}
+
+@MainActor
+private final class RecognizedTextClipboardWriterStub: ScreenshotRecognizedTextClipboardWriting {
+    private(set) var texts: [String] = []
+
+    func writeRecognizedText(_ text: String) throws {
+        texts.append(text)
+    }
+}
+
+@MainActor
+private final class RecognitionPresenterStub: ScreenshotRecognitionPresenting {
+    private(set) var artifacts: [ScreenshotArtifact] = []
+    private(set) var presentations: [ScreenshotRecognitionPresentation] = []
+    private(set) var dismissCount = 0
+    private var retryAction: RetryAction?
+
+    func present(
+        artifact: ScreenshotArtifact,
+        presentation: ScreenshotRecognitionPresentation,
+        retry: @escaping RetryAction
+    ) {
+        artifacts.append(artifact)
+        presentations.append(presentation)
+        retryAction = retry
+    }
+
+    func dismiss() {
+        dismissCount += 1
+    }
+
+    func retry() async throws -> ScreenshotRecognitionResult {
+        guard let retryAction else { throw ScreenshotFeatureError.targetUnavailable }
+        return try await retryAction()
     }
 }
 

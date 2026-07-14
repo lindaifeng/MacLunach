@@ -7,6 +7,7 @@ public protocol ScreenshotCapturing: Sendable {
     func capture(_ request: ScreenshotCaptureRequest) async throws
     func captureArtifact(_ request: ScreenshotCaptureRequest) async throws -> ScreenshotArtifact?
     func sampleColor(_ request: ScreenshotColorSampleRequest) async throws -> ScreenshotColorSample
+    func recognize(_ request: ScreenshotRecognitionRequest) async throws -> ScreenshotRecognitionResult
     func capturePrimaryDisplay() async throws
 }
 
@@ -28,6 +29,10 @@ public extension ScreenshotCapturing {
     }
 
     func sampleColor(_ request: ScreenshotColorSampleRequest) async throws -> ScreenshotColorSample {
+        throw ScreenshotFeatureError.targetUnavailable
+    }
+
+    func recognize(_ request: ScreenshotRecognitionRequest) async throws -> ScreenshotRecognitionResult {
         throw ScreenshotFeatureError.targetUnavailable
     }
 }

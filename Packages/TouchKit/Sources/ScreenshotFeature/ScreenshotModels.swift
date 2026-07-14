@@ -229,6 +229,7 @@ public enum ScreenshotFeatureError: Error, Codable, Equatable, Sendable {
     case serviceTimedOut
     case serviceInterrupted
     case encodingFailed
+    case recognitionFailed(message: String)
     case storageFailed(message: String)
     case migrationFailed(message: String)
     case incompatibleProtocol(expected: Int, received: Int)

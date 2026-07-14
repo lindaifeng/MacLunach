@@ -11,6 +11,7 @@ final class ScreenshotServiceEndpoint: NSObject, ScreenshotXPCProtocol, @uncheck
 
     private let lock = NSLock()
     private let engine: ScreenCaptureEngine
+    private let recognitionEngine: ScreenshotRecognitionEngine
     private let retentionController: ScreenshotRetentionController?
     private var activeRequestIDs: Set<UUID> = []
     private var captureTasks: [UUID: Task<Void, Never>] = [:]
@@ -37,6 +38,7 @@ final class ScreenshotServiceEndpoint: NSObject, ScreenshotXPCProtocol, @uncheck
         }
         self.init(
             engine: ScreenCaptureEngine(fileStore: ScreenshotFileStore(rootURL: root)),
+            recognitionEngine: ScreenshotRecognitionEngine(rootURL: root),
             retentionController: retentionController
         )
         if let retentionController {
@@ -54,9 +56,11 @@ final class ScreenshotServiceEndpoint: NSObject, ScreenshotXPCProtocol, @uncheck
 
     init(
         engine: ScreenCaptureEngine,
+        recognitionEngine: ScreenshotRecognitionEngine,
         retentionController: ScreenshotRetentionController? = nil
     ) {
         self.engine = engine
+        self.recognitionEngine = recognitionEngine
         self.retentionController = retentionController
         super.init()
     }
@@ -77,6 +81,7 @@ final class ScreenshotServiceEndpoint: NSObject, ScreenshotXPCProtocol, @uncheck
         let isAsynchronousAction = (
             request.action.name == "capture"
                 || request.action.name == "sampleColor"
+                || request.action.name == "recognize"
         ) && request.action.payload != nil
             || request.action.name == ScreenshotServiceAction.availableContent.name
         guard request.protocolVersion == ScreenshotServiceProtocolVersion.current,
@@ -101,6 +106,8 @@ final class ScreenshotServiceEndpoint: NSObject, ScreenshotXPCProtocol, @uncheck
                 response = await processCapture(request)
             } else if request.action.name == "sampleColor" {
                 response = await processColorSample(request)
+            } else if request.action.name == "recognize" {
+                response = await processRecognition(request)
             } else {
                 response = await processAvailableContent(request)
             }
@@ -146,6 +153,47 @@ final class ScreenshotServiceEndpoint: NSObject, ScreenshotXPCProtocol, @uncheck
             return .init(
                 requestID: serviceRequest.id,
                 payload: .failure(.internalFailure(String(describing: error)))
+            )
+        }
+    }
+
+    private func processRecognition(
+        _ serviceRequest: ScreenshotServiceRequest
+    ) async -> ScreenshotServiceResponse {
+        do {
+            try Task.checkCancellation()
+            guard let payload = serviceRequest.action.payload else {
+                return .init(
+                    requestID: serviceRequest.id,
+                    payload: .failure(.malformedRequest("recognize action is missing its payload"))
+                )
+            }
+            let request = try JSONDecoder().decode(ScreenshotRecognitionRequest.self, from: payload)
+            let result = try await recognitionEngine.recognize(request)
+            if let retentionController {
+                do {
+                    try await retentionController.updateOCRSummary(
+                        artifactID: request.artifact.id,
+                        summary: result.fullText
+                    )
+                } catch ScreenshotHistoryStoreError.recordNotFound {
+                    // 历史功能可能已关闭；识别结果本身不应因此失败。
+                } catch {
+                    NSLog("ScreenshotService OCR history update failed: %@", String(describing: error))
+                }
+            }
+            return .init(
+                requestID: serviceRequest.id,
+                payload: .recognition(try JSONEncoder().encode(result))
+            )
+        } catch is CancellationError {
+            return .init(requestID: serviceRequest.id, payload: .failure(.cancelled))
+        } catch let error as ScreenshotFeatureError {
+            return .init(requestID: serviceRequest.id, payload: .failure(map(error)))
+        } catch {
+            return .init(
+                requestID: serviceRequest.id,
+                payload: .failure(.recognitionFailed(String(describing: error)))
             )
         }
     }
@@ -252,6 +300,8 @@ final class ScreenshotServiceEndpoint: NSObject, ScreenshotXPCProtocol, @uncheck
             .targetUnavailable
         case .encodingFailed:
             .encodingFailed
+        case let .recognitionFailed(message):
+            .recognitionFailed(message)
         case let .storageFailed(message):
             .storageFailed(message)
         default:

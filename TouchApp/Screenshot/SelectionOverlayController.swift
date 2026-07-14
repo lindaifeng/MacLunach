@@ -10,6 +10,7 @@ protocol ScreenshotSelectionPresenting: AnyObject, Sendable {
 enum ScreenshotSelectionCompletionAction: Equatable, Sendable {
     case copy
     case pin
+    case recognizeText
     case scrollingCapture
     case gifRecording
 }
@@ -471,7 +472,7 @@ final class SelectionOverlayController: ScreenshotSelectionPresenting, Selection
         switch item {
         case .cancel:
             cancel()
-        case .copy, .pin, .scrollingCapture, .gifRecording:
+        case .copy, .pin, .recognizeText, .scrollingCapture, .gifRecording:
             if let action = item.selectionCompletionAction {
                 completeSelection(action: action)
             }

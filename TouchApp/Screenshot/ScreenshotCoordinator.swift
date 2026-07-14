@@ -62,6 +62,8 @@ final class ScreenshotCoordinator: ScreenshotActionRouting {
     private let captureService: any ScreenshotCapturing
     private let clipboardWriter: any ScreenshotClipboardWriting
     private let colorClipboardWriter: any ScreenshotColorClipboardWriting
+    private let recognizedTextClipboardWriter: any ScreenshotRecognizedTextClipboardWriting
+    private let recognitionPresenter: any ScreenshotRecognitionPresenting
     private let pinPresenter: any ScreenshotPinPresenting
     private let countdownPresenter: any ScreenshotCaptureCountdownPresenting
     private let extensionRouter: any ScreenshotCaptureExtensionRouting
@@ -84,6 +86,8 @@ final class ScreenshotCoordinator: ScreenshotActionRouting {
         captureService: any ScreenshotCapturing,
         clipboardWriter: any ScreenshotClipboardWriting = SystemScreenshotClipboardWriter(),
         colorClipboardWriter: any ScreenshotColorClipboardWriting = SystemScreenshotColorClipboardWriter(),
+        recognizedTextClipboardWriter: any ScreenshotRecognizedTextClipboardWriting = SystemScreenshotRecognizedTextClipboardWriter(),
+        recognitionPresenter: any ScreenshotRecognitionPresenting = ScreenshotRecognitionResultPanel(),
         pinPresenter: any ScreenshotPinPresenting = ScreenshotPinWindowManager(),
         countdownPresenter: any ScreenshotCaptureCountdownPresenting = CaptureCountdownPanel(),
         extensionRouter: any ScreenshotCaptureExtensionRouting = PendingScreenshotCaptureExtensionRouter(),
@@ -98,6 +102,8 @@ final class ScreenshotCoordinator: ScreenshotActionRouting {
         self.captureService = captureService
         self.clipboardWriter = clipboardWriter
         self.colorClipboardWriter = colorClipboardWriter
+        self.recognizedTextClipboardWriter = recognizedTextClipboardWriter
+        self.recognitionPresenter = recognitionPresenter
         self.pinPresenter = pinPresenter
         self.countdownPresenter = countdownPresenter
         self.extensionRouter = extensionRouter
@@ -169,6 +175,7 @@ final class ScreenshotCoordinator: ScreenshotActionRouting {
         isEnabled = false
         activeSelectionPresenter?.cancel()
         activeColorPickerPresenter?.cancel()
+        recognitionPresenter.dismiss()
         countdownPresenter.cancel()
         extensionRouter.cancel()
         captureTask?.cancel()
@@ -188,6 +195,8 @@ final class ScreenshotCoordinator: ScreenshotActionRouting {
         let captureService = captureService
         let countdownPresenter = countdownPresenter
         let extensionRouter = extensionRouter
+        let recognizedTextClipboardWriter = recognizedTextClipboardWriter
+        let recognitionPresenter = recognitionPresenter
         let configuration = configurationProvider()
         let task = Task { @MainActor in
             let content = try await captureService.availableSelectionContent()
@@ -209,7 +218,7 @@ final class ScreenshotCoordinator: ScreenshotActionRouting {
                     target: selection.target,
                     windowShadow: selection.windowShadow
                 )))
-            case .copy, .pin:
+            case .copy, .pin, .recognizeText:
                 break
             }
 
@@ -218,7 +227,9 @@ final class ScreenshotCoordinator: ScreenshotActionRouting {
                 try Task.checkCancellation()
             }
             let request = ScreenshotCaptureRequest(
-                mode: Self.mode(for: selection.target),
+                mode: selection.completionAction == .recognizeText
+                    ? .ocrRegion
+                    : Self.mode(for: selection.target),
                 // 可见倒计时已在主进程完成。XPC 收到请求后必须立即捕获，
                 // 否则会出现双重等待，且 HUD 关闭时间无法与最终帧严格对齐。
                 delay: .none,
@@ -237,6 +248,37 @@ final class ScreenshotCoordinator: ScreenshotActionRouting {
             case .pin:
                 if let artifact {
                     try pinPresenter.pin(artifact)
+                }
+            case .recognizeText:
+                if let artifact {
+                    let recognize: ScreenshotRecognitionPresenting.RetryAction = {
+                        let result = try await captureService.recognize(.init(
+                            artifact: artifact,
+                            configuration: configuration.ocr
+                        ))
+                        if configuration.ocr.copiesRecognizedText, !result.fullText.isEmpty {
+                            try recognizedTextClipboardWriter.writeRecognizedText(result.fullText)
+                        }
+                        return result
+                    }
+                    do {
+                        let result = try await recognize()
+                        recognitionPresenter.present(
+                            artifact: artifact,
+                            presentation: .result(result),
+                            retry: recognize
+                        )
+                    } catch is CancellationError {
+                        throw CancellationError()
+                    } catch let error as ScreenshotFeatureError where error == .cancelled {
+                        throw error
+                    } catch {
+                        recognitionPresenter.present(
+                            artifact: artifact,
+                            presentation: .failure(message: ScreenshotRecognitionErrorMessage.text(for: error)),
+                            retry: recognize
+                        )
+                    }
                 }
             case .scrollingCapture, .gifRecording:
                 break

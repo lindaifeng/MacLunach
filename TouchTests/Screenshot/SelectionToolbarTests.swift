@@ -119,7 +119,10 @@ final class SelectionToolbarTests: XCTestCase {
             SelectionToolbarItem.gifRecording.selectionCompletionAction,
             .gifRecording
         )
-        XCTAssertNil(SelectionToolbarItem.recognizeText.selectionCompletionAction)
+        XCTAssertEqual(
+            SelectionToolbarItem.recognizeText.selectionCompletionAction,
+            .recognizeText
+        )
     }
 
     func testToolbarPrefersBelowSelection() {

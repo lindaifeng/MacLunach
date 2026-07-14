@@ -79,6 +79,10 @@ public actor ScreenshotRetentionController {
         }
     }
 
+    public func updateOCRSummary(artifactID: UUID, summary: String) async throws {
+        try await store.updateOCRSummary(id: artifactID, summary: summary)
+    }
+
     @discardableResult
     public func enforce(_ configuration: ScreenshotHistoryConfiguration) async throws -> [UUID] {
         guard configuration.isEnabled else { return [] }

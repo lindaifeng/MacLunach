@@ -473,17 +473,19 @@ Commit: `feat: add recoverable screenshot history store`
 - Modify: `Packages/TouchKit/Sources/ScreenshotFeature/ScreenshotClient.swift`
 - Modify: `TouchApp/Screenshot/ScreenshotCoordinator.swift`
 
-- [ ] **Step 1：写失败测试**
+- [x] **Step 1：写失败测试**
 
 覆盖中英文混排 OCR、空图、旋转方向、取消、低置信度过滤、多二维码、无二维码、非法 URL 仅作为文本返回。识别完成后更新历史 OCR 字段；任务失败保留原截图并返回可重试错误。
 
-- [ ] **Step 2：确认失败并实现 Vision 队列**
+- [x] **Step 2：确认失败并实现 Vision 队列**
 
 OCR 区域入口复用 Task 5 的选区，生成 recognition 请求而不是普通缩略图动作。使用 `VNRecognizeTextRequest` accurate 模式和 `VNDetectBarcodesRequest`；服务内限制并发，响应包含文本块和规范化坐标。OCR 区域模式默认复制识别文本，并提供“查看原图/重试”；二维码结果需用户确认后才打开 URL。
 
 - [ ] **Step 3：共同门槛并实机验收**
 
 对真实中文、英文、二维码各验证一次；记录识别耗时和误差，不上传图片。
+
+增量状态（2026-07-14）：Vision accurate OCR、二维码识别、图片方向元数据、置信度过滤、阅读顺序、XPC recognition 载荷、历史 OCR 摘要更新和默认最多 2 个并发的后台队列均已接通。排队任务取消会立即移出等待队列，不再泄漏许可。OCR 入口复用拖拽选区并使用 `.ocrRegion` 捕获，默认复制文本；结果面板支持文字/二维码列表、复制、查看原图和重新识别，识别失败仍保留原图。二维码只有重新校验为带主机名的 HTTP(S) 地址时才显示打开动作，且打开前必须由用户在系统确认框确认。真实 Vision fixture 已验证中英文、数字、EXIF 旋转、空图和双二维码，单次测试耗时约 0.5–0.8 秒且断言无识别误差；TouchKit 全量 133 个测试通过，应用层协调器与工具栏 36 个测试通过。结果面板的真实鼠标/键盘、VoiceOver 和用户实际截图视觉验收仍待人工完成，因此 Step 3 保持未勾选。
 
 Commit: `feat: recognize screenshot text and qr codes`
 

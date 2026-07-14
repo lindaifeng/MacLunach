@@ -176,3 +176,25 @@ func historyArtifact(
         displays: []
     )
 }
+
+extension ScreenshotHistoryStoreTests {
+    @Test("识别完成后更新 OCR 摘要且不存在的记录不会被静默忽略")
+    func updatesOCRSummaryForExistingRecordOnly() async throws {
+        let root = historyTemporaryRoot()
+        let store = try ScreenshotHistoryStore(rootURL: root)
+        let artifact = historyArtifact(
+            id: UUID(uuidString: "77777777-7777-7777-7777-777777777777")!,
+            createdAt: Date(timeIntervalSince1970: 700),
+            relativePath: "Captures/2026/07/ocr.png"
+        )
+        try await store.insert(artifact, ocrSummary: "旧文字")
+
+        try await store.updateOCRSummary(id: artifact.id, summary: "你好 Touch")
+        #expect(try await store.item(id: artifact.id)?.ocrSummary == "你好 Touch")
+
+        let missingID = UUID(uuidString: "88888888-8888-8888-8888-888888888888")!
+        await #expect(throws: ScreenshotHistoryStoreError.recordNotFound(missingID)) {
+            try await store.updateOCRSummary(id: missingID, summary: "不会写入")
+        }
+    }
+}

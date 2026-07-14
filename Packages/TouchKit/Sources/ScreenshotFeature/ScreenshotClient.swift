@@ -163,6 +163,36 @@ public actor ScreenshotClient {
         }
     }
 
+    public func recognize(
+        _ request: ScreenshotRecognitionRequest,
+        timeout: Duration = .seconds(30)
+    ) async throws -> ScreenshotRecognitionResult {
+        let requestData: Data
+        do {
+            requestData = try JSONEncoder().encode(request)
+        } catch {
+            throw ScreenshotFeatureError.serviceFailed(
+                message: "recognition request encoding failed: \(error)"
+            )
+        }
+        let payload = try await perform(
+            action: .recognize(requestData: requestData),
+            timeout: timeout
+        )
+        guard case let .recognition(resultData) = payload else {
+            throw ScreenshotFeatureError.serviceFailed(
+                message: "recognize returned an unexpected payload"
+            )
+        }
+        do {
+            return try JSONDecoder().decode(ScreenshotRecognitionResult.self, from: resultData)
+        } catch {
+            throw ScreenshotFeatureError.serviceFailed(
+                message: "recognition result decoding failed: \(error)"
+            )
+        }
+    }
+
     public func perform(
         action: ScreenshotServiceAction,
         timeout: Duration = .seconds(2)
@@ -447,6 +477,12 @@ public actor ScreenshotClient {
                     message: "sampleColor returned an unexpected payload"
                 )
             }
+        case "recognize":
+            guard case .recognition = payload else {
+                throw ScreenshotFeatureError.serviceFailed(
+                    message: "recognize returned an unexpected payload"
+                )
+            }
         default:
             break
         }
@@ -470,6 +506,8 @@ public actor ScreenshotClient {
             return .targetUnavailable
         case .encodingFailed:
             return .encodingFailed
+        case let .recognitionFailed(message):
+            return .recognitionFailed(message: message)
         case let .storageFailed(message):
             return .storageFailed(message: message)
         }
