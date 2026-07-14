@@ -258,6 +258,143 @@ final class ScreenshotCoordinatorTests: XCTestCase {
         XCTAssertEqual(clipboard.artifacts, [artifact])
     }
 
+    func testDefaultPostCaptureActionCopiesAndShowsThumbnailWithConfiguredTimeout() async throws {
+        let artifact = makeArtifact(relativePath: "Captures/default-thumbnail.png")
+        let clipboard = ClipboardWriterStub()
+        let thumbnail = FloatingThumbnailPresenterStub()
+        let configuration = ScreenshotFeatureConfiguration(thumbnailTimeout: .seconds(10))
+        let coordinator = makeCoordinator(
+            capture: CaptureStub(artifact: artifact),
+            clipboardWriter: clipboard,
+            floatingThumbnailPresenter: thumbnail,
+            configuration: configuration
+        )
+
+        _ = try await coordinator.route(.captureDefaultMode)
+
+        XCTAssertEqual(clipboard.artifacts, [artifact])
+        XCTAssertEqual(thumbnail.artifacts, [artifact])
+        XCTAssertEqual(thumbnail.timeouts, [.seconds(10)])
+    }
+
+    func testFloatingThumbnailActionsUseCoordinatorDependenciesAndCaptureService() async throws {
+        let artifact = makeArtifact(relativePath: "Captures/thumbnail-actions.png")
+        let recognition = ScreenshotRecognitionResult(
+            artifactID: artifact.id,
+            fullText: "缩略图识别结果",
+            textBlocks: [],
+            barcodes: []
+        )
+        let capture = CaptureStub(artifact: artifact, recognitionResult: recognition)
+        let clipboard = ClipboardWriterStub()
+        let pin = PinPresenterStub()
+        let annotation = AnnotationPresenterStub()
+        let recognitionPresenter = RecognitionPresenterStub()
+        let thumbnail = FloatingThumbnailPresenterStub()
+        let coordinator = makeCoordinator(
+            capture: capture,
+            clipboardWriter: clipboard,
+            recognitionPresenter: recognitionPresenter,
+            pinPresenter: pin,
+            annotationPresenter: annotation,
+            floatingThumbnailPresenter: thumbnail,
+            configuration: .init(saveLocation: .desktop)
+        )
+
+        _ = try await coordinator.route(.captureDefaultMode)
+        let actions = try XCTUnwrap(thumbnail.actions.first)
+        try actions.copy?(artifact)
+        try actions.pin?(artifact)
+        try actions.annotate?(artifact)
+        actions.recognize?(artifact)
+        await Task.yield()
+        let explicitDestination = URL(fileURLWithPath: "/tmp/thumbnail-actions-export.png")
+        let exported = try await actions.export?(artifact, explicitDestination)
+        try await actions.save?(artifact)
+        try await actions.delete?(artifact)
+
+        XCTAssertEqual(clipboard.artifacts, [artifact, artifact])
+        XCTAssertEqual(pin.artifacts, [artifact])
+        XCTAssertEqual(annotation.artifacts, [artifact])
+        XCTAssertEqual(recognitionPresenter.artifacts, [artifact])
+        XCTAssertEqual(exported, explicitDestination)
+        XCTAssertEqual(capture.exportedArtifacts, [artifact, artifact])
+        XCTAssertEqual(capture.exportDestinations.first, explicitDestination)
+        XCTAssertEqual(capture.exportDestinations.last?.lastPathComponent, "thumbnail-actions.png")
+        XCTAssertEqual(capture.deletedArtifacts, [artifact])
+    }
+
+    func testSaveOnlyPostCaptureActionDoesNotCopyOrShowThumbnail() async throws {
+        let artifact = makeArtifact(relativePath: "Captures/save-only.png")
+        let clipboard = ClipboardWriterStub()
+        let thumbnail = FloatingThumbnailPresenterStub()
+        let coordinator = makeCoordinator(
+            capture: CaptureStub(artifact: artifact),
+            clipboardWriter: clipboard,
+            floatingThumbnailPresenter: thumbnail,
+            configuration: .init(afterCaptureAction: .saveOnly)
+        )
+
+        _ = try await coordinator.route(.captureDefaultMode)
+
+        XCTAssertTrue(clipboard.artifacts.isEmpty)
+        XCTAssertTrue(thumbnail.artifacts.isEmpty)
+    }
+
+    func testCopyAndSaveOrDisabledFloatingThumbnailCopiesWithoutShowingThumbnail() async throws {
+        for configuration in [
+            ScreenshotFeatureConfiguration(afterCaptureAction: .copyAndSave),
+            ScreenshotFeatureConfiguration(showsFloatingThumbnail: false)
+        ] {
+            let artifact = makeArtifact(relativePath: "Captures/copy-without-thumbnail.png")
+            let clipboard = ClipboardWriterStub()
+            let thumbnail = FloatingThumbnailPresenterStub()
+            let coordinator = makeCoordinator(
+                capture: CaptureStub(artifact: artifact),
+                clipboardWriter: clipboard,
+                floatingThumbnailPresenter: thumbnail,
+                configuration: configuration
+            )
+
+            _ = try await coordinator.route(.captureDefaultMode)
+
+            XCTAssertEqual(clipboard.artifacts, [artifact])
+            XCTAssertTrue(thumbnail.artifacts.isEmpty)
+        }
+    }
+
+    func testAnnotatePostCaptureActionOpensArtifactWithoutCopyingOrShowingThumbnail() async throws {
+        let artifact = makeArtifact(relativePath: "Captures/annotate.png")
+        let clipboard = ClipboardWriterStub()
+        let annotation = AnnotationPresenterStub()
+        let thumbnail = FloatingThumbnailPresenterStub()
+        let coordinator = makeCoordinator(
+            capture: CaptureStub(artifact: artifact),
+            clipboardWriter: clipboard,
+            annotationPresenter: annotation,
+            floatingThumbnailPresenter: thumbnail,
+            configuration: .init(afterCaptureAction: .annotate)
+        )
+
+        _ = try await coordinator.route(.captureDefaultMode)
+
+        XCTAssertEqual(annotation.artifacts, [artifact])
+        XCTAssertTrue(clipboard.artifacts.isEmpty)
+        XCTAssertTrue(thumbnail.artifacts.isEmpty)
+    }
+
+    func testDeactivationDismissesEveryFloatingThumbnail() async {
+        let thumbnail = FloatingThumbnailPresenterStub()
+        let coordinator = makeCoordinator(
+            capture: CaptureStub(),
+            floatingThumbnailPresenter: thumbnail
+        )
+
+        await coordinator.deactivate()
+
+        XCTAssertEqual(thumbnail.dismissAllCount, 1)
+    }
+
     func testPinCompletionPresentsArtifactWithoutOverwritingClipboard() async throws {
         let artifact = makeArtifact(relativePath: "Captures/pin.png")
         let capture = CaptureStub(artifact: artifact) {}
@@ -584,6 +721,8 @@ final class ScreenshotCoordinatorTests: XCTestCase {
         recognizedTextClipboardWriter: any ScreenshotRecognizedTextClipboardWriting = RecognizedTextClipboardWriterStub(),
         recognitionPresenter: any ScreenshotRecognitionPresenting = RecognitionPresenterStub(),
         pinPresenter: any ScreenshotPinPresenting = PinPresenterStub(),
+        annotationPresenter: any ScreenshotArtifactAnnotationPresenting = AnnotationPresenterStub(),
+        floatingThumbnailPresenter: any ScreenshotFloatingThumbnailPresenting = FloatingThumbnailPresenterStub(),
         countdownPresenter: any ScreenshotCaptureCountdownPresenting = CountdownPresenterStub(),
         extensionRouter: any ScreenshotCaptureExtensionRouting = PendingScreenshotCaptureExtensionRouter(),
         selection: any ScreenshotSelectionPresenting = SelectionStub(),
@@ -601,6 +740,8 @@ final class ScreenshotCoordinatorTests: XCTestCase {
             recognizedTextClipboardWriter: recognizedTextClipboardWriter,
             recognitionPresenter: recognitionPresenter,
             pinPresenter: pinPresenter,
+            annotationPresenter: annotationPresenter,
+            floatingThumbnailPresenter: floatingThumbnailPresenter,
             countdownPresenter: countdownPresenter,
             extensionRouter: extensionRouter,
             selectionFactory: { selection },
@@ -698,6 +839,9 @@ private final class CaptureStub: ScreenshotCapturing, @unchecked Sendable {
     private var storedLastRequest: ScreenshotCaptureRequest?
     private var storedLastRecognitionRequest: ScreenshotRecognitionRequest?
     private var storedRecognitionCount = 0
+    private var storedExportedArtifacts: [ScreenshotArtifact] = []
+    private var storedExportDestinations: [URL] = []
+    private var storedDeletedArtifacts: [ScreenshotArtifact] = []
 
     init(
         content: ScreenshotSelectionContent? = nil,
@@ -729,6 +873,9 @@ private final class CaptureStub: ScreenshotCapturing, @unchecked Sendable {
         lock.withLock { storedLastRecognitionRequest }
     }
     var recognitionCount: Int { lock.withLock { storedRecognitionCount } }
+    var exportedArtifacts: [ScreenshotArtifact] { lock.withLock { storedExportedArtifacts } }
+    var exportDestinations: [URL] { lock.withLock { storedExportDestinations } }
+    var deletedArtifacts: [ScreenshotArtifact] { lock.withLock { storedDeletedArtifacts } }
 
     func availableSelectionContent() async throws -> ScreenshotSelectionContent {
         content
@@ -755,6 +902,18 @@ private final class CaptureStub: ScreenshotCapturing, @unchecked Sendable {
         if let recognitionError { throw recognitionError }
         guard let recognitionResult else { throw ScreenshotFeatureError.targetUnavailable }
         return recognitionResult
+    }
+
+    func exportArtifact(_ artifact: ScreenshotArtifact, to destinationURL: URL) async throws -> URL {
+        lock.withLock {
+            storedExportedArtifacts.append(artifact)
+            storedExportDestinations.append(destinationURL)
+        }
+        return destinationURL
+    }
+
+    func deleteArtifact(_ artifact: ScreenshotArtifact) async throws {
+        lock.withLock { storedDeletedArtifacts.append(artifact) }
     }
 
     func capturePrimaryDisplay() async throws {
@@ -875,6 +1034,37 @@ private final class PinPresenterStub: ScreenshotPinPresenting {
 
     func pin(_ artifact: ScreenshotArtifact) throws {
         artifacts.append(artifact)
+    }
+}
+
+@MainActor
+private final class AnnotationPresenterStub: ScreenshotArtifactAnnotationPresenting {
+    private(set) var artifacts: [ScreenshotArtifact] = []
+
+    func presentForAnnotation(_ artifact: ScreenshotArtifact) throws {
+        artifacts.append(artifact)
+    }
+}
+
+@MainActor
+private final class FloatingThumbnailPresenterStub: ScreenshotFloatingThumbnailPresenting {
+    private(set) var artifacts: [ScreenshotArtifact] = []
+    private(set) var timeouts: [ScreenshotThumbnailTimeout] = []
+    private(set) var actions: [FloatingThumbnailActions] = []
+    private(set) var dismissAllCount = 0
+
+    func present(
+        artifact: ScreenshotArtifact,
+        timeout: ScreenshotThumbnailTimeout,
+        actions: FloatingThumbnailActions
+    ) {
+        artifacts.append(artifact)
+        timeouts.append(timeout)
+        self.actions.append(actions)
+    }
+
+    func dismissAll() {
+        dismissAllCount += 1
     }
 }
 

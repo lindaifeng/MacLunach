@@ -28,6 +28,14 @@ public actor XPCScreenCaptureService: ScreenshotCapturing {
         try await client.recognize(request)
     }
 
+    public func exportArtifact(_ artifact: ScreenshotArtifact, to destinationURL: URL) async throws -> URL {
+        try await client.exportArtifact(artifact, to: destinationURL)
+    }
+
+    public func deleteArtifact(_ artifact: ScreenshotArtifact) async throws {
+        try await client.deleteArtifact(artifact)
+    }
+
     public func capturePrimaryDisplay() async throws {
         let request = ScreenshotCaptureRequest(
             mode: .fullScreen,

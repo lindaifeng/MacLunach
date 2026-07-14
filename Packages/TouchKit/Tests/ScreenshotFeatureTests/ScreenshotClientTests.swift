@@ -456,3 +456,67 @@ private final class MockScreenshotServiceConnection: ScreenshotServiceConnection
 
     #expect(try await client.recognize(request, timeout: .seconds(1)) == result)
 }
+
+@Test func screenshotClientSendsArtifactExportPayloadAndDecodesDestination() async throws {
+    let artifact = ScreenshotArtifact(
+        id: UUID(uuidString: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")!,
+        createdAt: Date(timeIntervalSince1970: 1_700_000_200),
+        captureMode: .region,
+        relativePath: "Captures/2026/07/export.png",
+        thumbnailRelativePath: "Thumbnails/export.png",
+        pointSize: .init(width: 200, height: 100),
+        pixelSize: .init(width: 400, height: 200),
+        uniformTypeIdentifier: "public.png",
+        sha256: "export-fixture",
+        displays: []
+    )
+    let destination = URL(fileURLWithPath: "/tmp/Touch Export/export.png")
+    let connection = MockScreenshotServiceConnection { _, data, reply, _ in
+        let serviceRequest = try! JSONDecoder().decode(ScreenshotServiceRequest.self, from: data)
+        #expect(serviceRequest.action.name == "exportArtifact")
+        #expect(serviceRequest.action.isIdempotent == false)
+        let decoded = try! JSONDecoder().decode(
+            ScreenshotArtifactExportRequest.self,
+            from: serviceRequest.action.payload!
+        )
+        #expect(decoded.artifact == artifact)
+        #expect(decoded.destinationURL == destination)
+        let result = ScreenshotArtifactExportResult(destinationURL: destination)
+        reply(try! makeResponse(
+            for: data,
+            payload: .artifactExport(try! JSONEncoder().encode(result))
+        ))
+    }
+    let client = ScreenshotClient(connectionFactory: { connection })
+
+    #expect(try await client.exportArtifact(artifact, to: destination, timeout: .seconds(1)) == destination)
+}
+
+@Test func screenshotClientSendsArtifactDeletionPayloadAndAcceptsAcknowledgement() async throws {
+    let artifact = ScreenshotArtifact(
+        id: UUID(uuidString: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")!,
+        createdAt: Date(timeIntervalSince1970: 1_700_000_300),
+        captureMode: .window,
+        relativePath: "Captures/2026/07/delete.png",
+        thumbnailRelativePath: nil,
+        pointSize: .init(width: 200, height: 100),
+        pixelSize: .init(width: 400, height: 200),
+        uniformTypeIdentifier: "public.png",
+        sha256: "delete-fixture",
+        displays: []
+    )
+    let connection = MockScreenshotServiceConnection { _, data, reply, _ in
+        let serviceRequest = try! JSONDecoder().decode(ScreenshotServiceRequest.self, from: data)
+        #expect(serviceRequest.action.name == "deleteArtifact")
+        #expect(serviceRequest.action.isIdempotent)
+        let decoded = try! JSONDecoder().decode(
+            ScreenshotArtifactDeletionRequest.self,
+            from: serviceRequest.action.payload!
+        )
+        #expect(decoded.artifact == artifact)
+        reply(try! makeResponse(for: data, payload: .artifactDeleted))
+    }
+    let client = ScreenshotClient(connectionFactory: { connection })
+
+    try await client.deleteArtifact(artifact, timeout: .seconds(1))
+}

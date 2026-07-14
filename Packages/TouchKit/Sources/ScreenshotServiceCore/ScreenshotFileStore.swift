@@ -229,18 +229,85 @@ public actor ScreenshotFileStore {
             throw ScreenshotFeatureError.storageFailed(message: String(describing: error))
         }
 
+        var thumbnailRelativePath: String?
+        do {
+            thumbnailRelativePath = try storeThumbnail(image: image, artifactID: request.id)
+            try Task.checkCancellation()
+        } catch is CancellationError {
+            try? fileManager.removeItem(at: destination)
+            if let thumbnailRelativePath {
+                try? fileManager.removeItem(at: rootURL.appendingPathComponent(thumbnailRelativePath))
+            }
+            throw CancellationError()
+        } catch {
+            // 缩略图只用于捕获后的即时预览；生成失败不能覆盖已经成功的原图。
+            thumbnailRelativePath = nil
+        }
+
         let digest = SHA256.hash(data: encoded).map { String(format: "%02x", $0) }.joined()
         return ScreenshotArtifact(
             id: request.id,
             createdAt: createdAt,
             captureMode: request.mode,
             relativePath: "\(relativeDirectory)/\(filename)",
-            thumbnailRelativePath: nil,
+            thumbnailRelativePath: thumbnailRelativePath,
             pointSize: pointSize,
             pixelSize: .init(width: Double(image.width), height: Double(image.height)),
             uniformTypeIdentifier: descriptor.uniformTypeIdentifier,
             sha256: digest,
             displays: displays
         )
+    }
+
+    private func storeThumbnail(image: CGImage, artifactID: UUID) throws -> String {
+        try Task.checkCancellation()
+        let thumbnail = try Self.makeThumbnail(image)
+        let bytes = try ImageIOScreenshotEncoder().encode(
+            thumbnail,
+            options: .init(format: .png, quality: 1)
+        )
+        let relativeDirectory = "Thumbnails"
+        let directory = rootURL.appendingPathComponent(relativeDirectory, isDirectory: true)
+        try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+        let filename = "\(artifactID.uuidString.lowercased()).png"
+        let destination = directory.appendingPathComponent(filename)
+        do {
+            try writer.write(bytes, to: destination)
+            try Task.checkCancellation()
+        } catch {
+            try? fileManager.removeItem(at: destination)
+            throw error
+        }
+        return "\(relativeDirectory)/\(filename)"
+    }
+
+    private static func makeThumbnail(_ image: CGImage) throws -> CGImage {
+        let maximumWidth = 360.0
+        let maximumHeight = 240.0
+        let scale = min(
+            1,
+            maximumWidth / Double(max(1, image.width)),
+            maximumHeight / Double(max(1, image.height))
+        )
+        let width = max(1, Int((Double(image.width) * scale).rounded()))
+        let height = max(1, Int((Double(image.height) * scale).rounded()))
+        let colorSpace = CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+        guard let context = CGContext(
+            data: nil,
+            width: width,
+            height: height,
+            bitsPerComponent: 8,
+            bytesPerRow: width * 4,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else {
+            throw ScreenshotFeatureError.encodingFailed
+        }
+        context.interpolationQuality = .high
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        guard let thumbnail = context.makeImage() else {
+            throw ScreenshotFeatureError.encodingFailed
+        }
+        return thumbnail
     }
 }

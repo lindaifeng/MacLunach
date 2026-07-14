@@ -130,6 +130,41 @@ public actor ScreenshotRetentionController {
         }
     }
 
+    /// 将捕获产物移入功能私有回收区。
+    ///
+    /// 开启历史时复用历史记录删除流程；关闭历史但仍保留文件时，也会将原图与缩略图
+    /// 一起移动到回收区，而不是由主应用直接永久删除。
+    public func discard(_ artifact: ScreenshotArtifact) async throws {
+        if let item = try await store.item(id: artifact.id) {
+            guard item.deletedAt == nil else { return }
+            try await delete(ids: [artifact.id])
+            return
+        }
+
+        let trashRelativePath = ".Trash/\(artifact.id.uuidString.lowercased())"
+        let trashDirectory = try safeURL(for: trashRelativePath)
+        var moves: [Move] = []
+        do {
+            try fileOperations.createDirectory(at: trashDirectory)
+            for (relativePath, isThumbnail) in [
+                (artifact.relativePath, false),
+                (artifact.thumbnailRelativePath, true)
+            ] {
+                guard let relativePath else { continue }
+                let source = try safeURL(for: relativePath)
+                guard fileOperations.fileExists(at: source) else { continue }
+                let destination = trashDirectory.appendingPathComponent(
+                    trashFilename(for: artifact, isThumbnail: isThumbnail)
+                )
+                try fileOperations.moveItem(at: source, to: destination)
+                moves.append(.init(source: source, destination: destination))
+            }
+        } catch {
+            rollback(moves)
+            throw ScreenshotRetentionError.fileOperationFailed(String(describing: error))
+        }
+    }
+
     public func restore(id: UUID) async throws {
         guard let item = try await store.item(id: id),
               item.deletedAt != nil,

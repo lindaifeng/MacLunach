@@ -13,6 +13,7 @@ final class ScreenshotServiceEndpoint: NSObject, ScreenshotXPCProtocol, @uncheck
     private let engine: ScreenCaptureEngine
     private let recognitionEngine: ScreenshotRecognitionEngine
     private let retentionController: ScreenshotRetentionController?
+    private let artifactFileController: ScreenshotArtifactFileController
     private var activeRequestIDs: Set<UUID> = []
     private var captureTasks: [UUID: Task<Void, Never>] = [:]
     private var pendingCancellationRequestIDs: Set<UUID> = []
@@ -39,7 +40,8 @@ final class ScreenshotServiceEndpoint: NSObject, ScreenshotXPCProtocol, @uncheck
         self.init(
             engine: ScreenCaptureEngine(fileStore: ScreenshotFileStore(rootURL: root)),
             recognitionEngine: ScreenshotRecognitionEngine(rootURL: root),
-            retentionController: retentionController
+            retentionController: retentionController,
+            artifactFileController: ScreenshotArtifactFileController(rootURL: root)
         )
         if let retentionController {
             Task {
@@ -57,11 +59,13 @@ final class ScreenshotServiceEndpoint: NSObject, ScreenshotXPCProtocol, @uncheck
     init(
         engine: ScreenCaptureEngine,
         recognitionEngine: ScreenshotRecognitionEngine,
-        retentionController: ScreenshotRetentionController? = nil
+        retentionController: ScreenshotRetentionController? = nil,
+        artifactFileController: ScreenshotArtifactFileController
     ) {
         self.engine = engine
         self.recognitionEngine = recognitionEngine
         self.retentionController = retentionController
+        self.artifactFileController = artifactFileController
         super.init()
     }
 
@@ -82,6 +86,8 @@ final class ScreenshotServiceEndpoint: NSObject, ScreenshotXPCProtocol, @uncheck
             request.action.name == "capture"
                 || request.action.name == "sampleColor"
                 || request.action.name == "recognize"
+                || request.action.name == "exportArtifact"
+                || request.action.name == "deleteArtifact"
         ) && request.action.payload != nil
             || request.action.name == ScreenshotServiceAction.availableContent.name
         guard request.protocolVersion == ScreenshotServiceProtocolVersion.current,
@@ -108,6 +114,10 @@ final class ScreenshotServiceEndpoint: NSObject, ScreenshotXPCProtocol, @uncheck
                 response = await processColorSample(request)
             } else if request.action.name == "recognize" {
                 response = await processRecognition(request)
+            } else if request.action.name == "exportArtifact" {
+                response = await processArtifactExport(request)
+            } else if request.action.name == "deleteArtifact" {
+                response = await processArtifactDeletion(request)
             } else {
                 response = await processAvailableContent(request)
             }
@@ -194,6 +204,67 @@ final class ScreenshotServiceEndpoint: NSObject, ScreenshotXPCProtocol, @uncheck
             return .init(
                 requestID: serviceRequest.id,
                 payload: .failure(.recognitionFailed(String(describing: error)))
+            )
+        }
+    }
+
+    private func processArtifactExport(
+        _ serviceRequest: ScreenshotServiceRequest
+    ) async -> ScreenshotServiceResponse {
+        do {
+            try Task.checkCancellation()
+            guard let payload = serviceRequest.action.payload else {
+                return .init(
+                    requestID: serviceRequest.id,
+                    payload: .failure(.malformedRequest("exportArtifact action is missing its payload"))
+                )
+            }
+            let request = try JSONDecoder().decode(ScreenshotArtifactExportRequest.self, from: payload)
+            let result = try artifactFileController.export(request)
+            return .init(
+                requestID: serviceRequest.id,
+                payload: .artifactExport(try JSONEncoder().encode(result))
+            )
+        } catch is CancellationError {
+            return .init(requestID: serviceRequest.id, payload: .failure(.cancelled))
+        } catch let error as ScreenshotFeatureError {
+            return .init(requestID: serviceRequest.id, payload: .failure(map(error)))
+        } catch {
+            return .init(
+                requestID: serviceRequest.id,
+                payload: .failure(.storageFailed(String(describing: error)))
+            )
+        }
+    }
+
+    private func processArtifactDeletion(
+        _ serviceRequest: ScreenshotServiceRequest
+    ) async -> ScreenshotServiceResponse {
+        do {
+            try Task.checkCancellation()
+            guard let payload = serviceRequest.action.payload else {
+                return .init(
+                    requestID: serviceRequest.id,
+                    payload: .failure(.malformedRequest("deleteArtifact action is missing its payload"))
+                )
+            }
+            guard let retentionController else {
+                return .init(
+                    requestID: serviceRequest.id,
+                    payload: .failure(.storageFailed("截图回收区不可用"))
+                )
+            }
+            let request = try JSONDecoder().decode(ScreenshotArtifactDeletionRequest.self, from: payload)
+            try await retentionController.discard(request.artifact)
+            return .init(requestID: serviceRequest.id, payload: .artifactDeleted)
+        } catch is CancellationError {
+            return .init(requestID: serviceRequest.id, payload: .failure(.cancelled))
+        } catch let error as ScreenshotFeatureError {
+            return .init(requestID: serviceRequest.id, payload: .failure(map(error)))
+        } catch {
+            return .init(
+                requestID: serviceRequest.id,
+                payload: .failure(.storageFailed(String(describing: error)))
             )
         }
     }

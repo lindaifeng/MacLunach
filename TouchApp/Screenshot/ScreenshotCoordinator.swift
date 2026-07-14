@@ -65,6 +65,8 @@ final class ScreenshotCoordinator: ScreenshotActionRouting {
     private let recognizedTextClipboardWriter: any ScreenshotRecognizedTextClipboardWriting
     private let recognitionPresenter: any ScreenshotRecognitionPresenting
     private let pinPresenter: any ScreenshotPinPresenting
+    private let annotationPresenter: any ScreenshotArtifactAnnotationPresenting
+    private let floatingThumbnailPresenter: any ScreenshotFloatingThumbnailPresenting
     private let countdownPresenter: any ScreenshotCaptureCountdownPresenting
     private let extensionRouter: any ScreenshotCaptureExtensionRouting
     private let selectionFactory: SelectionFactory
@@ -84,11 +86,13 @@ final class ScreenshotCoordinator: ScreenshotActionRouting {
     init(
         authorization: any ScreenRecordingAuthorizing,
         captureService: any ScreenshotCapturing,
-        clipboardWriter: any ScreenshotClipboardWriting = SystemScreenshotClipboardWriter(),
+        clipboardWriter: any ScreenshotClipboardWriting = ScreenshotPasteboardWriter(),
         colorClipboardWriter: any ScreenshotColorClipboardWriting = SystemScreenshotColorClipboardWriter(),
         recognizedTextClipboardWriter: any ScreenshotRecognizedTextClipboardWriting = SystemScreenshotRecognizedTextClipboardWriter(),
         recognitionPresenter: any ScreenshotRecognitionPresenting = ScreenshotRecognitionResultPanel(),
         pinPresenter: any ScreenshotPinPresenting = ScreenshotPinWindowManager(),
+        annotationPresenter: any ScreenshotArtifactAnnotationPresenting = SystemScreenshotArtifactAnnotationPresenter(),
+        floatingThumbnailPresenter: any ScreenshotFloatingThumbnailPresenting = FloatingThumbnailController(),
         countdownPresenter: any ScreenshotCaptureCountdownPresenting = CaptureCountdownPanel(),
         extensionRouter: any ScreenshotCaptureExtensionRouting = PendingScreenshotCaptureExtensionRouter(),
         selectionFactory: @escaping SelectionFactory = { SelectionOverlayController() },
@@ -105,6 +109,8 @@ final class ScreenshotCoordinator: ScreenshotActionRouting {
         self.recognizedTextClipboardWriter = recognizedTextClipboardWriter
         self.recognitionPresenter = recognitionPresenter
         self.pinPresenter = pinPresenter
+        self.annotationPresenter = annotationPresenter
+        self.floatingThumbnailPresenter = floatingThumbnailPresenter
         self.countdownPresenter = countdownPresenter
         self.extensionRouter = extensionRouter
         self.selectionFactory = selectionFactory
@@ -176,6 +182,7 @@ final class ScreenshotCoordinator: ScreenshotActionRouting {
         activeSelectionPresenter?.cancel()
         activeColorPickerPresenter?.cancel()
         recognitionPresenter.dismiss()
+        floatingThumbnailPresenter.dismissAll()
         countdownPresenter.cancel()
         extensionRouter.cancel()
         captureTask?.cancel()
@@ -195,8 +202,6 @@ final class ScreenshotCoordinator: ScreenshotActionRouting {
         let captureService = captureService
         let countdownPresenter = countdownPresenter
         let extensionRouter = extensionRouter
-        let recognizedTextClipboardWriter = recognizedTextClipboardWriter
-        let recognitionPresenter = recognitionPresenter
         let configuration = configurationProvider()
         let task = Task { @MainActor in
             let content = try await captureService.availableSelectionContent()
@@ -243,7 +248,7 @@ final class ScreenshotCoordinator: ScreenshotActionRouting {
             switch selection.completionAction {
             case .copy:
                 if let artifact {
-                    try clipboardWriter.write(artifact)
+                    try performPostCaptureActions(for: artifact, configuration: configuration)
                 }
             case .pin:
                 if let artifact {
@@ -251,34 +256,7 @@ final class ScreenshotCoordinator: ScreenshotActionRouting {
                 }
             case .recognizeText:
                 if let artifact {
-                    let recognize: ScreenshotRecognitionPresenting.RetryAction = {
-                        let result = try await captureService.recognize(.init(
-                            artifact: artifact,
-                            configuration: configuration.ocr
-                        ))
-                        if configuration.ocr.copiesRecognizedText, !result.fullText.isEmpty {
-                            try recognizedTextClipboardWriter.writeRecognizedText(result.fullText)
-                        }
-                        return result
-                    }
-                    do {
-                        let result = try await recognize()
-                        recognitionPresenter.present(
-                            artifact: artifact,
-                            presentation: .result(result),
-                            retry: recognize
-                        )
-                    } catch is CancellationError {
-                        throw CancellationError()
-                    } catch let error as ScreenshotFeatureError where error == .cancelled {
-                        throw error
-                    } catch {
-                        recognitionPresenter.present(
-                            artifact: artifact,
-                            presentation: .failure(message: ScreenshotRecognitionErrorMessage.text(for: error)),
-                            retry: recognize
-                        )
-                    }
+                    try await recognizeAndPresent(artifact, configuration: configuration)
                 }
             case .scrollingCapture, .gifRecording:
                 break
@@ -337,7 +315,7 @@ final class ScreenshotCoordinator: ScreenshotActionRouting {
                 history: configuration.history
             )
             if let artifact = try await captureService.captureArtifact(request) {
-                try clipboardWriter.write(artifact)
+                try performPostCaptureActions(for: artifact, configuration: configuration)
             }
             return CaptureFlowOutcome.result(.completed)
         }
@@ -357,6 +335,166 @@ final class ScreenshotCoordinator: ScreenshotActionRouting {
             finishCapture(id: captureID)
             restoreLauncher(if: shouldRestoreLauncher)
             throw error
+        }
+    }
+
+    private func performPostCaptureActions(
+        for artifact: ScreenshotArtifact,
+        configuration: ScreenshotFeatureConfiguration
+    ) throws {
+        let policy = ScreenshotPostCapturePolicy(configuration: configuration)
+        if policy.showsThumbnail {
+            ScreenshotThumbnailPerformanceRecorder.shared.begin()
+        }
+        do {
+            if policy.copiesToClipboard {
+                try clipboardWriter.write(artifact)
+            }
+            if policy.beginsAnnotation {
+                try annotationPresenter.presentForAnnotation(artifact)
+            }
+            if policy.showsThumbnail {
+                floatingThumbnailPresenter.present(
+                    artifact: artifact,
+                    timeout: configuration.thumbnailTimeout,
+                    actions: floatingThumbnailActions(configuration: configuration)
+                )
+            }
+        } catch {
+            ScreenshotThumbnailPerformanceRecorder.shared.cancel()
+            throw error
+        }
+    }
+
+    private func floatingThumbnailActions(
+        configuration: ScreenshotFeatureConfiguration
+    ) -> FloatingThumbnailActions {
+        let captureService = captureService
+        return FloatingThumbnailActions(
+            annotate: { [annotationPresenter] artifact in
+                try annotationPresenter.presentForAnnotation(artifact)
+            },
+            pin: { [pinPresenter] artifact in
+                try pinPresenter.pin(artifact)
+            },
+            copy: { [clipboardWriter] artifact in
+                try clipboardWriter.write(artifact)
+            },
+            recognize: { [weak self] artifact in
+                Task { @MainActor [weak self] in
+                    try? await self?.recognizeAndPresent(artifact, configuration: configuration)
+                }
+            },
+            save: { [weak self] artifact in
+                guard let self else { throw ScreenshotFeatureError.cancelled }
+                try await self.save(artifact, configuration: configuration)
+            },
+            export: { artifact, destinationURL in
+                try await captureService.exportArtifact(artifact, to: destinationURL)
+            },
+            delete: { artifact in
+                try await captureService.deleteArtifact(artifact)
+            }
+        )
+    }
+
+    private func save(
+        _ artifact: ScreenshotArtifact,
+        configuration: ScreenshotFeatureConfiguration
+    ) async throws {
+        let directory: URL
+        var securityScopedDirectory: URL?
+
+        switch configuration.saveLocation {
+        case .pluginDirectory:
+            // 捕获产物本身已由截图服务持久化到功能私有目录，无需重复复制。
+            return
+        case .desktop:
+            directory = try FileManager.default.url(
+                for: .desktopDirectory,
+                in: .userDomainMask,
+                appropriateFor: nil,
+                create: true
+            )
+        case let .customBookmark(bookmark):
+            var isStale = false
+            do {
+                directory = try URL(
+                    resolvingBookmarkData: bookmark,
+                    options: [.withSecurityScope],
+                    relativeTo: nil,
+                    bookmarkDataIsStale: &isStale
+                )
+            } catch {
+                throw ScreenshotFeatureError.storageFailed(message: "截图保存目录不可用：\(error)")
+            }
+            if directory.startAccessingSecurityScopedResource() {
+                securityScopedDirectory = directory
+            }
+        }
+
+        defer { securityScopedDirectory?.stopAccessingSecurityScopedResource() }
+        let fileName = URL(fileURLWithPath: artifact.relativePath).lastPathComponent
+        guard !fileName.isEmpty else {
+            throw ScreenshotFeatureError.storageFailed(message: "截图文件名无效")
+        }
+        let destination = nextAvailableURL(
+            in: directory.standardizedFileURL,
+            fileName: fileName
+        )
+        _ = try await captureService.exportArtifact(artifact, to: destination)
+    }
+
+    private func nextAvailableURL(in directory: URL, fileName: String) -> URL {
+        let initial = directory.appendingPathComponent(fileName, isDirectory: false)
+        guard FileManager.default.fileExists(atPath: initial.path) else { return initial }
+
+        let source = URL(fileURLWithPath: fileName)
+        let extensionName = source.pathExtension
+        let baseName = source.deletingPathExtension().lastPathComponent
+        for suffix in 1...999 {
+            let candidateName = extensionName.isEmpty
+                ? "\(baseName) (\(suffix))"
+                : "\(baseName) (\(suffix)).\(extensionName)"
+            let candidate = directory.appendingPathComponent(candidateName, isDirectory: false)
+            if !FileManager.default.fileExists(atPath: candidate.path) { return candidate }
+        }
+        return directory.appendingPathComponent("\(UUID().uuidString)-\(fileName)")
+    }
+
+    private func recognizeAndPresent(
+        _ artifact: ScreenshotArtifact,
+        configuration: ScreenshotFeatureConfiguration
+    ) async throws {
+        let captureService = captureService
+        let recognizedTextClipboardWriter = recognizedTextClipboardWriter
+        let recognize: ScreenshotRecognitionPresenting.RetryAction = {
+            let result = try await captureService.recognize(.init(
+                artifact: artifact,
+                configuration: configuration.ocr
+            ))
+            if configuration.ocr.copiesRecognizedText, !result.fullText.isEmpty {
+                try recognizedTextClipboardWriter.writeRecognizedText(result.fullText)
+            }
+            return result
+        }
+        do {
+            let result = try await recognize()
+            recognitionPresenter.present(
+                artifact: artifact,
+                presentation: .result(result),
+                retry: recognize
+            )
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch let error as ScreenshotFeatureError where error == .cancelled {
+            throw error
+        } catch {
+            recognitionPresenter.present(
+                artifact: artifact,
+                presentation: .failure(message: ScreenshotRecognitionErrorMessage.text(for: error)),
+                retry: recognize
+            )
         }
     }
 

@@ -12,6 +12,9 @@ final class ScreenshotEnvironment: ObservableObject {
         authorization: (any ScreenRecordingAuthorizing)? = nil,
         captureService: (any ScreenshotCapturing)? = nil,
         clipboardWriter: (any ScreenshotClipboardWriting)? = nil,
+        annotationPresenter: (any ScreenshotArtifactAnnotationPresenting)? = nil,
+        floatingThumbnailPresenter: (any ScreenshotFloatingThumbnailPresenting)? = nil,
+        configurationProvider: ScreenshotCoordinator.ConfigurationProvider? = nil,
         client: ScreenshotClient = ScreenshotClient(),
         selectionFactory: @escaping ScreenshotCoordinator.SelectionFactory = {
             SelectionOverlayController()
@@ -25,9 +28,11 @@ final class ScreenshotEnvironment: ObservableObject {
         coordinator = ScreenshotCoordinator(
             authorization: authorizer,
             captureService: captureService,
-            clipboardWriter: clipboardWriter ?? SystemScreenshotClipboardWriter(),
+            clipboardWriter: clipboardWriter ?? ScreenshotPasteboardWriter(),
+            annotationPresenter: annotationPresenter ?? SystemScreenshotArtifactAnnotationPresenter(),
+            floatingThumbnailPresenter: floatingThumbnailPresenter ?? FloatingThumbnailController(),
             selectionFactory: selectionFactory,
-            configurationProvider: {
+            configurationProvider: configurationProvider ?? {
                 FeatureConfigurationStore(defaults: defaults).load().screenshot
             },
             invalidateService: { await client.shutdown() },

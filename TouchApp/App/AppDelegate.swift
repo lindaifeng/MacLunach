@@ -17,20 +17,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let allDisplaysScreenshotHotKeyController = GlobalHotKeyController(identifier: 3)
     private let colorPickerHotKeyController = GlobalHotKeyController(identifier: 4)
     private let isScreenshotSelectionFixture: Bool
+    private let isScreenshotThumbnailFixture: Bool
+    private let screenshotMeasurementOutputURL: URL?
 
     override init() {
-        let fixtureArgument = CommandLine.arguments.first {
+        let selectionOutputArgument = CommandLine.arguments.first {
             $0.hasPrefix("--screenshot-selection-output=")
         }
         isScreenshotSelectionFixture = CommandLine.arguments.contains(
             "--screenshot-selection-fixture"
         )
+        isScreenshotThumbnailFixture = CommandLine.arguments.contains(
+            "--screenshot-thumbnail-fixture"
+        )
+        screenshotMeasurementOutputURL = Self.argumentURL(prefix: "--measure-screenshot=")
         super.init()
 
         let environment: ScreenshotEnvironment
         if isScreenshotSelectionFixture,
-           let fixtureArgument,
-           let outputPath = fixtureArgument.split(separator: "=", maxSplits: 1).last {
+           let selectionOutputArgument,
+           let outputPath = selectionOutputArgument.split(separator: "=", maxSplits: 1).last {
             environment = ScreenshotEnvironment(
                 authorization: ScreenshotSelectionFixtureAuthorizer(),
                 captureService: ScreenshotSelectionFixtureCaptureService(
@@ -45,8 +51,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     )
                 }
             )
-        } else {
+        } else if isScreenshotThumbnailFixture {
+            let rootURL = Self.argumentURL(prefix: "--screenshot-thumbnail-root=")
+                ?? FileManager.default.temporaryDirectory.appendingPathComponent(
+                    "touch-thumbnail-fixture-\(ProcessInfo.processInfo.processIdentifier)",
+                    isDirectory: true
+                )
+            let outputURL = Self.argumentURL(prefix: "--screenshot-thumbnail-output=")
+                ?? rootURL.appendingPathComponent("events.txt")
+            let paths = ScreenshotFeaturePaths(rootURL: rootURL)
+            let recorder = ScreenshotThumbnailFixtureEventRecorder(outputURL: outputURL)
+            var configuration = ScreenshotFeatureConfiguration()
+            configuration.thumbnailTimeout = .never
             environment = ScreenshotEnvironment(
+                authorization: ScreenshotSelectionFixtureAuthorizer(),
+                captureService: ScreenshotThumbnailFixtureCaptureService(
+                    content: ScreenshotSelectionFixtureContent.make(),
+                    paths: paths,
+                    recorder: recorder
+                ),
+                clipboardWriter: ScreenshotThumbnailFixtureClipboardWriter(
+                    paths: paths,
+                    recorder: recorder
+                ),
+                annotationPresenter: ScreenshotThumbnailFixtureAnnotationPresenter(
+                    recorder: recorder
+                ),
+                floatingThumbnailPresenter: FloatingThumbnailController(pathsProvider: { paths }),
+                configurationProvider: { configuration }
+            )
+        } else {
+            let measurementConfigurationProvider: ScreenshotCoordinator.ConfigurationProvider?
+            if screenshotMeasurementOutputURL != nil {
+                var configuration = FeatureConfigurationStore().load().screenshot
+                configuration.afterCaptureAction = .copyAndShowThumbnail
+                configuration.showsFloatingThumbnail = true
+                configuration.thumbnailTimeout = .never
+                measurementConfigurationProvider = { configuration }
+            } else {
+                measurementConfigurationProvider = nil
+            }
+            environment = ScreenshotEnvironment(
+                configurationProvider: measurementConfigurationProvider,
                 registerShortcuts: { [weak self] in self?.registerScreenshotShortcuts() },
                 unregisterShortcuts: { [weak self] in self?.unregisterScreenshotShortcuts() }
             )
@@ -63,7 +109,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
-        if !isScreenshotSelectionFixture {
+        if !isScreenshotSelectionFixture,
+           !isScreenshotThumbnailFixture,
+           screenshotMeasurementOutputURL == nil {
             Task { await searchEnvironment.prepare() }
         }
         let launcher = LauncherPanelController(
@@ -107,6 +155,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     NSLog("Screenshot selection UI fixture failed: %@", error.localizedDescription)
                 }
             }
+        } else if isScreenshotThumbnailFixture || screenshotMeasurementOutputURL != nil {
+            if let outputURL = screenshotMeasurementOutputURL {
+                ScreenshotThumbnailPerformanceRecorder.shared.prepareNextSample { milliseconds in
+                    Self.appendScreenshotMeasurement(milliseconds, to: outputURL)
+                    NSApp.terminate(nil)
+                }
+            }
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                do {
+                    let result = try await self.screenshotEnvironment.coordinator.route(.captureAllDisplays)
+                    if case let .requiresSetup(message) = result,
+                       self.screenshotMeasurementOutputURL != nil {
+                        NSLog("Screenshot measurement requires setup: %@", message)
+                        NSApp.terminate(nil)
+                    }
+                } catch {
+                    NSLog("Screenshot thumbnail fixture failed: %@", error.localizedDescription)
+                    if self.screenshotMeasurementOutputURL != nil {
+                        NSApp.terminate(nil)
+                    }
+                }
+            }
         } else if let measurementArgument = CommandLine.arguments.first(where: { $0.hasPrefix("--measure-launcher=") }),
            let outputPath = measurementArgument.split(separator: "=", maxSplits: 1).last {
             let outputURL = URL(fileURLWithPath: String(outputPath))
@@ -122,13 +193,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.launcherPanelController?.show()
             }
         }
-        guard !isScreenshotSelectionFixture else { return }
+        guard !isScreenshotSelectionFixture,
+              !isScreenshotThumbnailFixture,
+              screenshotMeasurementOutputURL == nil else { return }
         do {
             try globalHotKeyController.start(shortcut: .init(modifiers: [.option], key: "space")) { [weak self] in
                 self?.launcherPanelController?.toggle()
             }
         } catch {
             NSLog("Unable to register Touch launcher shortcut: %@", error.localizedDescription)
+        }
+    }
+
+    private static func argumentURL(prefix: String) -> URL? {
+        guard let argument = CommandLine.arguments.first(where: { $0.hasPrefix(prefix) }),
+              let path = argument.split(separator: "=", maxSplits: 1).last,
+              !path.isEmpty else { return nil }
+        return URL(fileURLWithPath: String(path))
+    }
+
+    private static func appendScreenshotMeasurement(_ milliseconds: Double, to outputURL: URL) {
+        let line = String(format: "%.3f\n", milliseconds)
+        let directory = outputURL.deletingLastPathComponent()
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        if !FileManager.default.fileExists(atPath: outputURL.path) {
+            try? line.write(to: outputURL, atomically: true, encoding: .utf8)
+            return
+        }
+        guard let handle = try? FileHandle(forWritingTo: outputURL) else { return }
+        defer { try? handle.close() }
+        do {
+            try handle.seekToEnd()
+            try handle.write(contentsOf: Data(line.utf8))
+        } catch {
+            NSLog("Unable to append screenshot performance sample: %@", error.localizedDescription)
         }
     }
 

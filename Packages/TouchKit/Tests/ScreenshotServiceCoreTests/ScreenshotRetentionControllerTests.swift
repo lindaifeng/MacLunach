@@ -104,6 +104,76 @@ struct ScreenshotRetentionControllerTests {
         #expect(try await store.recordCount() == 0)
     }
 
+    @Test("没有历史记录的捕获产物也将原图和缩略图移入回收区")
+    func discardWithoutHistoryMovesArtifactAndThumbnailToTrash() async throws {
+        let root = historyTemporaryRoot()
+        let store = try ScreenshotHistoryStore(rootURL: root)
+        let artifact = ScreenshotArtifact(
+            id: UUID(),
+            createdAt: Date(),
+            captureMode: .region,
+            relativePath: "Captures/without-history.png",
+            thumbnailRelativePath: "Thumbnails/without-history.png",
+            pointSize: .init(width: 100, height: 50),
+            pixelSize: .init(width: 200, height: 100),
+            uniformTypeIdentifier: "public.png",
+            sha256: "without-history",
+            displays: []
+        )
+        let source = root.appendingPathComponent(artifact.relativePath)
+        let thumbnail = root.appendingPathComponent(artifact.thumbnailRelativePath!)
+        for url in [source, thumbnail] {
+            try FileManager.default.createDirectory(
+                at: url.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try Data(url.lastPathComponent.utf8).write(to: url)
+        }
+        let controller = ScreenshotRetentionController(rootURL: root, store: store)
+
+        try await controller.discard(artifact)
+
+        let trash = root.appendingPathComponent(".Trash/\(artifact.id.uuidString.lowercased())")
+        #expect(!FileManager.default.fileExists(atPath: source.path))
+        #expect(!FileManager.default.fileExists(atPath: thumbnail.path))
+        #expect(FileManager.default.fileExists(
+            atPath: trash.appendingPathComponent("\(artifact.id.uuidString.lowercased()).png").path
+        ))
+        #expect(FileManager.default.fileExists(
+            atPath: trash.appendingPathComponent("thumbnail-\(artifact.id.uuidString.lowercased()).png").path
+        ))
+        #expect(try await store.item(id: artifact.id) == nil)
+    }
+
+    @Test("无历史删除也拒绝路径遍历且不移动根目录外文件")
+    func discardWithoutHistoryRejectsTraversal() async throws {
+        let root = historyTemporaryRoot()
+        let store = try ScreenshotHistoryStore(rootURL: root)
+        let outside = root.deletingLastPathComponent()
+            .appendingPathComponent("discard-outside-\(UUID().uuidString).png")
+        try Data("outside".utf8).write(to: outside)
+        defer { try? FileManager.default.removeItem(at: outside) }
+        let artifact = ScreenshotArtifact(
+            id: UUID(),
+            createdAt: Date(),
+            captureMode: .region,
+            relativePath: "../\(outside.lastPathComponent)",
+            thumbnailRelativePath: nil,
+            pointSize: .init(width: 1, height: 1),
+            pixelSize: .init(width: 1, height: 1),
+            uniformTypeIdentifier: "public.png",
+            sha256: "outside",
+            displays: []
+        )
+        let controller = ScreenshotRetentionController(rootURL: root, store: store)
+
+        await #expect(throws: ScreenshotRetentionError.self) {
+            try await controller.discard(artifact)
+        }
+
+        #expect(try Data(contentsOf: outside) == Data("outside".utf8))
+    }
+
     @Test("记录后路径被替换为根外符号链接时拒绝删除")
     func symlinkReplacementCannotMoveOutsideFile() async throws {
         let root = historyTemporaryRoot()

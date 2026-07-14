@@ -27,6 +27,33 @@ struct ScreenshotFileStoreTests {
         ))
     }
 
+    @Test("捕获时生成有尺寸上限的独立 PNG 缩略图")
+    func captureGeneratesBoundedThumbnail() async throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = ScreenshotFileStore(rootURL: root)
+        let image = solidImage(width: 1_200, height: 800)
+        let request = ScreenshotCaptureRequest(
+            id: UUID(uuidString: "77777777-7777-7777-7777-777777777777")!,
+            mode: .region,
+            target: .region(displayID: 1, rect: .init(x: 0, y: 0, width: 1_200, height: 800))
+        )
+
+        let artifact = try await store.store(
+            image: image,
+            request: request,
+            pointSize: .init(width: 1_200, height: 800),
+            displays: []
+        )
+
+        let relativePath = try #require(artifact.thumbnailRelativePath)
+        #expect(relativePath == "Thumbnails/77777777-7777-7777-7777-777777777777.png")
+        let thumbnail = try loadImage(root.appendingPathComponent(relativePath))
+        #expect(thumbnail.width == 360)
+        #expect(thumbnail.height == 240)
+        #expect(root.appendingPathComponent(artifact.relativePath) != root.appendingPathComponent(relativePath))
+    }
+
     @Test("原子写入使用同目录临时文件、fsync 和 rename")
     func atomicWriterSynchronizesAndRenamesInSameDirectory() throws {
         let directory = temporaryDirectory()
@@ -182,6 +209,21 @@ private func solidTransparentImage() -> CGImage {
     )!
     context.setFillColor(red: 1, green: 0, blue: 0, alpha: 0.25)
     context.fill(CGRect(x: 0, y: 0, width: 2, height: 2))
+    return context.makeImage()!
+}
+
+private func solidImage(width: Int, height: Int) -> CGImage {
+    let context = CGContext(
+        data: nil,
+        width: width,
+        height: height,
+        bitsPerComponent: 8,
+        bytesPerRow: width * 4,
+        space: CGColorSpaceCreateDeviceRGB(),
+        bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+    )!
+    context.setFillColor(red: 0.1, green: 0.4, blue: 0.9, alpha: 1)
+    context.fill(CGRect(x: 0, y: 0, width: width, height: height))
     return context.makeImage()!
 }
 

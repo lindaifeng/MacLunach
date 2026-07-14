@@ -1,7 +1,7 @@
 import Foundation
 
 public enum ScreenshotServiceProtocolVersion {
-    public static let current = 1
+    public static let current = 2
 }
 
 public struct ScreenshotServiceAction: Codable, Equatable, Sendable {
@@ -36,6 +36,14 @@ public struct ScreenshotServiceAction: Codable, Equatable, Sendable {
 
     public static func recognize(requestData: Data) -> Self {
         .init(name: "recognize", isIdempotent: true, payload: requestData)
+    }
+
+    public static func exportArtifact(requestData: Data) -> Self {
+        .init(name: "exportArtifact", isIdempotent: false, payload: requestData)
+    }
+
+    public static func deleteArtifact(requestData: Data) -> Self {
+        .init(name: "deleteArtifact", isIdempotent: true, payload: requestData)
     }
 }
 

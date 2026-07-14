@@ -193,6 +193,69 @@ public actor ScreenshotClient {
         }
     }
 
+    public func exportArtifact(
+        _ artifact: ScreenshotArtifact,
+        to destinationURL: URL,
+        timeout: Duration = .seconds(30)
+    ) async throws -> URL {
+        let request = ScreenshotArtifactExportRequest(
+            artifact: artifact,
+            destinationURL: destinationURL
+        )
+        let requestData: Data
+        do {
+            requestData = try JSONEncoder().encode(request)
+        } catch {
+            throw ScreenshotFeatureError.serviceFailed(
+                message: "artifact export request encoding failed: \(error)"
+            )
+        }
+        let payload = try await perform(
+            action: .exportArtifact(requestData: requestData),
+            timeout: timeout
+        )
+        guard case let .artifactExport(resultData) = payload else {
+            throw ScreenshotFeatureError.serviceFailed(
+                message: "exportArtifact returned an unexpected payload"
+            )
+        }
+        do {
+            return try JSONDecoder().decode(
+                ScreenshotArtifactExportResult.self,
+                from: resultData
+            ).destinationURL
+        } catch {
+            throw ScreenshotFeatureError.serviceFailed(
+                message: "artifact export result decoding failed: \(error)"
+            )
+        }
+    }
+
+    public func deleteArtifact(
+        _ artifact: ScreenshotArtifact,
+        timeout: Duration = .seconds(10)
+    ) async throws {
+        let requestData: Data
+        do {
+            requestData = try JSONEncoder().encode(
+                ScreenshotArtifactDeletionRequest(artifact: artifact)
+            )
+        } catch {
+            throw ScreenshotFeatureError.serviceFailed(
+                message: "artifact deletion request encoding failed: \(error)"
+            )
+        }
+        let payload = try await perform(
+            action: .deleteArtifact(requestData: requestData),
+            timeout: timeout
+        )
+        guard case .artifactDeleted = payload else {
+            throw ScreenshotFeatureError.serviceFailed(
+                message: "deleteArtifact returned an unexpected payload"
+            )
+        }
+    }
+
     public func perform(
         action: ScreenshotServiceAction,
         timeout: Duration = .seconds(2)
@@ -481,6 +544,18 @@ public actor ScreenshotClient {
             guard case .recognition = payload else {
                 throw ScreenshotFeatureError.serviceFailed(
                     message: "recognize returned an unexpected payload"
+                )
+            }
+        case "exportArtifact":
+            guard case .artifactExport = payload else {
+                throw ScreenshotFeatureError.serviceFailed(
+                    message: "exportArtifact returned an unexpected payload"
+                )
+            }
+        case "deleteArtifact":
+            guard case .artifactDeleted = payload else {
+                throw ScreenshotFeatureError.serviceFailed(
+                    message: "deleteArtifact returned an unexpected payload"
                 )
             }
         default:
