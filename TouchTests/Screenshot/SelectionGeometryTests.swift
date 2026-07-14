@@ -100,4 +100,28 @@ final class SelectionGeometryTests: XCTestCase {
         XCTAssertLessThan(frame.minX, 296)
         XCTAssertLessThan(frame.minY, 196)
     }
+
+    func testSelectionThatReachesAllDisplayEdgesIsRecognizedAsFullScreen() {
+        let displayBounds = CGRect(x: 12, y: 24, width: 1000, height: 700)
+
+        XCTAssertTrue(SelectionGeometry.covers(displayBounds, displayBounds))
+        XCTAssertTrue(
+            SelectionGeometry.covers(
+                displayBounds.insetBy(dx: 0.5, dy: 0.5),
+                displayBounds
+            )
+        )
+        XCTAssertFalse(
+            SelectionGeometry.covers(
+                displayBounds.insetBy(dx: 1.1, dy: 0),
+                displayBounds
+            )
+        )
+        XCTAssertFalse(
+            SelectionGeometry.covers(
+                displayBounds.insetBy(dx: 0, dy: 1.1),
+                displayBounds
+            )
+        )
+    }
 }

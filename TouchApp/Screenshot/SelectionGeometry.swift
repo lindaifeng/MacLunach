@@ -133,6 +133,17 @@ enum SelectionGeometry {
         return CGSize(width: maxX - minX, height: maxY - minY)
     }
 
+    static func covers(_ rect: CGRect, _ bounds: CGRect, tolerance: CGFloat = 1) -> Bool {
+        guard rect.width > 0, rect.height > 0, bounds.width > 0, bounds.height > 0 else {
+            return false
+        }
+        let tolerance = max(0, tolerance)
+        return abs(rect.minX - bounds.minX) <= tolerance
+            && abs(rect.minY - bounds.minY) <= tolerance
+            && abs(rect.maxX - bounds.maxX) <= tolerance
+            && abs(rect.maxY - bounds.maxY) <= tolerance
+    }
+
     static func handleCenters(for rect: CGRect) -> [SelectionHandle: CGPoint] {
         let midX = rect.midX
         let midY = rect.midY

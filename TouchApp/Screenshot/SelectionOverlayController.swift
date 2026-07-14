@@ -232,6 +232,11 @@ final class SelectionOverlayController: ScreenshotSelectionPresenting {
         }
         guard let displayID = activeDisplayID,
               bounds(for: displayID).intersects(selection) else { return }
+        let displayBounds = bounds(for: displayID)
+        if SelectionGeometry.covers(selection, displayBounds) {
+            finish(with: .display(displayID: displayID))
+            return
+        }
         finish(with: .region(
             displayID: displayID,
             rect: ScreenshotRect(
