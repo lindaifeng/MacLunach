@@ -9,15 +9,26 @@ final class ThemeStore: ObservableObject {
     @Published private(set) var theme: TouchTheme
     private let defaults: UserDefaults
 
-    init(defaults: UserDefaults = .standard) {
+    init(
+        defaults: UserDefaults = .standard,
+        arguments: [String] = CommandLine.arguments
+    ) {
         self.defaults = defaults
-        self.theme = defaults.string(forKey: Self.storageKey)
-            .flatMap(TouchTheme.init(rawValue:)) ?? .crystal
+        theme = Self.themeOverride(in: arguments)
+            ?? defaults.string(forKey: Self.storageKey).flatMap(TouchTheme.init(rawValue:))
+            ?? .crystal
     }
 
     func cycle() {
         theme = theme.next
         defaults.set(theme.rawValue, forKey: Self.storageKey)
+    }
+
+    private static func themeOverride(in arguments: [String]) -> TouchTheme? {
+        let prefix = "--appearance-theme="
+        return arguments.first(where: { $0.hasPrefix(prefix) })
+            .map { String($0.dropFirst(prefix.count)) }
+            .flatMap(TouchTheme.init(rawValue:))
     }
 }
 

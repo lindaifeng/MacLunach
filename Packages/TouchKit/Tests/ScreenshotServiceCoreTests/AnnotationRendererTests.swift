@@ -118,6 +118,42 @@ struct AnnotationRendererTests {
         #expect(pixel(atX: 100, y: 50, in: rendered) != pixel(atX: 2, y: 2, in: rendered))
     }
 
+    @Test("便签使用图层圆角边距和背景渐变")
+    func noteUsesLayerLayoutAndGradient() throws {
+        let note = AnnotationLayer(
+            annotation: .init(
+                kind: .note,
+                points: [.init(x: 10, y: 10), .init(x: 90, y: 90)],
+                style: .init(color: .red, lineWidth: 2),
+                text: .init(value: "", fontSize: 14)
+            ),
+            cornerRadius: 20,
+            contentInsets: .uniform(18),
+            backgroundGradient: .init(
+                colors: [
+                    .init(red: 0.1, green: 0.2, blue: 0.9),
+                    .init(red: 0.2, green: 0.8, blue: 0.9)
+                ],
+                angleDegrees: 90
+            )
+        )
+        let document = AnnotationDocument(
+            sourceImageRelativePath: "Captures/source.png",
+            canvasSize: .init(width: 100, height: 100),
+            layers: [note]
+        )
+
+        let rendered = try AnnotationRenderer().render(
+            image: whiteImage(width: 100, height: 100),
+            document: document
+        )
+        let center = Array(pixel(atX: 50, y: 50, in: rendered))
+
+        #expect(center[2] > 180)
+        #expect(center[0] < 100)
+        #expect(center[1] > 60)
+    }
+
     private func toolAnnotation(
         for kind: ScreenshotAnnotationKind,
         style: ScreenshotAnnotationStyle

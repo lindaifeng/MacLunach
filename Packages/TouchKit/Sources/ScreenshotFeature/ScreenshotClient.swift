@@ -256,6 +256,114 @@ public actor ScreenshotClient {
         }
     }
 
+    public func saveAnnotationProject(
+        _ document: AnnotationDocument,
+        timeout: Duration = .seconds(10)
+    ) async throws -> String {
+        let requestData: Data
+        do {
+            requestData = try JSONEncoder().encode(AnnotationProjectSaveRequest(document: document))
+        } catch {
+            throw ScreenshotFeatureError.serviceFailed(
+                message: "annotation project save request encoding failed: \(error)"
+            )
+        }
+        let payload = try await perform(
+            action: .saveAnnotationProject(requestData: requestData),
+            timeout: timeout
+        )
+        guard case let .annotationProjectSaved(resultData) = payload else {
+            throw ScreenshotFeatureError.serviceFailed(
+                message: "saveAnnotationProject returned an unexpected payload"
+            )
+        }
+        do {
+            return try JSONDecoder().decode(
+                AnnotationProjectSaveResult.self,
+                from: resultData
+            ).relativePath
+        } catch {
+            throw ScreenshotFeatureError.serviceFailed(
+                message: "annotation project save result decoding failed: \(error)"
+            )
+        }
+    }
+
+    public func loadAnnotationProject(
+        relativePath: String,
+        fallbackDocument: AnnotationDocument,
+        timeout: Duration = .seconds(10)
+    ) async throws -> AnnotationProjectLoadResult {
+        let requestData: Data
+        do {
+            requestData = try JSONEncoder().encode(AnnotationProjectLoadRequest(
+                relativePath: relativePath,
+                fallbackDocument: fallbackDocument
+            ))
+        } catch {
+            throw ScreenshotFeatureError.serviceFailed(
+                message: "annotation project load request encoding failed: \(error)"
+            )
+        }
+        let payload = try await perform(
+            action: .loadAnnotationProject(requestData: requestData),
+            timeout: timeout
+        )
+        guard case let .annotationProjectLoaded(resultData) = payload else {
+            throw ScreenshotFeatureError.serviceFailed(
+                message: "loadAnnotationProject returned an unexpected payload"
+            )
+        }
+        do {
+            return try JSONDecoder().decode(AnnotationProjectLoadResult.self, from: resultData)
+        } catch {
+            throw ScreenshotFeatureError.serviceFailed(
+                message: "annotation project load result decoding failed: \(error)"
+            )
+        }
+    }
+
+    public func exportAnnotationDocument(
+        _ document: AnnotationDocument,
+        to destinationURL: URL,
+        output: ScreenshotOutputOptions,
+        allowsOverwrite: Bool = false,
+        timeout: Duration = .seconds(30)
+    ) async throws -> URL {
+        let requestData: Data
+        do {
+            requestData = try JSONEncoder().encode(AnnotationDocumentExportRequest(
+                document: document,
+                destinationURL: destinationURL,
+                output: output,
+                allowsOverwrite: allowsOverwrite
+            ))
+        } catch {
+            throw ScreenshotFeatureError.serviceFailed(
+                message: "annotation document export request encoding failed: \(error)"
+            )
+        }
+        let payload = try await perform(
+            action: .exportAnnotationDocument(requestData: requestData),
+            timeout: timeout
+        )
+        guard case let .annotationDocumentExported(resultData) = payload else {
+            throw ScreenshotFeatureError.serviceFailed(
+                message: "exportAnnotationDocument returned an unexpected payload"
+            )
+        }
+        do {
+            return try JSONDecoder().decode(
+                AnnotationDocumentExportResult.self,
+                from: resultData
+            ).destinationURL
+        } catch {
+            throw ScreenshotFeatureError.serviceFailed(
+                message: "annotation document export result decoding failed: \(error)"
+            )
+        }
+    }
+
     public func perform(
         action: ScreenshotServiceAction,
         timeout: Duration = .seconds(2)
@@ -556,6 +664,18 @@ public actor ScreenshotClient {
             guard case .artifactDeleted = payload else {
                 throw ScreenshotFeatureError.serviceFailed(
                     message: "deleteArtifact returned an unexpected payload"
+                )
+            }
+        case "saveAnnotationProject":
+            guard case .annotationProjectSaved = payload else {
+                throw ScreenshotFeatureError.serviceFailed(
+                    message: "saveAnnotationProject returned an unexpected payload"
+                )
+            }
+        case "loadAnnotationProject":
+            guard case .annotationProjectLoaded = payload else {
+                throw ScreenshotFeatureError.serviceFailed(
+                    message: "loadAnnotationProject returned an unexpected payload"
                 )
             }
         default:

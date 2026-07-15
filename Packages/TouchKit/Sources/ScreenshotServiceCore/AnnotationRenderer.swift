@@ -357,6 +357,11 @@ public struct AnnotationRenderer: Sendable {
                 in: rect,
                 fontStyle: layer.font,
                 fallbackFontSize: text.fontSize * lineScale,
+                cornerRadius: layer.cornerRadius * lineScale,
+                contentInsets: layer.contentInsets,
+                backgroundGradient: layer.backgroundGradient,
+                scaleX: scaleX,
+                scaleY: scaleY,
                 context: context
             )
         }
@@ -749,15 +754,41 @@ public struct AnnotationRenderer: Sendable {
         in rect: CGRect,
         fontStyle: AnnotationFontStyle?,
         fallbackFontSize: Double,
+        cornerRadius: Double,
+        contentInsets: ScreenshotAnnotationInsets?,
+        backgroundGradient: ScreenshotAnnotationGradient?,
+        scaleX: Double,
+        scaleY: Double,
         context: CGContext
     ) {
         guard rect.width > 2, rect.height > 2 else { return }
-        let radius = min(8, min(rect.width, rect.height) / 5)
-        context.setFillColor(CGColor(red: 1, green: 0.91, blue: 0.35, alpha: 0.96))
-        context.addPath(CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil))
-        context.fillPath()
+        let requestedRadius = cornerRadius > 0 ? cornerRadius : 8
+        let radius = min(requestedRadius, min(rect.width, rect.height) / 2)
+        let roundedPath = CGPath(
+            roundedRect: rect,
+            cornerWidth: radius,
+            cornerHeight: radius,
+            transform: nil
+        )
+        context.saveGState()
+        context.addPath(roundedPath)
+        context.clip()
+        if let backgroundGradient {
+            drawGradient(backgroundGradient, in: rect, context: context)
+        } else {
+            context.setFillColor(CGColor(red: 1, green: 0.91, blue: 0.35, alpha: 0.96))
+            context.fill(rect)
+        }
+        context.restoreGState()
 
-        let inset = rect.insetBy(dx: 8, dy: 7)
+        let safeInsets = contentInsets.map(sanitizedInsets)
+            ?? .init(top: 7, right: 8, bottom: 7, left: 8)
+        let inset = CGRect(
+            x: rect.minX + safeInsets.left * scaleX,
+            y: rect.minY + safeInsets.top * scaleY,
+            width: rect.width - (safeInsets.left + safeInsets.right) * scaleX,
+            height: rect.height - (safeInsets.top + safeInsets.bottom) * scaleY
+        )
         guard inset.width > 0, inset.height > 0 else { return }
         let font = makeFont(style: fontStyle, fallbackSize: fallbackFontSize, defaultBold: false)
         let attributes: [NSAttributedString.Key: Any] = [

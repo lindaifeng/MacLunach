@@ -4,14 +4,16 @@ import SwiftUI
 @MainActor
 final class LauncherPanelController: NSObject {
     private let panel: LauncherPanel
-    private let themeStore = ThemeStore()
+    private let themeStore: ThemeStore
     private let searchCoordinator: SearchCoordinator
 
     init(
         searchEnvironment: SearchEnvironment,
         featureStore: FeatureAreaStore,
-        screenshotEnvironment: ScreenshotEnvironment
+        screenshotEnvironment: ScreenshotEnvironment,
+        themeStore: ThemeStore
     ) {
+        self.themeStore = themeStore
         searchCoordinator = SearchCoordinator(environment: searchEnvironment)
         panel = LauncherPanel(
             contentRect: NSRect(x: 0, y: 0, width: 980, height: 500),

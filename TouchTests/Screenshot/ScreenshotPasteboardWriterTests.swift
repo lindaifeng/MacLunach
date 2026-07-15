@@ -44,6 +44,26 @@ final class ScreenshotPasteboardWriterTests: XCTestCase {
         XCTAssertEqual(pasteboard.string(forType: .string), "用户原有内容")
     }
 
+    func testWritesRenderedImageWithoutTemporaryFileURL() throws {
+        let root = temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let renderedURL = root.appendingPathComponent("rendered.png")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try makePNGData().write(to: renderedURL)
+        let pasteboard = NSPasteboard(name: .init("touch.annotation.pasteboard.\(UUID().uuidString)"))
+        let writer = ScreenshotPasteboardWriter(
+            pathsProvider: { ScreenshotFeaturePaths(rootURL: root) },
+            pasteboard: pasteboard
+        )
+
+        try writer.writeImage(at: renderedURL)
+
+        let item = try XCTUnwrap(pasteboard.pasteboardItems?.first)
+        XCTAssertNotNil(item.data(forType: .png))
+        XCTAssertNotNil(item.data(forType: .tiff))
+        XCTAssertNil(item.string(forType: .fileURL))
+    }
+
     private func temporaryRoot() -> URL {
         FileManager.default.temporaryDirectory
             .appendingPathComponent("touch-pasteboard-tests", isDirectory: true)

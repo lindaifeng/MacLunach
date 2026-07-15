@@ -5,6 +5,17 @@ import Testing
 
 @Suite("Annotation project persistence")
 struct AnnotationProjectPersistenceTests {
+    @Test("项目路径由稳定的小写文档 ID 生成")
+    func projectPathUsesLowercaseDocumentID() {
+        let documentID = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
+
+        let relativePath = AnnotationProjectPaths.relativePath(documentID: documentID)
+
+        #expect(relativePath == "Projects/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee.touch-annotation.json")
+        #expect(!relativePath.hasPrefix("/"))
+        #expect(NSString(string: relativePath).pathComponents.count == 2)
+    }
+
     @Test("项目 JSON 原子保存且不会改写原图")
     func projectIsSavedAtomicallyAndSeparatelyFromSource() async throws {
         let root = annotationTemporaryDirectory()

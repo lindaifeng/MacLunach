@@ -9,6 +9,8 @@ import TouchFeatureAPI
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var launcherPanelController: LauncherPanelController?
     private var settingsWindowController: SettingsWindowController?
+    private var screenshotAnnotationFixtureController: AnnotationEditorController?
+    private let themeStore = ThemeStore()
     let searchEnvironment = SearchEnvironment.makeForCurrentProcess()
     private(set) var screenshotEnvironment: ScreenshotEnvironment!
     private(set) var featureStore: FeatureAreaStore!
@@ -18,6 +20,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let colorPickerHotKeyController = GlobalHotKeyController(identifier: 4)
     private let isScreenshotSelectionFixture: Bool
     private let isScreenshotThumbnailFixture: Bool
+    private let isScreenshotAnnotationFixture: Bool
     private let screenshotMeasurementOutputURL: URL?
 
     override init() {
@@ -29,6 +32,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         isScreenshotThumbnailFixture = CommandLine.arguments.contains(
             "--screenshot-thumbnail-fixture"
+        )
+        isScreenshotAnnotationFixture = CommandLine.arguments.contains(
+            "--screenshot-annotation-fixture"
         )
         screenshotMeasurementOutputURL = Self.argumentURL(prefix: "--measure-screenshot=")
         super.init()
@@ -92,6 +98,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 measurementConfigurationProvider = nil
             }
             environment = ScreenshotEnvironment(
+                themeStore: themeStore,
                 configurationProvider: measurementConfigurationProvider,
                 registerShortcuts: { [weak self] in self?.registerScreenshotShortcuts() },
                 unregisterShortcuts: { [weak self] in self?.unregisterScreenshotShortcuts() }
@@ -111,13 +118,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)
         if !isScreenshotSelectionFixture,
            !isScreenshotThumbnailFixture,
+           !isScreenshotAnnotationFixture,
            screenshotMeasurementOutputURL == nil {
             Task { await searchEnvironment.prepare() }
         }
         let launcher = LauncherPanelController(
             searchEnvironment: searchEnvironment,
             featureStore: featureStore,
-            screenshotEnvironment: screenshotEnvironment
+            screenshotEnvironment: screenshotEnvironment,
+            themeStore: themeStore
         )
         launcherPanelController = launcher
         screenshotEnvironment.coordinator.attachLauncher(launcher)
@@ -147,7 +156,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             object: nil
         )
 
-        if isScreenshotSelectionFixture {
+        if isScreenshotAnnotationFixture {
+            let outputURL = Self.argumentURL(prefix: "--screenshot-annotation-output=")
+                ?? FileManager.default.temporaryDirectory.appendingPathComponent(
+                    "touch-annotation-fixture-\(ProcessInfo.processInfo.processIdentifier).txt"
+                )
+            let exportDestination = Self.argumentURL(
+                prefix: "--screenshot-annotation-export-destination="
+            )
+            let controller = ScreenshotAnnotationFixture.makeController(
+                outputURL: outputURL,
+                exportDestination: exportDestination,
+                themeStore: themeStore,
+                failFirstExport: CommandLine.arguments.contains(
+                    "--screenshot-annotation-fail-first-export"
+                ),
+                failFirstCopy: CommandLine.arguments.contains(
+                    "--screenshot-annotation-fail-first-copy"
+                )
+            )
+            screenshotAnnotationFixtureController = controller
+            controller.present()
+        } else if isScreenshotSelectionFixture {
             Task { @MainActor [weak self] in
                 do {
                     _ = try await self?.screenshotEnvironment.coordinator.route(.captureDefaultMode)
@@ -195,6 +225,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         guard !isScreenshotSelectionFixture,
               !isScreenshotThumbnailFixture,
+              !isScreenshotAnnotationFixture,
               screenshotMeasurementOutputURL == nil else { return }
         do {
             try globalHotKeyController.start(shortcut: .init(modifiers: [.option], key: "space")) { [weak self] in

@@ -26,17 +26,41 @@ final class ScreenshotPasteboardWriter: ScreenshotClipboardWriting {
 
     func write(_ artifact: ScreenshotArtifact) throws {
         let imageURL = try pathsProvider().resolve(relativePath: artifact.relativePath)
+        try writeImage(
+            at: imageURL,
+            includesFileURL: true,
+            unreadablePath: artifact.relativePath
+        )
+    }
+
+    /// 将已经渲染完成的图片写入剪贴板。临时渲染文件不会作为 file URL 暴露，
+    /// 因而调用方可以在此方法返回后立即安全删除临时文件。
+    func writeImage(at imageURL: URL) throws {
+        try writeImage(
+            at: imageURL,
+            includesFileURL: false,
+            unreadablePath: imageURL.path
+        )
+    }
+
+    private func writeImage(
+        at imageURL: URL,
+        includesFileURL: Bool,
+        unreadablePath: String
+    ) throws {
         guard let image = NSImage(contentsOf: imageURL),
               let tiff = image.tiffRepresentation,
               let bitmap = NSBitmapImageRep(data: tiff),
               let png = bitmap.representation(using: .png, properties: [:]) else {
-            throw ScreenshotClipboardError.imageUnreadable(relativePath: artifact.relativePath)
+            throw ScreenshotClipboardError.imageUnreadable(relativePath: unreadablePath)
         }
 
         let item = NSPasteboardItem()
         item.setData(png, forType: .png)
         item.setData(tiff, forType: .tiff)
-        item.setString(imageURL.absoluteString, forType: .fileURL)
+        if includesFileURL {
+            item.setString(imageURL.absoluteString, forType: .fileURL)
+        }
 
         let previousItems = snapshotItems()
         pasteboard.clearContents()

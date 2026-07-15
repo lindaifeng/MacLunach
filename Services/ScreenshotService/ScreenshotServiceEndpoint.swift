@@ -14,6 +14,7 @@ final class ScreenshotServiceEndpoint: NSObject, ScreenshotXPCProtocol, @uncheck
     private let recognitionEngine: ScreenshotRecognitionEngine
     private let retentionController: ScreenshotRetentionController?
     private let artifactFileController: ScreenshotArtifactFileController
+    private let annotationFileStore: ScreenshotFileStore
     private var activeRequestIDs: Set<UUID> = []
     private var captureTasks: [UUID: Task<Void, Never>] = [:]
     private var pendingCancellationRequestIDs: Set<UUID> = []
@@ -37,11 +38,13 @@ final class ScreenshotServiceEndpoint: NSObject, ScreenshotXPCProtocol, @uncheck
             NSLog("ScreenshotService history initialization failed: %@", String(describing: error))
             retentionController = nil
         }
+        let annotationFileStore = ScreenshotFileStore(rootURL: root)
         self.init(
-            engine: ScreenCaptureEngine(fileStore: ScreenshotFileStore(rootURL: root)),
+            engine: ScreenCaptureEngine(fileStore: annotationFileStore),
             recognitionEngine: ScreenshotRecognitionEngine(rootURL: root),
             retentionController: retentionController,
-            artifactFileController: ScreenshotArtifactFileController(rootURL: root)
+            artifactFileController: ScreenshotArtifactFileController(rootURL: root),
+            annotationFileStore: annotationFileStore
         )
         if let retentionController {
             Task {
@@ -60,12 +63,14 @@ final class ScreenshotServiceEndpoint: NSObject, ScreenshotXPCProtocol, @uncheck
         engine: ScreenCaptureEngine,
         recognitionEngine: ScreenshotRecognitionEngine,
         retentionController: ScreenshotRetentionController? = nil,
-        artifactFileController: ScreenshotArtifactFileController
+        artifactFileController: ScreenshotArtifactFileController,
+        annotationFileStore: ScreenshotFileStore
     ) {
         self.engine = engine
         self.recognitionEngine = recognitionEngine
         self.retentionController = retentionController
         self.artifactFileController = artifactFileController
+        self.annotationFileStore = annotationFileStore
         super.init()
     }
 
@@ -88,6 +93,9 @@ final class ScreenshotServiceEndpoint: NSObject, ScreenshotXPCProtocol, @uncheck
                 || request.action.name == "recognize"
                 || request.action.name == "exportArtifact"
                 || request.action.name == "deleteArtifact"
+                || request.action.name == "saveAnnotationProject"
+                || request.action.name == "loadAnnotationProject"
+                || request.action.name == "exportAnnotationDocument"
         ) && request.action.payload != nil
             || request.action.name == ScreenshotServiceAction.availableContent.name
         guard request.protocolVersion == ScreenshotServiceProtocolVersion.current,
@@ -118,6 +126,12 @@ final class ScreenshotServiceEndpoint: NSObject, ScreenshotXPCProtocol, @uncheck
                 response = await processArtifactExport(request)
             } else if request.action.name == "deleteArtifact" {
                 response = await processArtifactDeletion(request)
+            } else if request.action.name == "saveAnnotationProject" {
+                response = await processAnnotationProjectSave(request)
+            } else if request.action.name == "loadAnnotationProject" {
+                response = await processAnnotationProjectLoad(request)
+            } else if request.action.name == "exportAnnotationDocument" {
+                response = await processAnnotationDocumentExport(request)
             } else {
                 response = await processAvailableContent(request)
             }
@@ -257,6 +271,106 @@ final class ScreenshotServiceEndpoint: NSObject, ScreenshotXPCProtocol, @uncheck
             let request = try JSONDecoder().decode(ScreenshotArtifactDeletionRequest.self, from: payload)
             try await retentionController.discard(request.artifact)
             return .init(requestID: serviceRequest.id, payload: .artifactDeleted)
+        } catch is CancellationError {
+            return .init(requestID: serviceRequest.id, payload: .failure(.cancelled))
+        } catch let error as ScreenshotFeatureError {
+            return .init(requestID: serviceRequest.id, payload: .failure(map(error)))
+        } catch {
+            return .init(
+                requestID: serviceRequest.id,
+                payload: .failure(.storageFailed(String(describing: error)))
+            )
+        }
+    }
+
+    private func processAnnotationProjectSave(
+        _ serviceRequest: ScreenshotServiceRequest
+    ) async -> ScreenshotServiceResponse {
+        do {
+            try Task.checkCancellation()
+            guard let payload = serviceRequest.action.payload else {
+                return .init(
+                    requestID: serviceRequest.id,
+                    payload: .failure(.malformedRequest(
+                        "saveAnnotationProject action is missing its payload"
+                    ))
+                )
+            }
+            let request = try JSONDecoder().decode(AnnotationProjectSaveRequest.self, from: payload)
+            let relativePath = try await annotationFileStore.saveAnnotationProject(request.document)
+            let result = AnnotationProjectSaveResult(relativePath: relativePath)
+            return .init(
+                requestID: serviceRequest.id,
+                payload: .annotationProjectSaved(try JSONEncoder().encode(result))
+            )
+        } catch is CancellationError {
+            return .init(requestID: serviceRequest.id, payload: .failure(.cancelled))
+        } catch let error as ScreenshotFeatureError {
+            return .init(requestID: serviceRequest.id, payload: .failure(map(error)))
+        } catch {
+            return .init(
+                requestID: serviceRequest.id,
+                payload: .failure(.storageFailed(String(describing: error)))
+            )
+        }
+    }
+
+    private func processAnnotationProjectLoad(
+        _ serviceRequest: ScreenshotServiceRequest
+    ) async -> ScreenshotServiceResponse {
+        do {
+            try Task.checkCancellation()
+            guard let payload = serviceRequest.action.payload else {
+                return .init(
+                    requestID: serviceRequest.id,
+                    payload: .failure(.malformedRequest(
+                        "loadAnnotationProject action is missing its payload"
+                    ))
+                )
+            }
+            let request = try JSONDecoder().decode(AnnotationProjectLoadRequest.self, from: payload)
+            let result = try await annotationFileStore.loadAnnotationProject(
+                relativePath: request.relativePath,
+                fallbackDocument: request.fallbackDocument
+            )
+            return .init(
+                requestID: serviceRequest.id,
+                payload: .annotationProjectLoaded(try JSONEncoder().encode(result))
+            )
+        } catch is CancellationError {
+            return .init(requestID: serviceRequest.id, payload: .failure(.cancelled))
+        } catch let error as ScreenshotFeatureError {
+            return .init(requestID: serviceRequest.id, payload: .failure(map(error)))
+        } catch {
+            return .init(
+                requestID: serviceRequest.id,
+                payload: .failure(.storageFailed(String(describing: error)))
+            )
+        }
+    }
+
+    private func processAnnotationDocumentExport(
+        _ serviceRequest: ScreenshotServiceRequest
+    ) async -> ScreenshotServiceResponse {
+        do {
+            try Task.checkCancellation()
+            guard let payload = serviceRequest.action.payload else {
+                return .init(
+                    requestID: serviceRequest.id,
+                    payload: .failure(.malformedRequest(
+                        "exportAnnotationDocument action is missing its payload"
+                    ))
+                )
+            }
+            let request = try JSONDecoder().decode(
+                AnnotationDocumentExportRequest.self,
+                from: payload
+            )
+            let result = try await annotationFileStore.exportAnnotationDocument(request)
+            return .init(
+                requestID: serviceRequest.id,
+                payload: .annotationDocumentExported(try JSONEncoder().encode(result))
+            )
         } catch is CancellationError {
             return .init(requestID: serviceRequest.id, payload: .failure(.cancelled))
         } catch let error as ScreenshotFeatureError {

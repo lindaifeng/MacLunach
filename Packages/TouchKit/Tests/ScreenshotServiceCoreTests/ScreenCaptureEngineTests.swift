@@ -526,7 +526,11 @@ private actor ArtifactRecorder: ScreenshotArtifactRecording {
 }
 
 private struct CancellingAtomicWriter: ScreenshotAtomicWriting {
-    func write(_ data: Data, to destinationURL: URL) throws {
+    func write(
+        _ data: Data,
+        to destinationURL: URL,
+        replacingExisting: Bool
+    ) throws {
         try data.write(to: destinationURL, options: .atomic)
         withUnsafeCurrentTask { task in
             task?.cancel()

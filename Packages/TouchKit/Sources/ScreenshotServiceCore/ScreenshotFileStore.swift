@@ -103,24 +103,16 @@ public enum AtomicFileOperation: Equatable, Sendable {
     case directorySynchronized(URL)
 }
 
+/// 将同目录临时文件原子发布到目标路径。
+///
+/// `replacingExisting == false` 不只是调用前检查：实现必须在最终 rename 时以排他
+/// 语义拒绝已存在目标，避免其他进程在检查与发布之间创建文件后被意外覆盖。
 public protocol ScreenshotAtomicWriting: Sendable {
-    func write(_ data: Data, to destinationURL: URL) throws
-}
-
-public enum AnnotationProjectLoadStatus: Equatable, Sendable {
-    case loaded
-    case recoveredFromMissingProject
-    case recoveredFromCorruptProject
-}
-
-public struct AnnotationProjectLoadResult: Equatable, Sendable {
-    public let document: AnnotationDocument
-    public let status: AnnotationProjectLoadStatus
-
-    public init(document: AnnotationDocument, status: AnnotationProjectLoadStatus) {
-        self.document = document
-        self.status = status
-    }
+    func write(
+        _ data: Data,
+        to destinationURL: URL,
+        replacingExisting: Bool
+    ) throws
 }
 
 public struct POSIXAtomicFileWriter: ScreenshotAtomicWriting {
@@ -131,7 +123,11 @@ public struct POSIXAtomicFileWriter: ScreenshotAtomicWriting {
         self.observer = observer
     }
 
-    public func write(_ data: Data, to destinationURL: URL) throws {
+    public func write(
+        _ data: Data,
+        to destinationURL: URL,
+        replacingExisting: Bool
+    ) throws {
         let directory = destinationURL.deletingLastPathComponent()
         let temporaryURL = directory.appendingPathComponent(
             ".\(destinationURL.lastPathComponent).tmp-\(UUID().uuidString)"
@@ -168,7 +164,16 @@ public struct POSIXAtomicFileWriter: ScreenshotAtomicWriting {
         guard Darwin.close(descriptor) == 0 else { throw posixError(path: temporaryURL.path) }
         isOpen = false
 
-        guard Darwin.rename(temporaryURL.path, destinationURL.path) == 0 else {
+        let renameResult = if replacingExisting {
+            Darwin.rename(temporaryURL.path, destinationURL.path)
+        } else {
+            Darwin.renamex_np(
+                temporaryURL.path,
+                destinationURL.path,
+                UInt32(RENAME_EXCL)
+            )
+        }
+        guard renameResult == 0 else {
             throw posixError(path: destinationURL.path)
         }
         shouldRemoveTemporary = false
@@ -236,9 +241,10 @@ public actor ScreenshotFileStore {
         let filename = "\(request.id.uuidString.lowercased()).\(descriptor.filenameExtension)"
         let destination = directory.appendingPathComponent(filename)
         do {
-            try writer.write(encoded, to: destination)
+            try writer.write(encoded, to: destination, replacingExisting: false)
             try Task.checkCancellation()
         } catch is CancellationError {
+            // 捕获路径由请求 UUID 唯一命名，且使用排他写入；取消后可安全删除本次产物。
             try? fileManager.removeItem(at: destination)
             throw CancellationError()
         } catch {
@@ -279,7 +285,7 @@ public actor ScreenshotFileStore {
     @discardableResult
     public func saveAnnotationProject(_ document: AnnotationDocument) throws -> String {
         try Task.checkCancellation()
-        let relativePath = "Projects/\(document.id.uuidString.lowercased()).touch-annotation.json"
+        let relativePath = AnnotationProjectPaths.relativePath(documentID: document.id)
         let destination = try projectURL(for: relativePath)
         do {
             try fileManager.createDirectory(
@@ -291,7 +297,7 @@ public actor ScreenshotFileStore {
             encoder.outputFormatting = [.sortedKeys]
             let data = try encoder.encode(document)
             try Task.checkCancellation()
-            try writer.write(data, to: destination)
+            try writer.write(data, to: destination, replacingExisting: true)
             return relativePath
         } catch is CancellationError {
             throw CancellationError()
@@ -330,6 +336,71 @@ public actor ScreenshotFileStore {
         }
     }
 
+    /// 按项目图层渲染最终像素并导出到用户选定路径。原图始终从插件私有根目录
+    /// 通过相对路径解析；目标必须是无路径遍历的绝对路径。只有调用方明确标记
+    /// 用户已确认覆盖时，才允许原子替换已有文件。
+    public func exportAnnotationDocument(
+        _ request: AnnotationDocumentExportRequest
+    ) throws -> AnnotationDocumentExportResult {
+        try Task.checkCancellation()
+        let source: URL
+        do {
+            source = try ScreenshotFeaturePaths(rootURL: rootURL).resolve(
+                relativePath: request.document.sourceImageRelativePath
+            )
+        } catch {
+            throw ScreenshotFeatureError.storageFailed(message: "截图源路径无效：\(error)")
+        }
+        guard fileManager.fileExists(atPath: source.path),
+              let imageSource = CGImageSourceCreateWithURL(source as CFURL, nil),
+              let sourceImage = CGImageSourceCreateImageAtIndex(imageSource, 0, nil) else {
+            throw ScreenshotFeatureError.targetUnavailable
+        }
+
+        guard NSString(string: request.destinationPath).isAbsolutePath,
+              !NSString(string: request.destinationPath).pathComponents.contains("..") else {
+            throw ScreenshotFeatureError.storageFailed(message: "导出目标必须是无路径遍历的绝对路径")
+        }
+        let destination = request.destinationURL.standardizedFileURL
+        try validateDestinationAvailability(
+            destination,
+            allowsOverwrite: request.allowsOverwrite
+        )
+        try validateExportExtension(destination, format: request.output.format)
+
+        do {
+            let rendered = try AnnotationRenderer().render(
+                image: sourceImage,
+                document: request.document
+            )
+            try Task.checkCancellation()
+            let data = try encoder.encode(rendered, options: request.output)
+            try fileManager.createDirectory(
+                at: destination.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try validateDestinationAvailability(
+                destination,
+                allowsOverwrite: request.allowsOverwrite
+            )
+            try writer.write(
+                data,
+                to: destination,
+                replacingExisting: request.allowsOverwrite
+            )
+            try Task.checkCancellation()
+            return AnnotationDocumentExportResult(destinationURL: destination)
+        } catch is CancellationError {
+            // 覆盖导出无法可靠恢复旧文件；原子 writer 只清理自身临时文件，
+            // 此处绝不能删除用户原有或刚确认覆盖的目标。
+            throw CancellationError()
+        } catch let error as ScreenshotFeatureError {
+            throw error
+        } catch {
+            throw ScreenshotFeatureError.storageFailed(message: "导出标注截图失败：\(error)")
+        }
+    }
+
     private func projectURL(for relativePath: String) throws -> URL {
         let components = NSString(string: relativePath).pathComponents
         guard components.count == 2,
@@ -341,6 +412,35 @@ public actor ScreenshotFileStore {
             return try ScreenshotFeaturePaths(rootURL: rootURL).resolve(relativePath: relativePath)
         } catch {
             throw ScreenshotFeatureError.storageFailed(message: String(describing: error))
+        }
+    }
+
+    private func validateDestinationAvailability(
+        _ destination: URL,
+        allowsOverwrite: Bool
+    ) throws {
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: destination.path, isDirectory: &isDirectory) else {
+            return
+        }
+        guard allowsOverwrite, !isDirectory.boolValue else {
+            let message = isDirectory.boolValue ? "导出目标不能是目录" : "目标文件已存在"
+            throw ScreenshotFeatureError.storageFailed(message: message)
+        }
+    }
+
+    private func validateExportExtension(
+        _ destination: URL,
+        format: ScreenshotImageFormat
+    ) throws {
+        let actual = destination.pathExtension.lowercased()
+        let allowed: Set<String> = switch format {
+        case .png: ["png"]
+        case .jpeg: ["jpg", "jpeg"]
+        case .heif: ["heic", "heif"]
+        }
+        guard allowed.contains(actual) else {
+            throw ScreenshotFeatureError.storageFailed(message: "导出文件扩展名与图片格式不匹配")
         }
     }
 
@@ -357,11 +457,12 @@ public actor ScreenshotFileStore {
         let filename = "\(artifactID.uuidString.lowercased()).png"
         let destination = directory.appendingPathComponent(filename)
         do {
-            try writer.write(bytes, to: destination)
+            try writer.write(bytes, to: destination, replacingExisting: false)
             try Task.checkCancellation()
-        } catch {
+        } catch is CancellationError {
+            // 缩略图路径同样由 artifact UUID 唯一命名，排他写入后取消可安全清理。
             try? fileManager.removeItem(at: destination)
-            throw error
+            throw CancellationError()
         }
         return "\(relativeDirectory)/\(filename)"
     }

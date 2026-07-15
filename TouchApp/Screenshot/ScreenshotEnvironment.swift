@@ -9,6 +9,7 @@ final class ScreenshotEnvironment: ObservableObject {
 
     init(
         defaults: UserDefaults = .standard,
+        themeStore: ThemeStore? = nil,
         authorization: (any ScreenRecordingAuthorizing)? = nil,
         captureService: (any ScreenshotCapturing)? = nil,
         clipboardWriter: (any ScreenshotClipboardWriting)? = nil,
@@ -29,7 +30,11 @@ final class ScreenshotEnvironment: ObservableObject {
             authorization: authorizer,
             captureService: captureService,
             clipboardWriter: clipboardWriter ?? ScreenshotPasteboardWriter(),
-            annotationPresenter: annotationPresenter ?? SystemScreenshotArtifactAnnotationPresenter(),
+            annotationPresenter: annotationPresenter
+                ?? BuiltInScreenshotArtifactAnnotationPresenter(
+                    client: client,
+                    themeStore: themeStore ?? ThemeStore(defaults: defaults)
+                ),
             floatingThumbnailPresenter: floatingThumbnailPresenter ?? FloatingThumbnailController(),
             selectionFactory: selectionFactory,
             configurationProvider: configurationProvider ?? {

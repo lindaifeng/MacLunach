@@ -520,3 +520,100 @@ private final class MockScreenshotServiceConnection: ScreenshotServiceConnection
 
     try await client.deleteArtifact(artifact, timeout: .seconds(1))
 }
+
+@Test func screenshotClientSavesAndLoadsAnnotationProjects() async throws {
+    let document = AnnotationDocument(
+        id: UUID(uuidString: "dddddddd-dddd-dddd-dddd-dddddddddddd")!,
+        sourceImageRelativePath: "Captures/2026/07/source.png",
+        canvasSize: .init(width: 800, height: 600),
+        layers: [],
+        createdAt: Date(timeIntervalSince1970: 1_700_000_400),
+        updatedAt: Date(timeIntervalSince1970: 1_700_000_500)
+    )
+    let projectPath = "Projects/dddddddd-dddd-dddd-dddd-dddddddddddd.touch-annotation.json"
+    let connection = MockScreenshotServiceConnection { _, data, reply, _ in
+        let serviceRequest = try! JSONDecoder().decode(ScreenshotServiceRequest.self, from: data)
+        switch serviceRequest.action.name {
+        case "saveAnnotationProject":
+            #expect(!serviceRequest.action.isIdempotent)
+            let request = try! JSONDecoder().decode(
+                AnnotationProjectSaveRequest.self,
+                from: serviceRequest.action.payload!
+            )
+            #expect(request.document == document)
+            reply(try! makeResponse(
+                for: data,
+                payload: .annotationProjectSaved(try! JSONEncoder().encode(
+                    AnnotationProjectSaveResult(relativePath: projectPath)
+                ))
+            ))
+        case "loadAnnotationProject":
+            #expect(serviceRequest.action.isIdempotent)
+            let request = try! JSONDecoder().decode(
+                AnnotationProjectLoadRequest.self,
+                from: serviceRequest.action.payload!
+            )
+            #expect(request.relativePath == projectPath)
+            #expect(request.fallbackDocument == document)
+            reply(try! makeResponse(
+                for: data,
+                payload: .annotationProjectLoaded(try! JSONEncoder().encode(
+                    AnnotationProjectLoadResult(document: document, status: .loaded)
+                ))
+            ))
+        default:
+            Issue.record("收到非预期 action：\(serviceRequest.action.name)")
+        }
+    }
+    let client = ScreenshotClient(connectionFactory: { connection })
+
+    #expect(try await client.saveAnnotationProject(document, timeout: .seconds(1)) == projectPath)
+    #expect(
+        try await client.loadAnnotationProject(
+            relativePath: projectPath,
+            fallbackDocument: document,
+            timeout: .seconds(1)
+        ) == .init(document: document, status: .loaded)
+    )
+}
+
+@Test func screenshotClientExportsRenderedAnnotationDocument() async throws {
+    let document = AnnotationDocument(
+        id: UUID(uuidString: "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee")!,
+        sourceImageRelativePath: "Captures/2026/07/source.png",
+        canvasSize: .init(width: 320, height: 180),
+        layers: [],
+        createdAt: Date(timeIntervalSince1970: 1_700_000_600),
+        updatedAt: Date(timeIntervalSince1970: 1_700_000_700)
+    )
+    let destination = URL(fileURLWithPath: "/tmp/Touch Export/annotated.jpg")
+    let output = ScreenshotOutputOptions(format: .jpeg, quality: 0.8)
+    let connection = MockScreenshotServiceConnection { _, data, reply, _ in
+        let serviceRequest = try! JSONDecoder().decode(ScreenshotServiceRequest.self, from: data)
+        #expect(serviceRequest.action.name == "exportAnnotationDocument")
+        #expect(!serviceRequest.action.isIdempotent)
+        let decoded = try! JSONDecoder().decode(
+            AnnotationDocumentExportRequest.self,
+            from: serviceRequest.action.payload!
+        )
+        #expect(decoded.document == document)
+        #expect(decoded.destinationURL == destination)
+        #expect(decoded.output == output)
+        #expect(decoded.allowsOverwrite)
+        reply(try! makeResponse(
+            for: data,
+            payload: .annotationDocumentExported(try! JSONEncoder().encode(
+                AnnotationDocumentExportResult(destinationURL: destination)
+            ))
+        ))
+    }
+    let client = ScreenshotClient(connectionFactory: { connection })
+
+    #expect(try await client.exportAnnotationDocument(
+        document,
+        to: destination,
+        output: output,
+        allowsOverwrite: true,
+        timeout: .seconds(1)
+    ) == destination)
+}

@@ -63,7 +63,7 @@ struct ScreenshotFileStoreTests {
         let writer = POSIXAtomicFileWriter(observer: { operations.append($0) })
         let bytes = Data("complete-image".utf8)
 
-        try writer.write(bytes, to: destination)
+        try writer.write(bytes, to: destination, replacingExisting: false)
 
         #expect(try Data(contentsOf: destination) == bytes)
         let events = operations.values
@@ -76,6 +76,53 @@ struct ScreenshotFileStoreTests {
         #expect(events.contains(.renamed(from: temporary, to: destination)))
         #expect(events.contains(.directorySynchronized(directory)))
         #expect(!FileManager.default.fileExists(atPath: temporary.path))
+    }
+
+    @Test("原子写入排他模式拒绝覆盖已有文件")
+    func atomicWriterCanRejectExistingDestination() throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let destination = directory.appendingPathComponent("existing.png")
+        let original = Data("original".utf8)
+        try original.write(to: destination)
+
+        do {
+            try POSIXAtomicFileWriter().write(
+                Data("replacement".utf8),
+                to: destination,
+                replacingExisting: false
+            )
+            Issue.record("预期排他 rename 拒绝已有目标")
+        } catch let error as NSError {
+            #expect(error.domain == NSPOSIXErrorDomain)
+            #expect(error.code == Int(EEXIST))
+        }
+
+        #expect(try Data(contentsOf: destination) == original)
+        let files = try FileManager.default.contentsOfDirectory(
+            at: directory,
+            includingPropertiesForKeys: nil
+        )
+        #expect(files.map(\.lastPathComponent) == [destination.lastPathComponent])
+    }
+
+    @Test("原子写入可在明确允许时替换已有文件")
+    func atomicWriterCanReplaceExistingDestination() throws {
+        let directory = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let destination = directory.appendingPathComponent("existing.png")
+        try Data("original".utf8).write(to: destination)
+        let replacement = Data("replacement".utf8)
+
+        try POSIXAtomicFileWriter().write(
+            replacement,
+            to: destination,
+            replacingExisting: true
+        )
+
+        #expect(try Data(contentsOf: destination) == replacement)
     }
 
     @Test("编码失败不创建最终文件或半文件")
