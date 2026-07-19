@@ -15,6 +15,8 @@ import {
 } from "@phosphor-icons/react";
 import { siteConfig } from "./config.js";
 
+const assetURL = (fileName) => `${import.meta.env.BASE_URL}assets/${fileName}`;
+
 const features = [
   {
     icon: MagnifyingGlass,
@@ -97,7 +99,7 @@ function AppHeader() {
     <header className="site-header">
       <div className="site-header__inner">
         <a className="brand" href="#top" aria-label="一念首页">
-          <img src="/assets/brand-logo.svg" alt="" />
+          <img src={assetURL("brand-logo.svg")} alt="" />
           <span>一念</span>
         </a>
 
@@ -127,7 +129,11 @@ function AppHeader() {
 
 function Hero({ onOpen }) {
   return (
-    <section className="hero" id="top">
+    <section
+      className="hero"
+      id="top"
+      style={{ "--hero-background": `url("${assetURL("hero-background.png")}")` }}
+    >
       <div className="hero__inner page-shell">
         <div className="hero__copy" data-reveal>
           <p className="eyebrow">原生 macOS 桌面启动器</p>
@@ -152,7 +158,7 @@ function Hero({ onOpen }) {
 
         <div className="hero__visual" data-reveal>
           <ProductShot
-            src="/assets/launcher-search.png"
+            src={assetURL("launcher-search.png")}
             alt="一念日间主题启动器真实界面"
             className="hero-shot"
             onOpen={onOpen}
@@ -213,7 +219,7 @@ function SearchSection({ onOpen }) {
         </div>
         <div className="story-media story-media--cool" data-reveal>
           <ProductShot
-            src="/assets/launcher-search.png"
+            src={assetURL("launcher-search.png")}
             alt="一念应用与文件搜索入口真实界面"
             onOpen={onOpen}
           />
@@ -229,7 +235,7 @@ function ScreenshotSection({ onOpen }) {
       <div className="page-shell story-grid story-grid--reverse">
         <div className="story-media story-media--slate" data-reveal>
           <ProductShot
-            src="/assets/screenshot-annotation.png"
+            src={assetURL("screenshot-annotation.png")}
             alt="一念截图标注编辑器真实界面"
             onOpen={onOpen}
           />
@@ -272,7 +278,7 @@ function FinderSection({ onOpen }) {
         </div>
         <div className="finder-visual" data-reveal>
           <ProductShot
-            src="/assets/shortcut-layout.png"
+            src={assetURL("shortcut-layout.png")}
             alt="一念快捷键布局与动作设置真实界面"
             onOpen={onOpen}
           />
@@ -285,7 +291,7 @@ function FinderSection({ onOpen }) {
 function ThemeSection({ onOpen }) {
   const [theme, setTheme] = useState("day");
   const isDay = theme === "day";
-  const currentImage = isDay ? "/assets/launcher-search.png" : "/assets/launcher-night.jpg";
+  const currentImage = assetURL(isDay ? "launcher-search.png" : "launcher-night.jpg");
 
   return (
     <section className="theme-section" aria-labelledby="theme-title">
@@ -325,7 +331,7 @@ function ThemeSection({ onOpen }) {
         </div>
         <div className="settings-preview" data-reveal>
           <ProductShot
-            src="/assets/settings-general.png"
+            src={assetURL("settings-general.png")}
             alt="一念设置中心真实界面"
             onOpen={onOpen}
           />
@@ -482,7 +488,7 @@ export function App() {
       <footer className="site-footer" id="footer">
         <div className="page-shell site-footer__inner">
           <a className="brand brand--footer" href="#top">
-            <img src="/assets/brand-logo.svg" alt="" />
+            <img src={assetURL("brand-logo.svg")} alt="" />
             <span>一念</span>
           </a>
           <p>一念，所想即现。</p>
