@@ -135,9 +135,6 @@ function AppHeader() {
           <a href="#privacy" onClick={() => setMenuOpen(false)}>隐私</a>
           <a href="#install" onClick={() => setMenuOpen(false)}>安装说明</a>
           <a href="#footer" onClick={() => setMenuOpen(false)}>关于</a>
-          <DownloadLink className="button button--small" compact fallbackChildren="安装说明">
-            下载内测版
-          </DownloadLink>
         </nav>
       </div>
     </header>
@@ -160,18 +157,10 @@ function Hero({ onOpen }) {
             以及调用常用的 Finder 工具。
           </p>
           <div className="hero__actions">
-            <DownloadLink
-              className="button button--primary"
-              fallbackChildren={(
-                <>
-                  <ArrowRight size={19} weight="bold" />
-                  查看安装说明
-                </>
-              )}
-            >
+            <a className="button button--primary" href="#download">
               <DownloadSimple size={19} weight="bold" />
               下载免费内测版
-            </DownloadLink>
+            </a>
             <a className="text-link" href="#install">
               查看安装说明 <ArrowRight size={16} />
             </a>
@@ -425,7 +414,7 @@ function InstallSection() {
           ))}
         </div>
 
-        <div className="install-notice" data-reveal>
+        <div className="install-notice" id="download" data-reveal>
           <div>
             <strong>为什么会出现安全提示？</strong>
             <p>
@@ -439,7 +428,7 @@ function InstallSection() {
             fallbackChildren="下载包待发布"
           >
             <DownloadSimple size={19} weight="bold" />
-            前往下载
+            下载内测版
           </DownloadLink>
         </div>
       </div>
