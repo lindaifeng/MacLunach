@@ -56,18 +56,35 @@ const features = [
   },
 ];
 
-function DownloadLink({ className = "", children, compact = false }) {
-  const isAnchor = siteConfig.downloadURL.startsWith("#");
+function DownloadLink({
+  className = "",
+  children,
+  compact = false,
+  fallbackChildren,
+  disabledWhenUnavailable = false,
+}) {
+  const hasDownload = siteConfig.hasExternalDownload;
+  const label = hasDownload ? children : (fallbackChildren ?? children);
+  const isAnchor = !hasDownload || siteConfig.downloadURL.startsWith("#");
+  const classNames = `${className} ${compact ? "is-compact" : ""}`.trim();
+
+  if (!hasDownload && disabledWhenUnavailable) {
+    return (
+      <span className={`${classNames} is-disabled`.trim()} aria-disabled="true">
+        {label}
+      </span>
+    );
+  }
 
   return (
     <a
-      className={`${className} ${compact ? "is-compact" : ""}`.trim()}
-      href={siteConfig.downloadURL}
+      className={classNames}
+      href={hasDownload ? siteConfig.downloadURL : "#install"}
       target={isAnchor ? undefined : "_blank"}
       rel={isAnchor ? undefined : "noreferrer"}
       download={false}
     >
-      {children}
+      {label}
     </a>
   );
 }
@@ -118,7 +135,7 @@ function AppHeader() {
           <a href="#privacy" onClick={() => setMenuOpen(false)}>隐私</a>
           <a href="#install" onClick={() => setMenuOpen(false)}>安装说明</a>
           <a href="#footer" onClick={() => setMenuOpen(false)}>关于</a>
-          <DownloadLink className="button button--small" compact>
+          <DownloadLink className="button button--small" compact fallbackChildren="安装说明">
             下载内测版
           </DownloadLink>
         </nav>
@@ -143,7 +160,15 @@ function Hero({ onOpen }) {
             以及调用常用的 Finder 工具。
           </p>
           <div className="hero__actions">
-            <DownloadLink className="button button--primary">
+            <DownloadLink
+              className="button button--primary"
+              fallbackChildren={(
+                <>
+                  <ArrowRight size={19} weight="bold" />
+                  查看安装说明
+                </>
+              )}
+            >
               <DownloadSimple size={19} weight="bold" />
               下载免费内测版
             </DownloadLink>
@@ -408,9 +433,13 @@ function InstallSection() {
               请只从一念官网或官方 GitHub Releases 下载。
             </p>
           </div>
-          <DownloadLink className="button button--primary">
+          <DownloadLink
+            className="button button--primary"
+            disabledWhenUnavailable
+            fallbackChildren="下载包待发布"
+          >
             <DownloadSimple size={19} weight="bold" />
-            {siteConfig.hasExternalDownload ? "前往下载" : "下载地址待发布"}
+            前往下载
           </DownloadLink>
         </div>
       </div>
