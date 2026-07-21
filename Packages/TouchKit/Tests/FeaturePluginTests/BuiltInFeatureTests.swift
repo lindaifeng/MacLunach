@@ -1,5 +1,8 @@
 import Testing
 import TouchFeatureAPI
+@testable import ClipboardFeature
+@testable import OCRFeature
+@testable import TranslationFeature
 @testable import FinderFeature
 @testable import ScreenshotFeature
 @testable import SuperRightFeature
@@ -37,6 +40,18 @@ private final class ScreenshotRouterStub: ScreenshotActionRouting {
 
     #expect(Set(plugins.map { $0.manifest.id }).count == 3)
     #expect(plugins.map { $0.manifest.name } == ["打开访达", "截取屏幕", "超级右键"])
+}
+
+@Test @MainActor func builtInFeatureManifestsIncludeTextWorkspaces() {
+    let plugins: [any FeaturePlugin] = [
+        ClipboardFeaturePlugin(),
+        TranslationFeaturePlugin(systemVersion: .init(majorVersion: 15, minorVersion: 0, patchVersion: 0)),
+        OCRFeaturePlugin()
+    ]
+
+    #expect(Set(plugins.map(\.manifest.id)) == [
+        "me.touch.clipboard", "me.touch.translation", "me.touch.ocr"
+    ])
 }
 
 @Test func unfinishedFinderExtensionIsExplicitlyRestricted() async {

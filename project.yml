@@ -30,6 +30,12 @@ targets:
         product: ScreenshotFeature
       - package: TouchKit
         product: SuperRightFeature
+      - package: TouchKit
+        product: ClipboardFeature
+      - package: TouchKit
+        product: TranslationFeature
+      - package: TouchKit
+        product: OCRFeature
       - target: ScreenshotService
         embed: true
     settings:
