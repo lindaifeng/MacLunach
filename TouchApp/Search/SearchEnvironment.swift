@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 import TouchCore
 
 @MainActor
@@ -118,10 +119,18 @@ final class SearchExclusionDefaultsStore: SearchExclusionPersisting {
 
 @MainActor
 final class SearchEnvironment: ObservableObject {
+    enum FileAccessState: Equatable {
+        case notConfigured
+        case granted(count: Int)
+        case partiallyGranted(accessible: Int, total: Int)
+        case denied(total: Int)
+    }
+
     let applicationCatalog: ApplicationCatalog
     private(set) var fileIndexStore: FileIndexStore?
     let systemActions: any SearchActionServicing
     let diagnostics: SearchDiagnostics
+    @Published private(set) var fileAccessState: FileAccessState = .notConfigured
 
     private let initialFileRecords: [FileIndexRecord]
     private let databaseURL: URL?
@@ -166,6 +175,7 @@ final class SearchEnvironment: ObservableObject {
             exclusionRules: exclusionRules
         )
         securityScopedRoots = self.roots.filter { $0.startAccessingSecurityScopedResource() }
+        refreshFileAccessState()
     }
 
     deinit {
@@ -242,7 +252,9 @@ final class SearchEnvironment: ObservableObject {
         }
         roots = updatedRoots
         releaseAccessForUnconfiguredRoots()
+        refreshFileAccessState()
         rootPersistence?.saveRoots(roots)
+        refreshFileAccessState()
         diagnostics.update(roots: roots, status: .indexing)
         diagnostics.updateIndexingProgress(0, rootName: normalized.lastPathComponent)
         eventMonitor?.stop()
@@ -425,6 +437,26 @@ final class SearchEnvironment: ObservableObject {
         let removed = securityScopedRoots.filter { !configuredPaths.contains(Self.canonicalPath(for: $0)) }
         for root in removed { root.stopAccessingSecurityScopedResource() }
         securityScopedRoots.removeAll { !configuredPaths.contains(Self.canonicalPath(for: $0)) }
+        refreshFileAccessState()
+    }
+
+    private func refreshFileAccessState() {
+        guard !roots.isEmpty else {
+            fileAccessState = .notConfigured
+            return
+        }
+        let accessibleCount = roots.filter { root in
+            let path = Self.canonicalPath(for: root)
+            return securityScopedRoots.contains(where: { Self.canonicalPath(for: $0) == path })
+                || FileManager.default.isReadableFile(atPath: root.path)
+        }.count
+        if accessibleCount == roots.count {
+            fileAccessState = .granted(count: accessibleCount)
+        } else if accessibleCount == 0 {
+            fileAccessState = .denied(total: roots.count)
+        } else {
+            fileAccessState = .partiallyGranted(accessible: accessibleCount, total: roots.count)
+        }
     }
 
     private func scan(root: URL, replacingExisting: Bool, status: SearchDiagnostics.Status) async throws {

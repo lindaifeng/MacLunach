@@ -24,21 +24,19 @@ enum SearchDismissal: Equatable {
 
 @MainActor
 final class SearchCoordinator: ObservableObject {
+    private var queryByMode: [SearchMode: String] = [:]
     @Published var query = "" {
         didSet {
             guard query != oldValue else { return }
+            queryByMode[mode] = query
             scheduleSearch(query: query, mode: mode)
         }
     }
     @Published var mode: SearchMode = .applications {
         didSet {
             guard mode != oldValue else { return }
-            if mode == .actions {
-                query = ""
-                isSearchFieldFocused = false
-            } else {
-                isSearchFieldFocused = true
-            }
+            query = queryByMode[mode] ?? ""
+            isSearchFieldFocused = mode != .actions
             if mode == .files {
                 let environment = environment
                 Task { await environment.prepareFileIndex() }
@@ -73,12 +71,18 @@ final class SearchCoordinator: ObservableObject {
         environment.diagnostics
     }
 
-    func update(query: String, mode: SearchMode) {
-        let changed = self.query != query || self.mode != mode
-        self.query = query
-        self.mode = mode
-        if !changed {
-            scheduleSearch(query: query, mode: mode)
+    func update(query newQuery: String, mode newMode: SearchMode) {
+        let modeChanged = self.mode != newMode
+        let queryChanged = self.query != newQuery
+
+        // 先写入目标模式缓存，再切换模式；否则 mode.didSet 可能把新 query
+        // 覆盖成旧缓存，造成切换模式后搜索框短暂清空或丢失输入。
+        queryByMode[newMode] = newQuery
+        self.mode = newMode
+        self.query = newQuery
+
+        if !modeChanged && !queryChanged {
+            scheduleSearch(query: newQuery, mode: newMode)
         }
     }
 
@@ -164,9 +168,10 @@ final class SearchCoordinator: ObservableObject {
 
     func prepareForPresentation() {
         searchTask?.cancel()
+        queryByMode = [:]
+        mode = .applications
         query = ""
-        mode = .actions
-        isSearchFieldFocused = false
+        isSearchFieldFocused = true
         state = .idle
         isKeyboardSelectionActive = false
     }

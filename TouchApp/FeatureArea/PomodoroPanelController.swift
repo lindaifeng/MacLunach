@@ -4,23 +4,45 @@ import SwiftUI
 import TouchFeatureAPI
 
 @MainActor
+private var featurePanelDismissalTasks: [ObjectIdentifier: Task<Void, Never>] = [:]
+
+@MainActor
+func cancelFeaturePanelDismissal(_ panel: NSWindow) {
+    featurePanelDismissalTasks[ObjectIdentifier(panel)]?.cancel()
+    featurePanelDismissalTasks[ObjectIdentifier(panel)] = nil
+}
+
+@MainActor
 func dismissFeaturePanelAfterResigningKey(
     _ panel: NSWindow,
-    keepsVisible: Bool = false
+    keepsVisible: Bool = false,
+    onHidden: (() -> Void)? = nil
 ) {
-    guard !keepsVisible else { return }
-    Task { @MainActor [weak panel] in
+    if keepsVisible {
+        cancelFeaturePanelDismissal(panel)
+        return
+    }
+    let panelID = ObjectIdentifier(panel)
+    featurePanelDismissalTasks[panelID]?.cancel()
+    featurePanelDismissalTasks[panelID] = Task { @MainActor [weak panel] in
         // 给输入法候选窗、字段编辑器和系统 sheet 一个恢复 keyWindow 的短暂窗口。
         try? await Task.sleep(for: .milliseconds(120))
         guard let panel, panel.isVisible, !panel.isKeyWindow else { return }
         guard panel.attachedSheet == nil else { return }
         // 输入法候选窗等瞬时系统窗口会让 keyWindow 短暂为空，但用户仍在当前功能窗口内编辑。
-        if NSApp.isActive, NSApp.keyWindow == nil { return }
+        // 切换到 Finder 或其他外部应用时只收起当前面板，绝不能通过 onHidden
+        // 重新激活一念，否则 Finder 会被无意抢回焦点。
+        guard NSApp.isActive else {
+            panel.orderOut(nil)
+            return
+        }
+        if NSApp.keyWindow == nil { return }
         if let keyWindow = NSApp.keyWindow,
            keyWindow === panel || keyWindow.sheetParent === panel {
             return
         }
         panel.orderOut(nil)
+        onHidden?()
     }
 }
 
@@ -30,7 +52,6 @@ final class PomodoroPanelController: NSObject, NSWindowDelegate {
     private let model = PomodoroPanelModel()
     private let onClose: () -> Void
     private var restoresPinnedStateAfterFullscreen = false
-    private var isRestoringAboveLauncher = false
 
     init(themeStore: ThemeStore, onClose: @escaping () -> Void) {
         self.onClose = onClose
@@ -49,7 +70,7 @@ final class PomodoroPanelController: NSObject, NSWindowDelegate {
         panel.backgroundColor = .clear
         panel.hasShadow = true
         panel.isFloatingPanel = false
-        panel.level = Self.featurePanelLevel
+        panel.level = .floating
         panel.isMovableByWindowBackground = false
         panel.hidesOnDeactivate = false
         panel.collectionBehavior = [.fullScreenPrimary]
@@ -63,25 +84,14 @@ final class PomodoroPanelController: NSObject, NSWindowDelegate {
             .environmentObject(themeStore)
         )
         installWindowTopDragRegion(in: panel)
-        NotificationCenter.default.addObserver(
-            self,
-            selector: #selector(keepPomodoroAboveNewLauncherPresentation),
-            name: .touchLauncherWillDisplay,
-            object: nil
-        )
-    }
-
-    deinit {
-        NotificationCenter.default.removeObserver(self)
     }
 
     func show(request: FocusSessionRequest? = nil) {
+        cancelFeaturePanelDismissal(panel)
         if let request { model.prepare(request) }
         panel.center()
         NSApp.activate()
         panel.makeKeyAndOrderFront(nil)
-        // 番茄面板拥有高于启动器的专用层级，显示时再明确置于最前。
-        panel.orderFrontRegardless()
         if request != nil { model.startOrResume() }
     }
 
@@ -94,7 +104,8 @@ final class PomodoroPanelController: NSObject, NSWindowDelegate {
     func windowDidResignKey(_ notification: Notification) {
         dismissFeaturePanelAfterResigningKey(
             panel,
-            keepsVisible: model.isPinned || model.isFullscreen || isRestoringAboveLauncher
+            keepsVisible: model.isPinned || model.isFullscreen,
+            onHidden: onClose
         )
     }
 
@@ -136,30 +147,13 @@ final class PomodoroPanelController: NSObject, NSWindowDelegate {
     private func applyPinnedState(_ isPinned: Bool) {
         model.isPinned = isPinned
         panel.isFloatingPanel = isPinned
-        panel.level = isPinned ? .statusBar : Self.featurePanelLevel
+        panel.level = isPinned ? .statusBar : .floating
         panel.hidesOnDeactivate = false
         panel.collectionBehavior = isPinned
             ? [.canJoinAllSpaces, .fullScreenAuxiliary]
             : [.fullScreenPrimary]
     }
 
-    @objc private func keepPomodoroAboveNewLauncherPresentation() {
-        guard panel.isVisible else { return }
-        isRestoringAboveLauncher = true
-        Task { @MainActor [weak self] in
-            await Task.yield()
-            guard let self else { return }
-            defer { self.isRestoringAboveLauncher = false }
-            guard self.panel.isVisible else { return }
-            self.panel.makeKeyAndOrderFront(nil)
-            self.panel.orderFrontRegardless()
-        }
-    }
-
-    // 产品要求番茄面板始终优先于启动器；只提高一个窗口层级，置顶模式仍使用 statusBar。
-    private static let featurePanelLevel = NSWindow.Level(
-        rawValue: NSWindow.Level.floating.rawValue + 1
-    )
 }
 
 @MainActor

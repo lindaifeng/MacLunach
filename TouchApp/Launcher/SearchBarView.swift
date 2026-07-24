@@ -94,12 +94,7 @@ struct SearchBarView: View {
     private func modeButton(_ item: SearchMode) -> some View {
         Button {
             mode = item
-            if item == .actions {
-                query = ""
-                isFocused = false
-            } else {
-                isFocused = true
-            }
+            isFocused = item != .actions
         } label: {
             Text(item.rawValue)
                 .font(.system(size: 15, weight: mode == item ? .semibold : .medium))

@@ -23,6 +23,8 @@ struct FeatureConfigurations: Equatable, Sendable {
 struct FeatureConfigurationStore {
     static let finderID = "me.touch.finder"
     static let screenshotID = "me.touch.screenshot"
+    private static let screenshotAllDisplaysShortcutMigratedKey =
+        "me.touch.features.screenshot.all-displays-option-shortcut-migrated-v1"
 
     private let defaults: UserDefaults
     private let now: () -> Date
@@ -77,29 +79,56 @@ struct FeatureConfigurationStore {
                 let envelope = try decoder.decode(ScreenshotConfigurationEnvelope.self, from: data)
                 guard envelope.schemaVersion == ScreenshotConfigurationEnvelope.currentSchemaVersion else {
                     // A newer app may own this value. Preserve it so a downgrade cannot destroy user settings.
+                    defaults.set(true, forKey: Self.screenshotAllDisplaysShortcutMigratedKey)
                     return .init()
                 }
-                return envelope.configuration
+                let configuration = migrateScreenshotDefaults(envelope.configuration)
+                if configuration != envelope.configuration {
+                    try? save(configuration)
+                }
+                return configuration
             } catch {
                 defaults.set(data, forKey: Self.screenshotCorruptBackupKey(at: now()))
                 defaults.removeObject(forKey: currentKey)
+                defaults.set(true, forKey: Self.screenshotAllDisplaysShortcutMigratedKey)
                 return .init()
             }
         }
 
         guard let legacyData = defaults.data(forKey: Self.legacyScreenshotStorageKey) else {
+            defaults.set(true, forKey: Self.screenshotAllDisplaysShortcutMigratedKey)
             return .init()
         }
         do {
-            let configuration = try decoder.decode(ScreenshotFeatureConfiguration.self, from: legacyData)
+            let configuration = migrateScreenshotDefaults(
+                try decoder.decode(ScreenshotFeatureConfiguration.self, from: legacyData)
+            )
             try save(configuration)
             defaults.removeObject(forKey: Self.legacyScreenshotStorageKey)
             return configuration
         } catch {
             defaults.set(legacyData, forKey: Self.screenshotCorruptBackupKey(at: now()))
             defaults.removeObject(forKey: Self.legacyScreenshotStorageKey)
+            defaults.set(true, forKey: Self.screenshotAllDisplaysShortcutMigratedKey)
             return .init()
         }
+    }
+
+    private func migrateScreenshotDefaults(
+        _ configuration: ScreenshotFeatureConfiguration
+    ) -> ScreenshotFeatureConfiguration {
+        guard !defaults.bool(forKey: Self.screenshotAllDisplaysShortcutMigratedKey) else {
+            return configuration
+        }
+
+        var migrated = configuration
+        let legacyShortcut = KeyboardShortcut(modifiers: [.command, .shift], key: "2")
+        let optionShortcut = KeyboardShortcut(modifiers: [.option, .shift], key: "2")
+        if migrated.modeShortcuts[.allDisplays] == legacyShortcut {
+            migrated.modeShortcuts[.allDisplays] = optionShortcut
+        }
+        defaults.set(true, forKey: Self.screenshotAllDisplaysShortcutMigratedKey)
+        return migrated
     }
 
     private func load<Value: Decodable>(_ type: Value.Type, pluginID: String) -> Value? {

@@ -51,6 +51,7 @@ final class DailyTaskPanelController: NSObject, NSWindowDelegate {
     }
 
     func show() {
+        cancelFeaturePanelDismissal(panel)
         model.reload()
         panel.center()
         NSApp.activate()
@@ -62,7 +63,7 @@ final class DailyTaskPanelController: NSObject, NSWindowDelegate {
     }
 
     func windowDidResignKey(_ notification: Notification) {
-        dismissFeaturePanelAfterResigningKey(panel)
+        dismissFeaturePanelAfterResigningKey(panel, onHidden: onClose)
     }
 }
 

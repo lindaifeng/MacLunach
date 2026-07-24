@@ -61,7 +61,7 @@ import TouchFeatureAPI
     #expect(configuration.defaultDelay == .none)
     #expect(
         configuration.modeShortcuts[.allDisplays]
-            == KeyboardShortcut(modifiers: [.command, .shift], key: "2")
+            == KeyboardShortcut(modifiers: [.option, .shift], key: "2")
     )
     #expect(configuration.afterCaptureAction == .copyAndShowThumbnail)
     #expect(configuration.copiesToClipboard)

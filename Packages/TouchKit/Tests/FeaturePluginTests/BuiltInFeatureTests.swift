@@ -114,6 +114,15 @@ private final class ScreenshotRouterStub: ScreenshotActionRouting {
     #expect(entries.contains { $0.name == "Christmas Day" && $0.kind == HolidayKind.international })
 }
 
+@Test func holidayCalendarDoesNotDegradeToThreeChineseHolidaysIn2027() {
+    let entries = HolidayCalendar.entries(for: 2027, calendar: Calendar(identifier: .gregorian))
+    #expect(entries.contains { $0.name == "春节假期" && $0.kind == HolidayKind.chinaOfficial })
+    #expect(entries.contains { $0.name == "清明节假期" && $0.kind == HolidayKind.chinaOfficial })
+    #expect(entries.contains { $0.name == "端午节假期" && $0.kind == HolidayKind.chinaOfficial })
+    #expect(entries.contains { $0.name == "中秋节假期" && $0.kind == HolidayKind.chinaOfficial })
+    #expect(entries.contains { $0.name == "国庆节假期" && $0.kind == HolidayKind.chinaOfficial })
+}
+
 @Test func markdownPreviewRequestsItsHostOwnedPanel() async throws {
     #expect(
         try await MarkdownPreviewFeaturePlugin().perform()

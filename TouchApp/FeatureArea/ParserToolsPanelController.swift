@@ -39,6 +39,7 @@ final class ParserToolsPanelController: NSObject, NSWindowDelegate {
     }
 
     func show() {
+        cancelFeaturePanelDismissal(panel)
         panel.center()
         NSApp.activate()
         panel.makeKeyAndOrderFront(nil)
@@ -49,7 +50,7 @@ final class ParserToolsPanelController: NSObject, NSWindowDelegate {
     }
 
     func windowDidResignKey(_ notification: Notification) {
-        dismissFeaturePanelAfterResigningKey(panel)
+        dismissFeaturePanelAfterResigningKey(panel, onHidden: onClose)
     }
 }
 

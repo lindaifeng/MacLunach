@@ -68,7 +68,7 @@ final class OCRPanelController: NSObject, NSWindowDelegate {
         panel.backgroundColor = .clear
         panel.hasShadow = true
         panel.isFloatingPanel = false
-        panel.level = .normal
+        panel.level = .floating
         panel.isMovableByWindowBackground = false
         panel.hidesOnDeactivate = false
         panel.minSize = Self.minimumWindowSize
@@ -135,10 +135,11 @@ final class OCRPanelController: NSObject, NSWindowDelegate {
     }
 
     func windowDidResignKey(_ notification: Notification) {
-        dismissFeaturePanelAfterResigningKey(panel, keepsVisible: isPinned)
+        dismissFeaturePanelAfterResigningKey(panel, keepsVisible: isPinned, onHidden: onClose)
     }
 
     private func presentPanel() {
+        cancelFeaturePanelDismissal(panel)
         panel.center()
         NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
@@ -190,7 +191,7 @@ final class OCRPanelController: NSObject, NSWindowDelegate {
     private func setPinned(_ isPinned: Bool) {
         self.isPinned = isPinned
         panel.isFloatingPanel = isPinned
-        panel.level = isPinned ? .statusBar : .normal
+        panel.level = isPinned ? .statusBar : .floating
         panel.hidesOnDeactivate = false
         panel.collectionBehavior = isPinned
             ? [.canJoinAllSpaces, .fullScreenAuxiliary]
@@ -201,7 +202,7 @@ final class OCRPanelController: NSObject, NSWindowDelegate {
     private func clearPinnedState() {
         isPinned = false
         panel.isFloatingPanel = false
-        panel.level = .normal
+        panel.level = .floating
         panel.collectionBehavior = []
     }
 

@@ -48,6 +48,8 @@ public enum HolidayCalendar {
         var entries = internationalEntries(for: year, calendar: calendar)
         if year == 2026 {
             entries += china2026Entries(calendar: calendar)
+        } else if year == 2027 {
+            entries += china2027Entries(calendar: calendar)
         } else {
             entries += [
                 entry(year, 1, 1, "元旦", .chinaOfficial, calendar),
@@ -89,6 +91,21 @@ public enum HolidayCalendar {
             entry(2026, 10, 10, "调休上班", .chinaWorkday, calendar)
         ]
         return result
+    }
+
+    private static func china2027Entries(calendar: Calendar) -> [HolidayEntry] {
+        let holidays: [(ClosedRange<Int>, Int, String)] = [
+            (1...1, 1, "元旦假期"),
+            (5...11, 2, "春节假期"),
+            (5...5, 4, "清明节假期"),
+            (1...3, 5, "劳动节假期"),
+            (7...9, 6, "端午节假期"),
+            (15...17, 9, "中秋节假期"),
+            (1...7, 10, "国庆节假期")
+        ]
+        return holidays.flatMap { days, month, _ in
+            days.map { entry(2027, month, $0, holidayName(month, day: $0), .chinaOfficial, calendar) }
+        }
     }
 
     private static func holidayName(_ month: Int, day: Int) -> String {

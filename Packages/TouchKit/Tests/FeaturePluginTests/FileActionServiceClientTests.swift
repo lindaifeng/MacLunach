@@ -61,6 +61,18 @@ import FileActionServiceProtocol
     #expect(connection.invalidateCount == 1)
 }
 
+@Test func relayRequestExpiresBeforeItCanBeConsumed() {
+    let createdAt = Date(timeIntervalSince1970: 1_750_000_000)
+    let request = FileActionServiceRelayRequest(
+        action: .createFolder(directory: URL(fileURLWithPath: "/tmp")),
+        createdAt: createdAt,
+        expiresAt: createdAt.addingTimeInterval(12)
+    )
+
+    #expect(!request.isExpired(at: createdAt.addingTimeInterval(11.9)))
+    #expect(request.isExpired(at: createdAt.addingTimeInterval(12)))
+}
+
 private final class MockFileActionServiceConnection: FileActionServiceConnection, @unchecked Sendable {
     typealias Handler = @Sendable (
         Data,

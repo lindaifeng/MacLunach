@@ -40,7 +40,7 @@ final class ClipboardPanelController: NSObject, NSWindowDelegate {
         panel.backgroundColor = .clear
         panel.hasShadow = true
         panel.isFloatingPanel = false
-        panel.level = .normal
+        panel.level = .floating
         panel.isMovableByWindowBackground = false
         panel.hidesOnDeactivate = false
         panel.minSize = NSSize(width: 620, height: 500)
@@ -61,6 +61,7 @@ final class ClipboardPanelController: NSObject, NSWindowDelegate {
     }
 
     func show() {
+        cancelFeaturePanelDismissal(panel)
         panel.center()
         NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
@@ -71,7 +72,7 @@ final class ClipboardPanelController: NSObject, NSWindowDelegate {
     }
 
     func windowDidResignKey(_ notification: Notification) {
-        dismissFeaturePanelAfterResigningKey(panel)
+        dismissFeaturePanelAfterResigningKey(panel, onHidden: onClose)
     }
 
 }

@@ -815,6 +815,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 NSSound.beep()
             } catch {
                 NSLog("Screenshot shortcut action failed: %@", error.localizedDescription)
+                let alert = NSAlert()
+                alert.alertStyle = .warning
+                alert.messageText = "截图未完成"
+                alert.informativeText = "\(error.localizedDescription)\n\n请检查屏幕录制权限或稍后重试。"
+                alert.addButton(withTitle: "打开权限设置")
+                alert.addButton(withTitle: "取消")
+                if alert.runModal() == .alertFirstButtonReturn {
+                    showSettings(section: .permissions)
+                }
             }
         }
     }

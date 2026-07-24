@@ -6,7 +6,24 @@ import ServiceManagement
 import SwiftUI
 import TouchCore
 import TouchFeatureAPI
+import UserNotifications
 
+@MainActor
+private final class NotificationPermissionState: ObservableObject {
+    @Published private(set) var authorizationStatus: UNAuthorizationStatus = .notDetermined
+
+    func refresh() {
+        // macOS 15.3 的 getNotificationSettings 回调会在系统队列触发
+        // Swift 并发隔离断言。进入权限页时保留当前状态，避免该系统回调
+        // 直接导致宿主应用退出；用户主动请求后由 request() 更新状态。
+    }
+
+    func update(granted: Bool) {
+        authorizationStatus = granted ? .authorized : .denied
+    }
+}
+
+@MainActor
 struct GeneralSettingsView: View {
     @EnvironmentObject private var themeStore: ThemeStore
     @EnvironmentObject private var screenshotEnvironment: ScreenshotEnvironment
@@ -17,6 +34,10 @@ struct GeneralSettingsView: View {
     @State private var launcherShortcutError: String?
     @State private var launchAtLoginEnabled = SMAppService.mainApp.status == .enabled
     @State private var launchAtLoginMessage: String?
+    @StateObject private var notificationPermissionState = NotificationPermissionState()
+    @State private var isRebuildingIndex = false
+    @State private var searchIndexMessage: String?
+    @ObservedObject var searchEnvironment: SearchEnvironment
     let section: TouchSettingsSection
     let theme: ThemeDefinition
 
@@ -262,6 +283,8 @@ struct GeneralSettingsView: View {
         VStack(spacing: 13) {
             screenRecordingPermissionCard
             calendarPermissionCard
+            notificationPermissionCard
+            fileAccessPermissionCard
             finderExtensionPermissionCard
         }
         .onAppear(perform: refreshPermissions)
@@ -283,14 +306,14 @@ struct GeneralSettingsView: View {
                     Text("屏幕录制")
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(theme.text.primary.color)
-                    Text(isScreenRecordingAuthorized ? "截取屏幕功能已可正常使用" : "截取屏幕功能当前不可用")
+                    Text(screenRecordingPermissionDetail)
                         .font(.system(size: 11))
                         .foregroundStyle(theme.text.secondary.color)
                 }
 
                 Spacer(minLength: 12)
 
-                Text(isScreenRecordingAuthorized ? "已授权" : "未授权")
+                Text(screenRecordingPermissionTitle)
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(isScreenRecordingAuthorized ? .green : theme.text.permission.color)
                     .padding(.horizontal, 9)
@@ -383,11 +406,139 @@ struct GeneralSettingsView: View {
         screenshotEnvironment.permissionState == .authorized
     }
 
+    private var screenRecordingPermissionTitle: String {
+        switch screenshotEnvironment.permissionState {
+        case .authorized: "已授权"
+        case .notRequested: "未请求"
+        case .denied: "被拒绝"
+        case .restricted: "受限制"
+        }
+    }
+
+    private var screenRecordingPermissionDetail: String {
+        switch screenshotEnvironment.permissionState {
+        case .authorized: "截取屏幕功能已可正常使用"
+        case .notRequested: "首次使用截图时需要请求屏幕录制权限"
+        case .denied: "屏幕录制权限已被拒绝，可在系统设置中恢复"
+        case .restricted: "屏幕录制权限受系统策略限制，当前无法启用"
+        }
+    }
+
+    private func fileAccessSymbol(for state: SearchEnvironment.FileAccessState) -> String {
+        switch state {
+        case .granted: "checkmark.shield.fill"
+        case .notConfigured: "folder.badge.questionmark"
+        case .partiallyGranted: "folder.badge.gearshape"
+        case .denied: "lock.folder"
+        }
+    }
+
+    private func fileAccessTitle(for state: SearchEnvironment.FileAccessState) -> String {
+        switch state {
+        case .granted: "已授权"
+        case .notConfigured: "未配置"
+        case .partiallyGranted: "部分可用"
+        case .denied: "访问失败"
+        }
+    }
+
+    private func fileAccessDetail(for state: SearchEnvironment.FileAccessState) -> String {
+        switch state {
+        case let .granted(count): "已授权访问 \(count) 个检索目录"
+        case .notConfigured: "尚未配置可检索目录"
+        case let .partiallyGranted(accessible, total): "\(accessible)/\(total) 个检索目录可访问，其余需要重新授权"
+        case let .denied(total): "已配置 \(total) 个目录，但当前均无法访问"
+        }
+    }
+
     private func refreshPermissions() {
         screenshotEnvironment.refreshPermissionState()
         isFinderExtensionEnabled = FIFinderSyncController.isExtensionEnabled
         calendarAuthorizationStatus = EKEventStore.authorizationStatus(for: .event)
+        notificationPermissionState.refresh()
         Task { await featureStore.retry(FeatureConfigurationStore.screenshotID) }
+    }
+
+    private var notificationPermissionCard: some View {
+        let authorized = notificationPermissionState.authorizationStatus == .authorized
+            || notificationPermissionState.authorizationStatus == .provisional
+        return SettingsCard(theme: theme) {
+            HStack(spacing: 11) {
+                Image(systemName: authorized ? "checkmark.shield.fill" : "bell.badge")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(authorized ? .green : theme.text.permission.color)
+                    .frame(width: 34, height: 34)
+                    .background(theme.icon.container.color, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("通知").font(.system(size: 13, weight: .semibold)).foregroundStyle(theme.text.primary.color)
+                    Text(notificationPermissionDetail)
+                        .font(.system(size: 11)).foregroundStyle(theme.text.secondary.color)
+                }
+                Spacer()
+                Text(notificationPermissionTitle).font(.system(size: 11, weight: .semibold)).foregroundStyle(authorized ? .green : theme.text.permission.color)
+                if !authorized {
+                    SettingsActionButton(notificationPermissionState.authorizationStatus == .notDetermined ? "请求" : "系统设置", symbol: "bell", theme: theme, compact: true) {
+                        requestNotificationAccess()
+                    }
+                }
+            }
+        }
+    }
+
+    private var fileAccessPermissionCard: some View {
+        let state = searchEnvironment.fileAccessState
+        let available = if case .granted = state { true } else { false }
+        return SettingsCard(theme: theme) {
+            HStack(spacing: 11) {
+                Image(systemName: fileAccessSymbol(for: state))
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(available ? .green : theme.text.permission.color)
+                    .frame(width: 34, height: 34)
+                    .background(theme.icon.container.color, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("文件与目录访问").font(.system(size: 13, weight: .semibold)).foregroundStyle(theme.text.primary.color)
+                    Text(fileAccessDetail(for: state))
+                        .font(.system(size: 11)).foregroundStyle(theme.text.secondary.color)
+                }
+                Spacer()
+                Text(fileAccessTitle(for: state)).font(.system(size: 11, weight: .semibold)).foregroundStyle(available ? .green : theme.text.permission.color)
+                if !available {
+                    SettingsActionButton("前往搜索", symbol: "folder", theme: theme, compact: true) {
+                        NotificationCenter.default.post(name: .openTouchSettings, object: TouchSettingsDestination(section: .search))
+                    }
+                }
+            }
+        }
+    }
+
+    private var notificationPermissionTitle: String {
+        switch notificationPermissionState.authorizationStatus {
+        case .authorized, .provisional: "已授权"
+        case .denied: "被拒绝"
+        case .notDetermined: "未请求"
+        @unknown default: "通信异常"
+        }
+    }
+
+    private var notificationPermissionDetail: String {
+        switch notificationPermissionState.authorizationStatus {
+        case .denied: "通知已被拒绝，可在系统设置中恢复"
+        case .authorized, .provisional: "专注计时和任务提醒可正常送达"
+        case .notDetermined: "授权后可接收专注计时和任务提醒"
+        @unknown default: "通知状态暂时无法确认，请重新检测"
+        }
+    }
+
+    private func requestNotificationAccess() {
+        if notificationPermissionState.authorizationStatus == .notDetermined {
+            UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { granted, _ in
+                DispatchQueue.main.async {
+                    notificationPermissionState.update(granted: granted)
+                }
+            }
+        } else if let url = URL(string: "x-apple.systempreferences:com.apple.preference.notifications") {
+            NSWorkspace.shared.open(url)
+        }
     }
 
     private func requestCalendarAccess() {
@@ -401,13 +552,11 @@ struct GeneralSettingsView: View {
     private var updateContent: some View {
         SettingsCard(theme: theme) {
             VStack(spacing: 13) {
-                SettingsToggleRow("自动检查更新", detail: "在后台检查新版本", isOn: .constant(true), theme: theme)
+                SettingsValueRow("当前版本", value: "0.1.0", theme: theme)
                 SettingsDivider(theme: theme)
-                HStack {
-                    SettingsValueRow("当前版本", value: "0.1.0", theme: theme)
-                    Spacer(minLength: 16)
-                    SettingsActionButton("检查更新", symbol: "arrow.clockwise", theme: theme) {}
-                }
+                Text("更新服务将在发布阶段启用；当前开发版本不提供无效的更新检查入口。")
+                    .font(.system(size: 11.5)).foregroundStyle(theme.text.secondary.color)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
     }
@@ -423,8 +572,28 @@ struct GeneralSettingsView: View {
                         .font(.system(size: 11.5))
                         .foregroundStyle(theme.text.secondary.color)
                     Spacer()
-                    SettingsActionButton("清理搜索索引", symbol: "trash", theme: theme) {}
+                    SettingsActionButton(isRebuildingIndex ? "正在重建" : "清理并重建", symbol: "arrow.clockwise", theme: theme) {
+                        rebuildSearchIndex()
+                    }
                 }
+                if let searchIndexMessage {
+                    Text(searchIndexMessage).font(.system(size: 11)).foregroundStyle(theme.text.secondary.color)
+                }
+            }
+        }
+    }
+
+    private func rebuildSearchIndex() {
+        guard !isRebuildingIndex else { return }
+        isRebuildingIndex = true
+        searchIndexMessage = "正在清理并重建搜索索引…"
+        Task {
+            await searchEnvironment.rebuildIndex()
+            isRebuildingIndex = false
+            switch searchEnvironment.diagnostics.status {
+            case .ready: searchIndexMessage = "搜索索引已重建完成。"
+            case let .unavailable(message): searchIndexMessage = message
+            default: searchIndexMessage = searchEnvironment.diagnostics.status.label
             }
         }
     }

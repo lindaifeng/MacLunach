@@ -63,7 +63,7 @@ struct FeatureDetailSettingsView: View {
                     SettingsDivider(theme: theme)
                     ShortcutRecorderView(
                         title: "快捷键",
-                        detail: "后台运行时快捷键可直接触发，须含有特殊按键",
+                        detail: "默认使用 Option + 主键；后台运行时可直接触发，须含有特殊按键",
                         allowedModifierCounts: 1...2,
                         shortcut: featureStore.globalShortcut(for: featureID)
                             ?? .init(modifiers: [], key: ""),

@@ -63,6 +63,7 @@ final class MarkdownPreviewPanelController: NSObject, NSWindowDelegate {
     }
 
     func show() {
+        cancelFeaturePanelDismissal(panel)
         panel.level = Self.featurePanelLevel
         panel.center()
         NSApp.activate()
@@ -74,7 +75,7 @@ final class MarkdownPreviewPanelController: NSObject, NSWindowDelegate {
     }
 
     func windowDidResignKey(_ notification: Notification) {
-        dismissFeaturePanelAfterResigningKey(panel)
+        dismissFeaturePanelAfterResigningKey(panel, onHidden: onClose)
     }
 
     @objc private func applicationDidBecomeActive() {
@@ -84,8 +85,8 @@ final class MarkdownPreviewPanelController: NSObject, NSWindowDelegate {
     }
 
     @objc private func applicationDidResignActive() {
-        // Finder 取焦点后降为普通窗口：仍可接收文件拖放，但不会固定在其他应用上方。
-        panel.level = .normal
+        // Finder 取焦点后保持普通功能窗口层级：仍可接收文件拖放，也不会固定在其他应用上方。
+        panel.level = .floating
     }
 
     private static let featurePanelLevel = NSWindow.Level.floating

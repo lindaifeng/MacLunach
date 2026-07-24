@@ -3,6 +3,106 @@ import SwiftUI
 import TouchFeatureAPI
 import UniformTypeIdentifiers
 
+struct ThemedScrollMetrics: Equatable {
+    var contentHeight: CGFloat = 0
+    var viewportHeight: CGFloat = 0
+    var offset: CGFloat = 0
+
+    var isScrollable: Bool {
+        contentHeight > viewportHeight + 1
+    }
+
+    var thumbHeight: CGFloat {
+        guard viewportHeight > 0, contentHeight > 0 else { return 0 }
+        return max(34, viewportHeight * viewportHeight / contentHeight)
+    }
+
+    var thumbOffset: CGFloat {
+        let maxOffset = max(0, contentHeight - viewportHeight)
+        let trackTravel = max(0, viewportHeight - thumbHeight)
+        guard maxOffset > 0 else { return 0 }
+        return min(trackTravel, max(0, offset) / maxOffset * trackTravel)
+    }
+}
+
+struct ThemedScrollContentMetrics: Equatable {
+    var height: CGFloat = 0
+    var minY: CGFloat = 0
+}
+
+struct ThemedScrollContentMetricsPreferenceKey: PreferenceKey {
+    static let defaultValue = ThemedScrollContentMetrics()
+
+    static func reduce(value: inout ThemedScrollContentMetrics, nextValue: () -> ThemedScrollContentMetrics) {
+        value = nextValue()
+    }
+}
+
+struct ThemedVerticalScrollBar: View {
+    let metrics: ThemedScrollMetrics
+    let theme: ThemeDefinition
+
+    var body: some View {
+        GeometryReader { geometry in
+            if metrics.isScrollable {
+                let thumbHeight = min(geometry.size.height, max(34, metrics.thumbHeight))
+                let travel = max(0, geometry.size.height - thumbHeight)
+                let thumbOffset = min(travel, max(0, metrics.thumbOffset))
+
+                Capsule()
+                    .fill(theme.accent.color.opacity(0.58))
+                    .frame(width: 4, height: thumbHeight)
+                    .shadow(color: theme.accent.color.opacity(0.2), radius: 2)
+                    .offset(y: thumbOffset)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+            }
+        }
+        .frame(width: 14)
+        .accessibilityHidden(true)
+        .allowsHitTesting(false)
+    }
+}
+
+final class ThemedScrollIndicatorView: NSView {
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        configureScrollViews()
+    }
+
+    func configureScrollViews() {
+        let apply = { [weak self] in
+            guard let self, let root = self.window?.contentView else { return }
+            var pending = [root]
+            while let view = pending.popLast() {
+                if let scrollView = view as? NSScrollView {
+                    scrollView.scrollerStyle = .overlay
+                    scrollView.hasVerticalScroller = false
+                    scrollView.hasHorizontalScroller = false
+                    scrollView.verticalScroller?.isHidden = true
+                    scrollView.horizontalScroller?.isHidden = true
+                    scrollView.verticalScroller?.alphaValue = 0
+                    scrollView.horizontalScroller?.alphaValue = 0
+                }
+                pending.append(contentsOf: view.subviews)
+            }
+        }
+        DispatchQueue.main.async(execute: apply)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: apply)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: apply)
+    }
+}
+
+struct ThemedScrollIndicatorConfigurator: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView { ThemedScrollIndicatorView(frame: .zero) }
+
+    func updateNSView(_ nsView: NSView, context: Context) {
+        DispatchQueue.main.async { [weak nsView] in
+            guard let indicatorView = nsView as? ThemedScrollIndicatorView else { return }
+            indicatorView.configureScrollViews()
+        }
+    }
+}
+
 enum LauncherFeatureLayout: String, CaseIterable {
     case cards
     case keyboard
@@ -27,6 +127,7 @@ struct FeatureGridView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var editingFeatureID: String?
     @State private var shortcutErrorMessage: String?
+    @State private var scrollMetrics = ThemedScrollMetrics(viewportHeight: 336)
     let theme: ThemeDefinition
 
     var body: some View {
@@ -76,9 +177,34 @@ struct FeatureGridView: View {
                     }
                 }
                 .padding(.vertical, 1)
+                .background {
+                    GeometryReader { geometry in
+                        Color.clear.preference(
+                            key: ThemedScrollContentMetricsPreferenceKey.self,
+                            value: ThemedScrollContentMetrics(
+                                height: geometry.size.height,
+                                minY: geometry.frame(in: .named("launcher-feature-grid-scroll")).minY
+                            )
+                        )
+                    }
+                }
             }
+            .coordinateSpace(name: "launcher-feature-grid-scroll")
             .scrollIndicators(.hidden)
+            .background(ThemedScrollIndicatorConfigurator())
             .frame(width: 812, height: 336)
+            .onPreferenceChange(ThemedScrollContentMetricsPreferenceKey.self) { content in
+                scrollMetrics = ThemedScrollMetrics(
+                    contentHeight: content.height,
+                    viewportHeight: 336,
+                    offset: max(0, -content.minY)
+                )
+            }
+
+            ThemedVerticalScrollBar(metrics: scrollMetrics, theme: theme)
+                .frame(height: 336)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+                .padding(.trailing, 1)
 
             if let editingFeatureID,
                let plugin = featureStore.visiblePlugins.first(where: { $0.manifest.id == editingFeatureID }) {

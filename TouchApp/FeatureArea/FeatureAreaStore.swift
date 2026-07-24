@@ -71,8 +71,9 @@ final class FeatureAreaStore: ObservableObject {
 
     private static let customActionsDefaultsKey = "launcher.custom-key-actions.v1"
     private static let globalShortcutsDefaultsKey = "feature.global-shortcuts.v1"
-    private static let legacyGlobalShortcutDefaultsSeededKey = "feature.global-shortcuts.command-defaults-seeded-v1"
-    private static let globalShortcutDefaultsSeededKey = "feature.global-shortcuts.command-defaults-seeded-v2"
+    private static let legacyCommandGlobalShortcutDefaultsSeededKey = "feature.global-shortcuts.command-defaults-seeded-v1"
+    private static let previousCommandGlobalShortcutDefaultsSeededKey = "feature.global-shortcuts.command-defaults-seeded-v2"
+    private static let globalShortcutDefaultsSeededKey = "feature.global-shortcuts.option-defaults-seeded-v3"
     private static let supportedLauncherKeys = [
         "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "-", "=",
         "q", "w", "e", "r", "t", "y", "u", "i", "o", "p",
@@ -110,7 +111,10 @@ final class FeatureAreaStore: ObservableObject {
     }
 
     var visiblePlugins: [any FeaturePlugin] {
-        plugins.filter { !preferences.hidden.contains($0.manifest.id) }
+        plugins.filter {
+            !preferences.hidden.contains($0.manifest.id)
+                && !preferences.disabled.contains($0.manifest.id)
+        }
     }
 
     var launcherCustomActionKeys: [String] {
@@ -453,10 +457,6 @@ final class FeatureAreaStore: ObservableObject {
 
     func perform(_ featureID: String) async {
         guard let plugin = plugins.first(where: { $0.manifest.id == featureID }) else { return }
-        if plugin.manifest.primaryAction == .openSettings {
-            openSettings(for: featureID)
-            return
-        }
         guard isEnabled(featureID) else {
             openSettings(for: featureID)
             return
@@ -467,6 +467,12 @@ final class FeatureAreaStore: ObservableObject {
         }
         if case .restricted? = states[featureID] {
             openRestrictedDestination(for: featureID)
+            return
+        }
+        // 受限状态优先进入统一权限中心；只有功能可用时，才按
+        // `primaryAction` 打开该功能自己的设置页。
+        if plugin.manifest.primaryAction == .openSettings {
+            openSettings(for: featureID)
             return
         }
         states[featureID] = .running
@@ -646,17 +652,17 @@ final class FeatureAreaStore: ObservableObject {
             shortcuts = [:]
         }
 
-        if !defaults.bool(forKey: globalShortcutDefaultsSeededKey) {
-            let wasSeededByLegacyRule = defaults.bool(
-                forKey: legacyGlobalShortcutDefaultsSeededKey
-            )
+        let wasSeededByCommandDefaults = defaults.bool(
+            forKey: legacyCommandGlobalShortcutDefaultsSeededKey
+        ) || defaults.bool(forKey: previousCommandGlobalShortcutDefaultsSeededKey)
+        if !defaults.bool(forKey: globalShortcutDefaultsSeededKey) || wasSeededByCommandDefaults {
             var occupied = Set(shortcuts.values)
             for plugin in plugins {
                 let key = launcherShortcuts[plugin.manifest.id]?.key
                     ?? plugin.manifest.defaultShortcut.key
                 guard !key.isEmpty else { continue }
                 let desiredShortcut = TouchFeatureAPI.KeyboardShortcut(
-                    modifiers: [.command],
+                    modifiers: [.option],
                     key: key
                 )
                 let legacyShortcut = TouchFeatureAPI.KeyboardShortcut(
@@ -664,7 +670,7 @@ final class FeatureAreaStore: ObservableObject {
                     key: plugin.manifest.defaultShortcut.key
                 )
                 let existingShortcut = shortcuts[plugin.manifest.id]
-                let replacesLegacyDefault = wasSeededByLegacyRule
+                let replacesLegacyDefault = wasSeededByCommandDefaults
                     && existingShortcut == legacyShortcut
                     && desiredShortcut != legacyShortcut
                 guard existingShortcut == nil || replacesLegacyDefault else {
@@ -686,6 +692,10 @@ final class FeatureAreaStore: ObservableObject {
             if let data = try? JSONEncoder().encode(shortcuts) {
                 defaults.set(data, forKey: globalShortcutsDefaultsKey)
                 defaults.set(true, forKey: globalShortcutDefaultsSeededKey)
+            }
+            if wasSeededByCommandDefaults {
+                defaults.removeObject(forKey: legacyCommandGlobalShortcutDefaultsSeededKey)
+                defaults.removeObject(forKey: previousCommandGlobalShortcutDefaultsSeededKey)
             }
         }
 

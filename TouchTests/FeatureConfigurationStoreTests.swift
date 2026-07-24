@@ -160,6 +160,54 @@ final class FeatureConfigurationStoreTests: XCTestCase {
         XCTAssertTrue(loaded.showsPinAction)
     }
 
+    func testLegacyAllDisplaysCommandShortcutMigratesToOption() throws {
+        let (defaults, suiteName) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let legacy = ScreenshotFeatureConfiguration(
+            modeShortcuts: [
+                .allDisplays: .init(modifiers: [.command, .shift], key: "2"),
+                .colorPicker: .init(modifiers: [.control, .option], key: "c")
+            ]
+        )
+        let envelope = ScreenshotConfigurationEnvelope(configuration: legacy)
+        defaults.set(
+            try JSONEncoder().encode(envelope),
+            forKey: FeatureConfigurationStore.storageKey(for: FeatureConfigurationStore.screenshotID)
+        )
+
+        let loaded = FeatureConfigurationStore(defaults: defaults).load().screenshot
+
+        XCTAssertEqual(
+            loaded.modeShortcuts[.allDisplays],
+            .init(modifiers: [.option, .shift], key: "2")
+        )
+
+        XCTAssertEqual(
+            FeatureConfigurationStore(defaults: defaults).load().screenshot.modeShortcuts[.allDisplays],
+            .init(modifiers: [.option, .shift], key: "2")
+        )
+    }
+
+    func testUserChosenCommandShortcutIsNotMigratedAfterFreshDefaultsLoad() throws {
+        let (defaults, suiteName) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = FeatureConfigurationStore(defaults: defaults)
+        _ = store.load()
+
+        let custom = ScreenshotFeatureConfiguration(
+            modeShortcuts: [
+                .allDisplays: .init(modifiers: [.command, .shift], key: "2"),
+                .colorPicker: .init(modifiers: [.control, .option], key: "c")
+            ]
+        )
+        try store.save(custom)
+
+        XCTAssertEqual(
+            store.load().screenshot.modeShortcuts[.allDisplays],
+            .init(modifiers: [.command, .shift], key: "2")
+        )
+    }
+
     @MainActor
     func testFeatureAreaStorePersistsVisibilityAndPluginSettings() {
         let (defaults, suiteName) = makeDefaults()

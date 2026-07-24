@@ -225,7 +225,7 @@ struct SettingsRootView: View {
                 }
             }
         } else {
-            GeneralSettingsView(section: navigation.section, theme: theme)
+            GeneralSettingsView(searchEnvironment: searchEnvironment, section: navigation.section, theme: theme)
         }
     }
 }

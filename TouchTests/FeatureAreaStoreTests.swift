@@ -289,22 +289,22 @@ final class FeatureAreaStoreTests: XCTestCase {
         XCTAssertEqual(restoredStore.globalShortcut(for: first.manifest.id), shortcut)
         XCTAssertEqual(
             restoredStore.globalShortcut(for: second.manifest.id),
-            .init(modifiers: [.command], key: "2")
+            .init(modifiers: [.option], key: "2")
         )
     }
 
-    func testFeatureGlobalShortcutsDefaultToCommandAndLauncherKey() {
+    func testFeatureGlobalShortcutsDefaultToOptionAndLauncherKey() {
         let first = StoreTestPlugin(id: "me.touch.first", shortcutKey: "1")
         let second = StoreTestPlugin(id: "me.touch.second", shortcutKey: "q")
         let store = makeStore(plugins: [first, second])
 
         XCTAssertEqual(
             store.globalShortcut(for: first.manifest.id),
-            .init(modifiers: [.command], key: "1")
+            .init(modifiers: [.option], key: "1")
         )
         XCTAssertEqual(
             store.globalShortcut(for: second.manifest.id),
-            .init(modifiers: [.command], key: "q")
+            .init(modifiers: [.option], key: "q")
         )
     }
 
@@ -324,7 +324,28 @@ final class FeatureAreaStoreTests: XCTestCase {
 
         XCTAssertEqual(
             store.globalShortcut(for: plugin.manifest.id),
-            .init(modifiers: [.command], key: "q")
+            .init(modifiers: [.option], key: "q")
+        )
+    }
+
+    func testLegacyCommandDefaultIsMigratedEvenWhenCurrentSeedMarkerExists() throws {
+        let suiteName = "FeatureGlobalShortcutLegacyMigrationTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let plugin = StoreTestPlugin(id: "me.touch.first", shortcutKey: "1")
+        let legacyShortcut = TouchFeatureAPI.KeyboardShortcut(modifiers: [.command], key: "1")
+        let data = try JSONEncoder().encode([plugin.manifest.id: legacyShortcut])
+
+        defaults.set(data, forKey: "feature.global-shortcuts.v1")
+        defaults.set(true, forKey: "feature.global-shortcuts.command-defaults-seeded-v1")
+        defaults.set(true, forKey: "feature.global-shortcuts.option-defaults-seeded-v3")
+
+        let store = FeatureAreaStore(defaults: defaults, plugins: [plugin])
+
+        XCTAssertEqual(
+            store.globalShortcut(for: plugin.manifest.id),
+            .init(modifiers: [.option], key: "1")
         )
     }
 
@@ -379,7 +400,7 @@ final class FeatureAreaStoreTests: XCTestCase {
         XCTAssertEqual(store.states[plugin.manifest.id], .available)
     }
 
-    func testOpenSettingsPrimaryActionRoutesGenericallyBeforeRestrictedState() async {
+    func testRestrictedOpenSettingsFeatureRoutesToPermissionsCenter() async {
         let plugin = StoreTestPlugin(
             id: "me.touch.test-settings",
             state: .restricted(message: "需要启用扩展"),
@@ -392,10 +413,12 @@ final class FeatureAreaStoreTests: XCTestCase {
         }
         defer { center.removeObserver(token) }
         let store = makeStore(plugins: [plugin], notificationCenter: center)
+        await waitForState(of: plugin.manifest.id, in: store)
 
         await store.perform(plugin.manifest.id)
 
-        XCTAssertEqual(capture.featureIDs(), [plugin.manifest.id])
+        XCTAssertEqual(capture.sections(), [.permissions])
+        XCTAssertTrue(capture.featureIDs().isEmpty)
         let callCount = await plugin.callCount()
         XCTAssertEqual(callCount, 0)
     }
