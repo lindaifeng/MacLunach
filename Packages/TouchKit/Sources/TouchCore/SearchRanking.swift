@@ -21,7 +21,11 @@ public enum SearchRanking {
         guard !needle.isEmpty else { return 0 }
 
         let fields = [normalized(result.title), normalized(result.pinyin), normalized(result.initials)]
-        let matchScore = fields.map { score(field: $0, needle: needle) }.max() ?? 0
+        let fuzzyMatchScore = fields.map { score(field: $0, needle: needle) }.max() ?? 0
+        let strictMatchScore = result.strictSearchTerms
+            .map { strictScore(field: normalized($0), needle: needle) }
+            .max() ?? 0
+        let matchScore = max(fuzzyMatchScore, strictMatchScore)
         return matchScore == 0 ? 0 : matchScore + result.baseScore
     }
 
@@ -31,6 +35,16 @@ public enum SearchRanking {
         if field.hasPrefix(needle) { return 800 - Double(field.count - needle.count) }
         if let range = field.range(of: needle) { return 600 - Double(field.distance(from: field.startIndex, to: range.lowerBound)) }
         return isSubsequence(needle, of: field) ? 300 : 0
+    }
+
+    private static func strictScore(field: String, needle: String) -> Double {
+        guard !field.isEmpty else { return 0 }
+        if field == needle { return 1_000 }
+        if field.hasPrefix(needle) { return 800 - Double(field.count - needle.count) }
+        if let range = field.range(of: needle) {
+            return 600 - Double(field.distance(from: field.startIndex, to: range.lowerBound))
+        }
+        return 0
     }
 
     private static func normalized(_ value: String) -> String {

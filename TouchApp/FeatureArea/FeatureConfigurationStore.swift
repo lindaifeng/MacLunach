@@ -1,5 +1,6 @@
 import Foundation
 import ScreenshotFeature
+import TouchFeatureAPI
 
 struct FinderFeatureConfiguration: Codable, Equatable, Sendable {
     var reuseExistingWindow: Bool
@@ -14,43 +15,14 @@ struct FinderFeatureConfiguration: Codable, Equatable, Sendable {
     }
 }
 
-struct SuperRightFeatureConfiguration: Codable, Equatable, Sendable {
-    var opensTerminal: Bool
-    var copiesFilePath: Bool
-    var cutsFiles: Bool
-    var createsFiles: Bool
-
-    init(
-        opensTerminal: Bool = true,
-        copiesFilePath: Bool = true,
-        cutsFiles: Bool = true,
-        createsFiles: Bool = true
-    ) {
-        self.opensTerminal = opensTerminal
-        self.copiesFilePath = copiesFilePath
-        self.cutsFiles = cutsFiles
-        self.createsFiles = createsFiles
-    }
-
-    init(from decoder: Decoder) throws {
-        let values = try decoder.container(keyedBy: CodingKeys.self)
-        opensTerminal = try values.decodeIfPresent(Bool.self, forKey: .opensTerminal) ?? true
-        copiesFilePath = try values.decodeIfPresent(Bool.self, forKey: .copiesFilePath) ?? true
-        cutsFiles = try values.decodeIfPresent(Bool.self, forKey: .cutsFiles) ?? true
-        createsFiles = try values.decodeIfPresent(Bool.self, forKey: .createsFiles) ?? true
-    }
-}
-
 struct FeatureConfigurations: Equatable, Sendable {
     var finder: FinderFeatureConfiguration
     var screenshot: ScreenshotFeatureConfiguration
-    var superRight: SuperRightFeatureConfiguration
 }
 
 struct FeatureConfigurationStore {
     static let finderID = "me.touch.finder"
     static let screenshotID = "me.touch.screenshot"
-    static let superRightID = "me.touch.super-right"
 
     private let defaults: UserDefaults
     private let now: () -> Date
@@ -65,8 +37,7 @@ struct FeatureConfigurationStore {
     func load() -> FeatureConfigurations {
         FeatureConfigurations(
             finder: load(FinderFeatureConfiguration.self, pluginID: Self.finderID) ?? .init(),
-            screenshot: loadScreenshotConfiguration(),
-            superRight: load(SuperRightFeatureConfiguration.self, pluginID: Self.superRightID) ?? .init()
+            screenshot: loadScreenshotConfiguration()
         )
     }
 
@@ -79,8 +50,13 @@ struct FeatureConfigurationStore {
         defaults.set(try encoder.encode(envelope), forKey: Self.storageKey(for: Self.screenshotID))
     }
 
-    func save(_ configuration: SuperRightFeatureConfiguration) throws {
-        try save(configuration, pluginID: Self.superRightID)
+    func handoffLegacyConfiguration(to storage: any FeatureStorage) throws {
+        guard try storage.loadConfiguration() == nil else { return }
+        let legacyKey = Self.storageKey(for: storage.pluginID)
+        guard let data = defaults.data(forKey: legacyKey) else { return }
+
+        try storage.saveConfiguration(.init(schemaVersion: 1, data: data))
+        defaults.removeObject(forKey: legacyKey)
     }
 
     static let legacyScreenshotStorageKey = "me.touch.features.\(screenshotID).configuration.v1"

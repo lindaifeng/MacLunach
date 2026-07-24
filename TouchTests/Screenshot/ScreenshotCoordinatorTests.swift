@@ -70,9 +70,9 @@ final class ScreenshotCoordinatorTests: XCTestCase {
 
         XCTAssertEqual(coordinator.featureState(), .available)
         let firstPermissionResult = try await coordinator.route(.captureDefaultMode)
-        XCTAssertEqual(firstPermissionResult, .requiresSetup(message: "请允许触达录制屏幕"))
+        XCTAssertEqual(firstPermissionResult, .requiresSetup(message: "请允许一念录制屏幕"))
         let secondPermissionResult = try await coordinator.route(.captureDefaultMode)
-        XCTAssertEqual(secondPermissionResult, .requiresSetup(message: "请允许触达录制屏幕"))
+        XCTAssertEqual(secondPermissionResult, .requiresSetup(message: "请允许一念录制屏幕"))
         XCTAssertEqual(authorization.requestCount, 1)
         XCTAssertEqual(coordinator.featureState(), .restricted(message: "需要配置屏幕录制权限"))
         XCTAssertEqual(capture.captureCount, 0)
@@ -326,10 +326,11 @@ final class ScreenshotCoordinatorTests: XCTestCase {
 
     func testSaveOnlyPostCaptureActionDoesNotCopyOrShowThumbnail() async throws {
         let artifact = makeArtifact(relativePath: "Captures/save-only.png")
+        let capture = CaptureStub(artifact: artifact)
         let clipboard = ClipboardWriterStub()
         let thumbnail = FloatingThumbnailPresenterStub()
         let coordinator = makeCoordinator(
-            capture: CaptureStub(artifact: artifact),
+            capture: capture,
             clipboardWriter: clipboard,
             floatingThumbnailPresenter: thumbnail,
             configuration: .init(afterCaptureAction: .saveOnly)
@@ -339,6 +340,8 @@ final class ScreenshotCoordinatorTests: XCTestCase {
 
         XCTAssertTrue(clipboard.artifacts.isEmpty)
         XCTAssertTrue(thumbnail.artifacts.isEmpty)
+        XCTAssertEqual(capture.exportedArtifacts, [artifact])
+        XCTAssertEqual(capture.exportDestinations.last?.lastPathComponent, "save-only.png")
     }
 
     func testCopyAndSaveOrDisabledFloatingThumbnailCopiesWithoutShowingThumbnail() async throws {
@@ -349,8 +352,9 @@ final class ScreenshotCoordinatorTests: XCTestCase {
             let artifact = makeArtifact(relativePath: "Captures/copy-without-thumbnail.png")
             let clipboard = ClipboardWriterStub()
             let thumbnail = FloatingThumbnailPresenterStub()
+            let capture = CaptureStub(artifact: artifact)
             let coordinator = makeCoordinator(
-                capture: CaptureStub(artifact: artifact),
+                capture: capture,
                 clipboardWriter: clipboard,
                 floatingThumbnailPresenter: thumbnail,
                 configuration: configuration
@@ -360,7 +364,38 @@ final class ScreenshotCoordinatorTests: XCTestCase {
 
             XCTAssertEqual(clipboard.artifacts, [artifact])
             XCTAssertTrue(thumbnail.artifacts.isEmpty)
+            XCTAssertEqual(
+                capture.exportedArtifacts,
+                configuration.afterCaptureAction == .copyAndSave ? [artifact] : []
+            )
         }
+    }
+
+    func testPinPlacementPreservesCaptureRegionOnItsDisplay() throws {
+        let screen = try XCTUnwrap(NSScreen.main ?? NSScreen.screens.first)
+        let id = try XCTUnwrap(
+            (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
+        )
+        let display = ScreenshotDisplayDescriptor(
+            id: id,
+            frame: .init(x: 0, y: 0, width: screen.frame.width, height: screen.frame.height),
+            pixelSize: .init(width: screen.frame.width * 2, height: screen.frame.height * 2),
+            scaleFactor: 2
+        )
+        let target = ScreenshotCaptureTarget.region(
+            displayID: id,
+            rect: .init(x: 100, y: 120, width: 300, height: 200)
+        )
+
+        let frame = try XCTUnwrap(ScreenshotCoordinator.pinFrame(
+            for: target,
+            content: .init(displays: [display], windows: []),
+            screens: [screen]
+        ))
+
+        XCTAssertEqual(frame.origin.x, screen.frame.minX + 100, accuracy: 0.01)
+        XCTAssertEqual(frame.origin.y, screen.frame.maxY - 320, accuracy: 0.01)
+        XCTAssertEqual(frame.size, CGSize(width: 300, height: 200))
     }
 
     func testAnnotatePostCaptureActionOpensArtifactWithoutCopyingOrShowingThumbnail() async throws {
@@ -458,7 +493,7 @@ final class ScreenshotCoordinatorTests: XCTestCase {
 
         let result = try await coordinator.route(.pickColor)
 
-        XCTAssertEqual(result, .requiresSetup(message: "请允许触达录制屏幕"))
+        XCTAssertEqual(result, .requiresSetup(message: "请允许一念录制屏幕"))
         XCTAssertEqual(authorization.requestCount, 1)
         XCTAssertEqual(picker.pickCount, 0)
     }
@@ -713,6 +748,102 @@ final class ScreenshotCoordinatorTests: XCTestCase {
         XCTAssertEqual(textWriter.texts, ["重试结果", "重试结果"])
     }
 
+    func testWorkspaceTextCaptureReturnsPreviewAndDeletesTemporaryArtifactBeforeReturning() async throws {
+        let artifact = makeArtifact(relativePath: "Captures/workspace-ocr.png")
+        let recognition = ScreenshotRecognitionResult(
+            artifactID: artifact.id,
+            fullText: "  工作台识别结果\n",
+            textBlocks: [],
+            barcodes: []
+        )
+        let capture = CaptureStub(artifact: artifact, recognitionResult: recognition)
+        let regularSelection = SelectionStub(target: .display(displayID: 1))
+        let workspaceTarget = ScreenshotCaptureTarget.region(
+            displayID: 9,
+            rect: .init(x: 12, y: 24, width: 320, height: 180)
+        )
+        let workspaceSelection = SelectionStub(target: workspaceTarget)
+        let preview = Data([0x89, 0x50, 0x4E, 0x47])
+        let configuration = ScreenshotFeatureConfiguration(
+            ocr: .init(
+                recognitionLanguages: ["zh-Hans", "en-US"],
+                copiesRecognizedText: false,
+                minimumTextConfidence: 0.48
+            )
+        )
+        let coordinator = makeCoordinator(
+            capture: capture,
+            selection: regularSelection,
+            workspaceSelection: workspaceSelection,
+            workspacePreviewLoader: { candidate in
+                XCTAssertEqual(candidate, artifact)
+                return preview
+            },
+            configuration: configuration
+        )
+
+        let result = try await coordinator.captureTextForWorkspace()
+
+        XCTAssertEqual(result, .init(text: "工作台识别结果", previewImageData: preview))
+        XCTAssertEqual(regularSelection.selectCount, 0)
+        XCTAssertEqual(workspaceSelection.selectCount, 1)
+        XCTAssertEqual(capture.lastRequest?.mode, .ocrRegion)
+        XCTAssertEqual(capture.lastRequest?.target, workspaceTarget)
+        XCTAssertEqual(capture.lastRequest?.history.isEnabled, false)
+        XCTAssertEqual(capture.lastRequest?.history.keepsFilesWhenDisabled, false)
+        XCTAssertEqual(capture.lastRecognitionRequest?.configuration, configuration.ocr)
+        XCTAssertEqual(capture.deletedArtifacts, [artifact])
+    }
+
+    func testWorkspaceTextCaptureContinuesWhenPreviewCannotBeLoaded() async throws {
+        let artifact = makeArtifact(relativePath: "Captures/workspace-preview-unavailable.png")
+        let capture = CaptureStub(
+            artifact: artifact,
+            recognitionResult: .init(
+                artifactID: artifact.id,
+                fullText: "仍然返回文字",
+                textBlocks: [],
+                barcodes: []
+            )
+        )
+        let coordinator = makeCoordinator(
+            capture: capture,
+            workspacePreviewLoader: { _ in nil }
+        )
+
+        let result = try await coordinator.captureTextForWorkspace()
+
+        XCTAssertEqual(result.text, "仍然返回文字")
+        XCTAssertNil(result.previewImageData)
+        XCTAssertEqual(capture.deletedArtifacts, [artifact])
+    }
+
+    func testWorkspaceTextCaptureDeletesTemporaryArtifactWhenRecognitionFails() async {
+        let artifact = makeArtifact(relativePath: "Captures/workspace-recognition-failed.png")
+        let capture = CaptureStub(
+            artifact: artifact,
+            recognitionError: .recognitionFailed(message: "Vision 暂时不可用")
+        )
+        let coordinator = makeCoordinator(
+            capture: capture,
+            workspacePreviewLoader: { _ in Data([0x01]) }
+        )
+
+        do {
+            _ = try await coordinator.captureTextForWorkspace()
+            XCTFail("识别失败时不应返回工作台结果")
+        } catch let error as ScreenTextCaptureError {
+            guard case let .unavailable(message) = error else {
+                return XCTFail("识别失败应映射为工作台不可用错误，实际为 \(error)")
+            }
+            XCTAssertTrue(message.contains("Vision 暂时不可用"), message)
+        } catch {
+            XCTFail("识别失败应映射为 ScreenTextCaptureError，实际为 \(error)")
+        }
+
+        XCTAssertEqual(capture.deletedArtifacts, [artifact])
+    }
+
     private func makeCoordinator(
         authorization: AuthorizationStub = AuthorizationStub(status: .authorized),
         capture: CaptureStub,
@@ -726,6 +857,8 @@ final class ScreenshotCoordinatorTests: XCTestCase {
         countdownPresenter: any ScreenshotCaptureCountdownPresenting = CountdownPresenterStub(),
         extensionRouter: any ScreenshotCaptureExtensionRouting = PendingScreenshotCaptureExtensionRouter(),
         selection: any ScreenshotSelectionPresenting = SelectionStub(),
+        workspaceSelection: any ScreenshotSelectionPresenting = SelectionStub(),
+        workspacePreviewLoader: @escaping ScreenshotCoordinator.WorkspacePreviewLoader = { _ in nil },
         colorPicker: any ScreenshotColorPickerPresenting = ColorPickerStub(color: nil),
         configuration: ScreenshotFeatureConfiguration = .init(),
         invalidateService: @escaping @Sendable () async -> Void = {},
@@ -745,6 +878,8 @@ final class ScreenshotCoordinatorTests: XCTestCase {
             countdownPresenter: countdownPresenter,
             extensionRouter: extensionRouter,
             selectionFactory: { selection },
+            workspaceSelectionFactory: { workspaceSelection },
+            workspacePreviewLoader: workspacePreviewLoader,
             colorPickerFactory: { colorPicker },
             configurationProvider: { configuration },
             invalidateService: invalidateService,
@@ -1031,9 +1166,11 @@ private final class BlockingColorPickerStub: ScreenshotColorPickerPresenting {
 @MainActor
 private final class PinPresenterStub: ScreenshotPinPresenting {
     private(set) var artifacts: [ScreenshotArtifact] = []
+    private(set) var preferredFrames: [CGRect?] = []
 
-    func pin(_ artifact: ScreenshotArtifact) throws {
+    func pin(_ artifact: ScreenshotArtifact, preferredFrame: CGRect?) throws {
         artifacts.append(artifact)
+        preferredFrames.append(preferredFrame)
     }
 }
 
@@ -1072,6 +1209,7 @@ private final class FloatingThumbnailPresenterStub: ScreenshotFloatingThumbnailP
 private final class SelectionStub: ScreenshotSelectionPresenting {
     var result: ScreenshotSelectionResult?
     private(set) var cancelCount = 0
+    private(set) var selectCount = 0
     private let onSelect: @MainActor () -> Void
 
     init(target: ScreenshotCaptureTarget? = .region(
@@ -1093,6 +1231,7 @@ private final class SelectionStub: ScreenshotSelectionPresenting {
     }
 
     func select(from content: ScreenshotSelectionContent) async -> ScreenshotSelectionResult? {
+        selectCount += 1
         onSelect()
         return result
     }

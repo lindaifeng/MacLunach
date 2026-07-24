@@ -219,6 +219,18 @@ struct AnnotationRendererTests {
                 style: style,
                 text: .init(value: "1", fontSize: 15)
             )
+        case .callout:
+            .init(
+                kind: kind,
+                points: [
+                    .init(x: 12, y: 18),
+                    .init(x: 34, y: 36),
+                    .init(x: 34, y: 28),
+                    .init(x: 88, y: 78)
+                ],
+                style: style,
+                text: .init(value: "批注内容", fontSize: 14)
+            )
         case .note:
             .init(
                 kind: kind,

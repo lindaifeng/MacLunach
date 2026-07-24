@@ -169,6 +169,12 @@ p {
   box-shadow: 0 18px 36px rgba(80, 100, 230, 0.28), inset 0 1px rgba(255, 255, 255, 0.34);
 }
 
+.button.is-disabled {
+  pointer-events: none;
+  opacity: 0.62;
+  box-shadow: none;
+}
+
 .button--small {
   min-height: 40px;
   padding-inline: 18px;

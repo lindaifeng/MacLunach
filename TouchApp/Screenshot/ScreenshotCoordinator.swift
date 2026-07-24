@@ -1,6 +1,8 @@
-import Foundation
+import AppKit
+import ImageIO
 import ScreenshotFeature
 import TouchFeatureAPI
+import UniformTypeIdentifiers
 
 public enum ScreenshotCoordinatorError: Error, Equatable, Sendable {
     case busy
@@ -46,10 +48,18 @@ protocol ScreenshotLauncherPresenting: AnyObject {
 }
 
 @MainActor
-final class ScreenshotCoordinator: ScreenshotActionRouting {
+protocol WorkspaceTextCapturing: AnyObject {
+    func captureTextForWorkspace() async throws -> ScreenTextCaptureResult
+    func cancelWorkspaceTextCapture()
+}
+
+@MainActor
+final class ScreenshotCoordinator: ScreenshotActionRouting, WorkspaceTextCapturing {
     typealias ServiceInvalidation = @Sendable () async -> Void
     typealias ShortcutAction = @MainActor @Sendable () -> Void
     typealias SelectionFactory = @MainActor () -> any ScreenshotSelectionPresenting
+    typealias WorkspaceSelectionFactory = @MainActor () -> any ScreenshotSelectionPresenting
+    typealias WorkspacePreviewLoader = @Sendable (ScreenshotArtifact) async -> Data?
     typealias ColorPickerFactory = @MainActor () -> any ScreenshotColorPickerPresenting
     typealias ConfigurationProvider = @MainActor () -> ScreenshotFeatureConfiguration
 
@@ -70,6 +80,8 @@ final class ScreenshotCoordinator: ScreenshotActionRouting {
     private let countdownPresenter: any ScreenshotCaptureCountdownPresenting
     private let extensionRouter: any ScreenshotCaptureExtensionRouting
     private let selectionFactory: SelectionFactory
+    private let workspaceSelectionFactory: WorkspaceSelectionFactory
+    private let workspacePreviewLoader: WorkspacePreviewLoader
     private let colorPickerFactory: ColorPickerFactory
     private let configurationProvider: ConfigurationProvider
     private let invalidateService: ServiceInvalidation
@@ -78,6 +90,7 @@ final class ScreenshotCoordinator: ScreenshotActionRouting {
 
     private weak var launcher: (any ScreenshotLauncherPresenting)?
     private var captureTask: Task<CaptureFlowOutcome, any Error>?
+    private var workspaceTextCaptureTask: Task<ScreenTextCaptureResult, any Error>?
     private var activeCaptureID: UUID?
     private var activeSelectionPresenter: (any ScreenshotSelectionPresenting)?
     private var activeColorPickerPresenter: (any ScreenshotColorPickerPresenting)?
@@ -96,6 +109,15 @@ final class ScreenshotCoordinator: ScreenshotActionRouting {
         countdownPresenter: any ScreenshotCaptureCountdownPresenting = CaptureCountdownPanel(),
         extensionRouter: any ScreenshotCaptureExtensionRouting = PendingScreenshotCaptureExtensionRouter(),
         selectionFactory: @escaping SelectionFactory = { SelectionOverlayController() },
+        workspaceSelectionFactory: @escaping WorkspaceSelectionFactory = {
+            SelectionOverlayController(
+                completionActionOverride: .recognizeText,
+                automaticallyCompletesOnMouseUp: true
+            )
+        },
+        workspacePreviewLoader: @escaping WorkspacePreviewLoader = {
+            await ScreenshotWorkspacePreviewDataLoader.load($0)
+        },
         colorPickerFactory: ColorPickerFactory? = nil,
         configurationProvider: @escaping ConfigurationProvider = { .init() },
         invalidateService: @escaping ServiceInvalidation = {},
@@ -114,6 +136,8 @@ final class ScreenshotCoordinator: ScreenshotActionRouting {
         self.countdownPresenter = countdownPresenter
         self.extensionRouter = extensionRouter
         self.selectionFactory = selectionFactory
+        self.workspaceSelectionFactory = workspaceSelectionFactory
+        self.workspacePreviewLoader = workspacePreviewLoader
         self.colorPickerFactory = colorPickerFactory ?? {
             ColorPickerController(captureService: captureService)
         }
@@ -145,7 +169,7 @@ final class ScreenshotCoordinator: ScreenshotActionRouting {
         guard isEnabled else {
             return .requiresSetup(message: "截取屏幕功能已停用")
         }
-        guard captureTask == nil else {
+        guard captureTask == nil, workspaceTextCaptureTask == nil else {
             throw ScreenshotCoordinatorError.busy
         }
 
@@ -171,6 +195,96 @@ final class ScreenshotCoordinator: ScreenshotActionRouting {
         authorization.openSystemSettings()
     }
 
+    /// 供翻译和 OCR 工作台使用的专用选区识别流程。
+    /// 截图产物只作为临时识别输入，完成（或失败）后在返回前请求服务删除，
+    /// 工作台只保留一份内存预览，不进入截图历史。
+    func captureTextForWorkspace() async throws -> ScreenTextCaptureResult {
+        guard isEnabled else {
+            throw ScreenTextCaptureError.unavailable("截取屏幕功能已停用")
+        }
+        guard authorization.status == .authorized else {
+            throw ScreenTextCaptureError.permissionRequired
+        }
+        guard captureTask == nil, workspaceTextCaptureTask == nil else {
+            throw ScreenTextCaptureError.busy
+        }
+
+        let captureService = captureService
+        let workspacePreviewLoader = workspacePreviewLoader
+        let configuration = configurationProvider()
+        let task = Task { @MainActor [weak self] () throws -> ScreenTextCaptureResult in
+            guard let self else { throw CancellationError() }
+            let content = try await captureService.availableSelectionContent()
+            let presenter = self.workspaceSelectionFactory()
+            self.activeSelectionPresenter = presenter
+            defer { self.activeSelectionPresenter = nil }
+
+            guard let selection = await presenter.select(from: content) else {
+                throw ScreenTextCaptureError.cancelled
+            }
+            try Task.checkCancellation()
+
+            let request = ScreenshotCaptureRequest(
+                mode: .ocrRegion,
+                delay: .none,
+                target: selection.target,
+                windowShadow: selection.windowShadow,
+                output: configuration.output,
+                history: .init(isEnabled: false, keepsFilesWhenDisabled: false)
+            )
+            guard let artifact = try await captureService.captureArtifact(request) else {
+                throw ScreenTextCaptureError.noText
+            }
+
+            do {
+                let previewImageData = await workspacePreviewLoader(artifact)
+                try Task.checkCancellation()
+                let result = try await captureService.recognize(.init(
+                    artifact: artifact,
+                    configuration: configuration.ocr
+                ))
+                let text = result.fullText.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !text.isEmpty else { throw ScreenTextCaptureError.noText }
+                let captureResult = ScreenTextCaptureResult(
+                    text: text,
+                    previewImageData: previewImageData
+                )
+                await deleteWorkspaceArtifact(artifact, using: captureService)
+                return captureResult
+            } catch {
+                await deleteWorkspaceArtifact(artifact, using: captureService)
+                throw error
+            }
+        }
+        workspaceTextCaptureTask = task
+        defer { workspaceTextCaptureTask = nil }
+
+        do {
+            return try await task.value
+        } catch is CancellationError {
+            throw ScreenTextCaptureError.cancelled
+        } catch let error as ScreenTextCaptureError {
+            throw error
+        } catch let error as ScreenshotFeatureError {
+            switch error {
+            case .permissionDenied: throw ScreenTextCaptureError.permissionRequired
+            case .cancelled: throw ScreenTextCaptureError.cancelled
+            case .serviceTimedOut: throw ScreenTextCaptureError.timedOut
+            case let .recognitionFailed(message):
+                throw ScreenTextCaptureError.unavailable(message)
+            default: throw ScreenTextCaptureError.unavailable(error.localizedDescription)
+            }
+        } catch {
+            throw ScreenTextCaptureError.unavailable(error.localizedDescription)
+        }
+    }
+
+    func cancelWorkspaceTextCapture() {
+        guard workspaceTextCaptureTask != nil else { return }
+        activeSelectionPresenter?.cancel()
+        workspaceTextCaptureTask?.cancel()
+    }
+
     func activate() async {
         isEnabled = true
         registerShortcuts()
@@ -186,13 +300,14 @@ final class ScreenshotCoordinator: ScreenshotActionRouting {
         countdownPresenter.cancel()
         extensionRouter.cancel()
         captureTask?.cancel()
+        workspaceTextCaptureTask?.cancel()
         unregisterShortcuts()
         await invalidateService()
     }
 
     private func captureDefaultMode() async throws -> FeatureActionResult {
         guard requestAuthorization() == .authorized else {
-            return .requiresSetup(message: "请允许触达录制屏幕")
+            return .requiresSetup(message: "请允许一念录制屏幕")
         }
 
         let shouldRestoreLauncher = hideLauncherIfNeeded()
@@ -208,22 +323,29 @@ final class ScreenshotCoordinator: ScreenshotActionRouting {
             guard let selection = await presenter.select(from: content) else {
                 return CaptureFlowOutcome.cancelled
             }
+            let preferredPinFrame = Self.pinFrame(for: selection.target, content: content)
             try Task.checkCancellation()
 
             switch selection.completionAction {
             case .scrollingCapture:
-                return .result(try await extensionRouter.start(.init(
+                let result = try await extensionRouter.start(.init(
                     kind: .scrollingCapture,
                     target: selection.target,
                     windowShadow: selection.windowShadow
-                )))
+                ))
+                restoreLauncher(if: shouldRestoreLauncher)
+                return .result(result)
             case .gifRecording:
-                return .result(try await extensionRouter.start(.init(
+                let result = try await extensionRouter.start(.init(
                     kind: .gifRecording,
                     target: selection.target,
                     windowShadow: selection.windowShadow
-                )))
-            case .copy, .pin, .recognizeText:
+                ))
+                // GIF 没有普通截图的浮动缩略图；完成后恢复原先可见的启动器，
+                // 避免 HUD 关闭后看起来像整个应用被强制退出。
+                restoreLauncher(if: shouldRestoreLauncher)
+                return .result(result)
+            case .copy, .save, .pin, .recognizeText:
                 break
             }
 
@@ -248,11 +370,15 @@ final class ScreenshotCoordinator: ScreenshotActionRouting {
             switch selection.completionAction {
             case .copy:
                 if let artifact {
-                    try performPostCaptureActions(for: artifact, configuration: configuration)
+                    try await performPostCaptureActions(for: artifact, configuration: configuration)
+                }
+            case .save:
+                if let artifact {
+                    try await save(artifact, configuration: configuration)
                 }
             case .pin:
                 if let artifact {
-                    try pinPresenter.pin(artifact)
+                    try pinPresenter.pin(artifact, preferredFrame: preferredPinFrame)
                 }
             case .recognizeText:
                 if let artifact {
@@ -288,7 +414,7 @@ final class ScreenshotCoordinator: ScreenshotActionRouting {
 
     private func captureAllDisplays() async throws -> FeatureActionResult {
         guard requestAuthorization() == .authorized else {
-            return .requiresSetup(message: "请允许触达录制屏幕")
+            return .requiresSetup(message: "请允许一念录制屏幕")
         }
 
         let shouldRestoreLauncher = hideLauncherIfNeeded()
@@ -315,7 +441,7 @@ final class ScreenshotCoordinator: ScreenshotActionRouting {
                 history: configuration.history
             )
             if let artifact = try await captureService.captureArtifact(request) {
-                try performPostCaptureActions(for: artifact, configuration: configuration)
+                try await performPostCaptureActions(for: artifact, configuration: configuration)
             }
             return CaptureFlowOutcome.result(.completed)
         }
@@ -341,7 +467,7 @@ final class ScreenshotCoordinator: ScreenshotActionRouting {
     private func performPostCaptureActions(
         for artifact: ScreenshotArtifact,
         configuration: ScreenshotFeatureConfiguration
-    ) throws {
+    ) async throws {
         let policy = ScreenshotPostCapturePolicy(configuration: configuration)
         if policy.showsThumbnail {
             ScreenshotThumbnailPerformanceRecorder.shared.begin()
@@ -349,6 +475,9 @@ final class ScreenshotCoordinator: ScreenshotActionRouting {
         do {
             if policy.copiesToClipboard {
                 try clipboardWriter.write(artifact)
+            }
+            if policy.savesToConfiguredLocation {
+                try await save(artifact, configuration: configuration)
             }
             if policy.beginsAnnotation {
                 try annotationPresenter.presentForAnnotation(artifact)
@@ -407,8 +536,20 @@ final class ScreenshotCoordinator: ScreenshotActionRouting {
 
         switch configuration.saveLocation {
         case .pluginDirectory:
-            // 捕获产物本身已由截图服务持久化到功能私有目录，无需重复复制。
-            return
+            // 兼容旧配置；旧的插件目录语义回退到下载目录。
+            directory = try FileManager.default.url(
+                for: .downloadsDirectory,
+                in: .userDomainMask,
+                appropriateFor: nil,
+                create: true
+            )
+        case .downloads:
+            directory = try FileManager.default.url(
+                for: .downloadsDirectory,
+                in: .userDomainMask,
+                appropriateFor: nil,
+                create: true
+            )
         case .desktop:
             directory = try FileManager.default.url(
                 for: .desktopDirectory,
@@ -443,6 +584,47 @@ final class ScreenshotCoordinator: ScreenshotActionRouting {
             fileName: fileName
         )
         _ = try await captureService.exportArtifact(artifact, to: destination)
+    }
+
+    static func pinFrame(
+        for target: ScreenshotCaptureTarget,
+        content: ScreenshotSelectionContent,
+        screens: [NSScreen] = NSScreen.screens
+    ) -> CGRect? {
+        let targetRect: ScreenshotRect
+        let displayID: UInt32
+        switch target {
+        case let .region(id, rect):
+            displayID = id
+            targetRect = rect
+        case let .window(windowID):
+            guard let window = content.windows.first(where: { $0.id == windowID }),
+                  let display = content.displays.first(where: {
+                      CGRect(x: $0.frame.x, y: $0.frame.y, width: $0.frame.width, height: $0.frame.height)
+                          .intersects(CGRect(x: window.frame.x, y: window.frame.y, width: window.frame.width, height: window.frame.height))
+                  }) else { return nil }
+            displayID = display.id
+            targetRect = window.frame
+        case let .display(id):
+            guard let display = content.displays.first(where: { $0.id == id }) else { return nil }
+            displayID = id
+            targetRect = display.frame
+        case .interactive, .allDisplays:
+            return nil
+        }
+
+        guard let descriptor = content.displays.first(where: { $0.id == displayID }),
+              let screen = screens.first(where: { screen in
+                  (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == displayID
+              }) else { return nil }
+        let xOffset = CGFloat(targetRect.x - descriptor.frame.x)
+        let yOffsetFromTop = CGFloat(targetRect.y - descriptor.frame.y)
+        return CGRect(
+            x: screen.frame.minX + xOffset,
+            y: screen.frame.maxY - yOffsetFromTop - CGFloat(targetRect.height),
+            width: CGFloat(targetRect.width),
+            height: CGFloat(targetRect.height)
+        )
     }
 
     private func nextAvailableURL(in directory: URL, fileName: String) -> URL {
@@ -500,7 +682,7 @@ final class ScreenshotCoordinator: ScreenshotActionRouting {
 
     private func pickColor() async throws -> FeatureActionResult {
         guard requestAuthorization() == .authorized else {
-            return .requiresSetup(message: "请允许触达录制屏幕")
+            return .requiresSetup(message: "请允许一念录制屏幕")
         }
 
         let shouldRestoreLauncher = hideLauncherIfNeeded()
@@ -588,5 +770,71 @@ final class ScreenshotCoordinator: ScreenshotActionRouting {
         activeColorPickerPresenter = nil
         activeCaptureID = nil
         captureTask = nil
+    }
+}
+
+private func deleteWorkspaceArtifact(
+    _ artifact: ScreenshotArtifact,
+    using captureService: any ScreenshotCapturing
+) async {
+    // 清理任务不能继承工作台任务的取消状态。等待其完成后再返回，保证临时截图
+    // 不会在 OCR 窗口已经出现后继续残留在截图服务目录中。
+    let cleanupTask = Task.detached(priority: .utility) {
+        try? await captureService.deleteArtifact(artifact)
+    }
+    await cleanupTask.value
+}
+
+private enum ScreenshotWorkspacePreviewDataLoader {
+    static func load(_ artifact: ScreenshotArtifact) async -> Data? {
+        await Task.detached(priority: .utility) {
+            loadSynchronously(artifact)
+        }.value
+    }
+
+    private static func loadSynchronously(_ artifact: ScreenshotArtifact) -> Data? {
+        guard let paths = try? ScreenshotFeaturePaths.applicationSupport() else { return nil }
+
+        if let thumbnailRelativePath = artifact.thumbnailRelativePath,
+           let thumbnailURL = try? paths.resolve(relativePath: thumbnailRelativePath),
+           let thumbnailData = try? Data(contentsOf: thumbnailURL),
+           !thumbnailData.isEmpty {
+            return thumbnailData
+        }
+
+        guard let sourceURL = try? paths.resolve(relativePath: artifact.relativePath) else {
+            return nil
+        }
+        return downsampledPNGData(from: sourceURL, maximumPixelSize: 720)
+    }
+
+    private static func downsampledPNGData(
+        from sourceURL: URL,
+        maximumPixelSize: Int
+    ) -> Data? {
+        guard let source = CGImageSourceCreateWithURL(sourceURL as CFURL, nil) else {
+            return nil
+        }
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceThumbnailMaxPixelSize: maximumPixelSize
+        ]
+        guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else {
+            return nil
+        }
+
+        let output = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(
+            output,
+            UTType.png.identifier as CFString,
+            1,
+            nil
+        ) else {
+            return nil
+        }
+        CGImageDestinationAddImage(destination, image, nil)
+        guard CGImageDestinationFinalize(destination) else { return nil }
+        return output as Data
     }
 }

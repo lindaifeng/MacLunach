@@ -22,9 +22,10 @@ public struct KeyboardShortcut: Codable, Hashable, Sendable {
             (.command, "⌘")
         ]
 
+        let displayKey = key == "space" ? "Space" : key.uppercased()
         return orderedModifiers
             .filter { modifiers.contains($0.0) }
             .map(\.1)
-            .joined() + key.uppercased()
+            .joined() + displayKey
     }
 }

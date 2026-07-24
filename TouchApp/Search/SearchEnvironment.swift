@@ -19,25 +19,50 @@ protocol SearchRootPersisting: AnyObject {
 final class SearchRootBookmarkStore: SearchRootPersisting {
     private let defaults: UserDefaults
     private let key: String
+    private let defaultsSeededKey: String
 
     init(defaults: UserDefaults = .standard, key: String = "search.indexRootBookmarks") {
         self.defaults = defaults
         self.key = key
+        defaultsSeededKey = "\(key).defaults-seeded-v3"
     }
 
     func loadRoots(defaults fallbackRoots: [URL]) -> [URL] {
-        guard let bookmarks = defaults.array(forKey: key) as? [Data] else { return fallbackRoots }
+        guard let bookmarks = defaults.array(forKey: key) as? [Data] else {
+            saveRoots(fallbackRoots)
+            return fallbackRoots
+        }
+        if bookmarks.isEmpty, !defaults.bool(forKey: defaultsSeededKey) {
+            saveRoots(fallbackRoots)
+            return fallbackRoots
+        }
         var containsStaleBookmark = false
         let roots = bookmarks.compactMap { data -> URL? in
             var isStale = false
-            guard let url = try? URL(
+            let securityScopedURL = try? URL(
                 resolvingBookmarkData: data,
                 options: [.withSecurityScope],
                 relativeTo: nil,
                 bookmarkDataIsStale: &isStale
-            ) else { return nil }
+            )
+            let url = securityScopedURL ?? (try? URL(
+                resolvingBookmarkData: data,
+                options: [],
+                relativeTo: nil,
+                bookmarkDataIsStale: &isStale
+            ))
+            guard let url else { return nil }
             containsStaleBookmark = containsStaleBookmark || isStale
             return url.standardizedFileURL
+        }
+        if roots.isEmpty, !bookmarks.isEmpty, !fallbackRoots.isEmpty {
+            saveRoots(fallbackRoots)
+            return fallbackRoots
+        }
+        if !defaults.bool(forKey: defaultsSeededKey) {
+            let mergedRoots = Self.merging(fallbackRoots, with: roots)
+            saveRoots(mergedRoots)
+            return mergedRoots
         }
         if containsStaleBookmark { saveRoots(roots) }
         return roots
@@ -50,6 +75,44 @@ final class SearchRootBookmarkStore: SearchRootPersisting {
         // Never replace a valid selection with a partially encoded one.
         guard bookmarks.count == roots.count else { return }
         defaults.set(bookmarks, forKey: key)
+        defaults.set(true, forKey: defaultsSeededKey)
+    }
+
+    private static func merging(_ defaults: [URL], with customRoots: [URL]) -> [URL] {
+        (defaults + customRoots).reduce(into: [URL]()) { result, url in
+            let normalized = url.standardizedFileURL
+            let path = normalized.resolvingSymlinksInPath().path
+            guard !result.contains(where: {
+                $0.resolvingSymlinksInPath().path == path
+            }) else { return }
+            result.append(normalized)
+        }
+    }
+}
+
+@MainActor
+protocol SearchExclusionPersisting: AnyObject {
+    func loadRules(defaults: [String]) -> [String]
+    func saveRules(_ rules: [String])
+}
+
+@MainActor
+final class SearchExclusionDefaultsStore: SearchExclusionPersisting {
+    private let defaults: UserDefaults
+    private let key: String
+
+    init(defaults: UserDefaults = .standard, key: String = "search.exclusionRules") {
+        self.defaults = defaults
+        self.key = key
+    }
+
+    func loadRules(defaults fallbackRules: [String]) -> [String] {
+        guard let rules = defaults.stringArray(forKey: key) else { return fallbackRules }
+        return rules
+    }
+
+    func saveRules(_ rules: [String]) {
+        defaults.set(rules, forKey: key)
     }
 }
 
@@ -64,7 +127,9 @@ final class SearchEnvironment: ObservableObject {
     private let databaseURL: URL?
     private let eventMonitor: (any SearchEventMonitoring)?
     private let rootPersistence: (any SearchRootPersisting)?
+    private let exclusionPersistence: (any SearchExclusionPersisting)?
     private var roots: [URL]
+    private var exclusionRules: [String]
     private var preparationTask: Task<Void, Never>?
     private var indexingTask: Task<Void, Never>?
     private var didPrepareIndex = false
@@ -78,7 +143,9 @@ final class SearchEnvironment: ObservableObject {
         roots: [URL] = [],
         databaseURL: URL? = nil,
         eventMonitor: (any SearchEventMonitoring)? = nil,
-        rootPersistence: (any SearchRootPersisting)? = nil
+        rootPersistence: (any SearchRootPersisting)? = nil,
+        exclusionRules: [String] = SearchDiagnostics.defaultExclusionRules,
+        exclusionPersistence: (any SearchExclusionPersisting)? = nil
     ) {
         self.applicationCatalog = applicationCatalog
         self.fileIndexStore = fileIndexStore
@@ -88,12 +155,15 @@ final class SearchEnvironment: ObservableObject {
         self.databaseURL = databaseURL
         self.eventMonitor = eventMonitor
         self.rootPersistence = rootPersistence
+        self.exclusionRules = exclusionRules
+        self.exclusionPersistence = exclusionPersistence
         diagnostics = SearchDiagnostics(
             roots: Self.normalizedRoots(roots),
             fileCount: initialFileRecords.count,
             databaseSize: Self.databaseSize(at: databaseURL),
             lastUpdatedAt: initialFileRecords.isEmpty ? nil : .now,
-            status: initialFileRecords.isEmpty ? .waiting : .ready
+            status: initialFileRecords.isEmpty ? .waiting : .ready,
+            exclusionRules: exclusionRules
         )
         securityScopedRoots = self.roots.filter { $0.startAccessingSecurityScopedResource() }
     }
@@ -108,6 +178,11 @@ final class SearchEnvironment: ObservableObject {
     }
 
     func prepare() async {
+        await prepareApplications()
+        await prepareFileIndex()
+    }
+
+    func prepareApplications() async {
         let task: Task<Void, Never>
         if let preparationTask {
             task = preparationTask
@@ -117,6 +192,9 @@ final class SearchEnvironment: ObservableObject {
             preparationTask = task
         }
         await task.value
+    }
+
+    func prepareFileIndex() async {
         guard !didPrepareIndex else { return }
         didPrepareIndex = true
 
@@ -136,13 +214,16 @@ final class SearchEnvironment: ObservableObject {
 
         let count = (try? await fileIndexStore.recordCount()) ?? 0
         if count > 0 {
-            refreshDiagnostics(fileCount: count, status: .ready, updateTimestamp: false)
+            diagnostics.update(status: .indexing)
+            diagnostics.updateIndexingProgress(0, rootName: roots.first?.lastPathComponent)
+            refreshDiagnostics(fileCount: count, status: .indexing, updateTimestamp: false)
             startMonitoring()
             // FSEvents starts before reconciliation so changes occurring during the
             // background pass are still delivered. Application search is independent.
             indexingTask = Task { [weak self] in await self?.performReconciliation() }
         } else {
             diagnostics.update(status: .indexing)
+            diagnostics.updateIndexingProgress(0, rootName: roots.first?.lastPathComponent)
             indexingTask = Task { [weak self] in await self?.performInitialIndexing() }
         }
     }
@@ -163,12 +244,14 @@ final class SearchEnvironment: ObservableObject {
         releaseAccessForUnconfiguredRoots()
         rootPersistence?.saveRoots(roots)
         diagnostics.update(roots: roots, status: .indexing)
+        diagnostics.updateIndexingProgress(0, rootName: normalized.lastPathComponent)
         eventMonitor?.stop()
         do {
             for removedRoot in previousRoots where !updatedPaths.contains(Self.canonicalPath(for: removedRoot)) {
                 try await fileIndexStore?.delete(root: Self.canonicalPath(for: removedRoot))
             }
             try await scan(root: normalized, replacingExisting: true, status: .indexing)
+            diagnostics.updateIndexingProgress(1, rootName: normalized.lastPathComponent)
             refreshDiagnostics(fileCount: try await fileIndexStore?.recordCount() ?? 0, status: .ready)
             startMonitoring()
             if interruptedIndexing { startReconciliation() }
@@ -198,6 +281,24 @@ final class SearchEnvironment: ObservableObject {
         if interruptedIndexing { startReconciliation() }
     }
 
+    func addExclusionRule(_ rawRule: String, rebuildAfterChange: Bool = true) async {
+        let rule = rawRule.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !rule.isEmpty,
+              !exclusionRules.contains(where: { $0.localizedCaseInsensitiveCompare(rule) == .orderedSame }) else { return }
+        exclusionRules.append(rule)
+        exclusionPersistence?.saveRules(exclusionRules)
+        diagnostics.update(exclusionRules: exclusionRules)
+        if rebuildAfterChange { await rebuildIndex() }
+    }
+
+    func removeExclusionRule(_ rule: String) async {
+        guard let index = exclusionRules.firstIndex(of: rule) else { return }
+        exclusionRules.remove(at: index)
+        exclusionPersistence?.saveRules(exclusionRules)
+        diagnostics.update(exclusionRules: exclusionRules)
+        await rebuildIndex()
+    }
+
     func rebuildIndex() async {
         _ = await cancelIndexing()
         eventMonitor?.stop()
@@ -215,9 +316,22 @@ final class SearchEnvironment: ObservableObject {
             }
 
             if initialFileRecords.isEmpty {
-                for root in roots where FileManager.default.fileExists(atPath: root.path) {
+                let availableRoots = roots.filter {
+                    FileManager.default.fileExists(atPath: $0.path)
+                }
+                for (index, root) in availableRoots.enumerated() {
                     try Task.checkCancellation()
+                    updateIndexingProgress(
+                        completedRoots: index,
+                        totalRoots: availableRoots.count,
+                        currentRoot: root
+                    )
                     try await scan(root: root, replacingExisting: true, status: .rebuilding)
+                    updateIndexingProgress(
+                        completedRoots: index + 1,
+                        totalRoots: availableRoots.count,
+                        currentRoot: root
+                    )
                 }
             } else {
                 try await fileIndexStore?.upsert(initialFileRecords)
@@ -237,9 +351,22 @@ final class SearchEnvironment: ObservableObject {
 
     private func performInitialIndexing() async {
         do {
-            for root in roots where FileManager.default.fileExists(atPath: root.path) {
+            let availableRoots = roots.filter {
+                FileManager.default.fileExists(atPath: $0.path)
+            }
+            for (index, root) in availableRoots.enumerated() {
                 try Task.checkCancellation()
+                updateIndexingProgress(
+                    completedRoots: index,
+                    totalRoots: availableRoots.count,
+                    currentRoot: root
+                )
                 try await scan(root: root, replacingExisting: false, status: .indexing)
+                updateIndexingProgress(
+                    completedRoots: index + 1,
+                    totalRoots: availableRoots.count,
+                    currentRoot: root
+                )
             }
             refreshDiagnostics(fileCount: try await fileIndexStore?.recordCount() ?? 0, status: .ready)
             startMonitoring()
@@ -253,9 +380,22 @@ final class SearchEnvironment: ObservableObject {
 
     private func performReconciliation() async {
         do {
-            for root in roots where FileManager.default.fileExists(atPath: root.path) {
+            let availableRoots = roots.filter {
+                FileManager.default.fileExists(atPath: $0.path)
+            }
+            for (index, root) in availableRoots.enumerated() {
                 try Task.checkCancellation()
-                try await scan(root: root, replacingExisting: true, status: .ready)
+                updateIndexingProgress(
+                    completedRoots: index,
+                    totalRoots: availableRoots.count,
+                    currentRoot: root
+                )
+                try await scan(root: root, replacingExisting: true, status: .indexing)
+                updateIndexingProgress(
+                    completedRoots: index + 1,
+                    totalRoots: availableRoots.count,
+                    currentRoot: root
+                )
             }
             refreshDiagnostics(fileCount: try await fileIndexStore?.recordCount() ?? 0, status: .ready)
         } catch is CancellationError {
@@ -267,6 +407,8 @@ final class SearchEnvironment: ObservableObject {
 
     private func startReconciliation() {
         guard fileIndexStore != nil, !roots.isEmpty else { return }
+        diagnostics.update(status: .indexing)
+        diagnostics.updateIndexingProgress(0, rootName: roots.first?.lastPathComponent)
         indexingTask = Task { [weak self] in await self?.performReconciliation() }
     }
 
@@ -288,7 +430,7 @@ final class SearchEnvironment: ObservableObject {
     private func scan(root: URL, replacingExisting: Bool, status: SearchDiagnostics.Status) async throws {
         guard let fileIndexStore else { throw FileIndexStoreError.openFailed }
         if replacingExisting { try await fileIndexStore.delete(root: Self.canonicalPath(for: root)) }
-        for try await batch in FileIndexScanner.batches(root: root) {
+        for try await batch in FileIndexScanner.batches(root: root, exclusionRules: exclusionRules) {
             try Task.checkCancellation()
             try await fileIndexStore.upsert(batch)
             refreshDiagnostics(fileCount: try await fileIndexStore.recordCount(), status: status)
@@ -298,7 +440,12 @@ final class SearchEnvironment: ObservableObject {
     private func scan(subtree: URL, belongingTo root: URL, status: SearchDiagnostics.Status) async throws {
         guard let fileIndexStore else { throw FileIndexStoreError.openFailed }
         try await fileIndexStore.delete(subtree: Self.canonicalPath(for: subtree))
-        for try await batch in FileIndexScanner.batches(root: subtree, indexRoot: root, includeRoot: true) {
+        for try await batch in FileIndexScanner.batches(
+            root: subtree,
+            indexRoot: root,
+            includeRoot: true,
+            exclusionRules: exclusionRules
+        ) {
             try Task.checkCancellation()
             try await fileIndexStore.upsert(batch)
             refreshDiagnostics(fileCount: try await fileIndexStore.recordCount(), status: status)
@@ -320,6 +467,12 @@ final class SearchEnvironment: ObservableObject {
             }
         case let .changed(url):
             guard let root = affectedRoots(for: url).first, let store = fileIndexStore else { return }
+            if FileIndexScanner.isExcluded(url, root: root, rules: exclusionRules) {
+                try? await store.delete(subtree: Self.canonicalPath(for: url))
+                let count = (try? await store.recordCount()) ?? 0
+                refreshDiagnostics(fileCount: count, status: .ready)
+                return
+            }
             if FileManager.default.fileExists(atPath: url.path),
                let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .contentTypeKey, .fileSizeKey, .creationDateKey, .contentModificationDateKey]) {
                 if values.isDirectory == true {
@@ -366,6 +519,20 @@ final class SearchEnvironment: ObservableObject {
         )
     }
 
+    private func updateIndexingProgress(
+        completedRoots: Int,
+        totalRoots: Int,
+        currentRoot: URL
+    ) {
+        let progress = totalRoots > 0
+            ? Double(completedRoots) / Double(totalRoots)
+            : 1
+        diagnostics.updateIndexingProgress(
+            progress,
+            rootName: currentRoot.lastPathComponent
+        )
+    }
+
     private static func live() -> SearchEnvironment {
         let catalog = ApplicationCatalog(
             discoverer: WorkspaceApplicationDiscoverer(),
@@ -374,6 +541,8 @@ final class SearchEnvironment: ObservableObject {
         let databaseURL = fileIndexDatabaseURL()
         let rootPersistence = SearchRootBookmarkStore()
         let roots = rootPersistence.loadRoots(defaults: defaultRoots())
+        let exclusionPersistence = SearchExclusionDefaultsStore()
+        let exclusionRules = exclusionPersistence.loadRules(defaults: SearchDiagnostics.defaultExclusionRules)
         let store = try? FileIndexStore.openRecovering(databaseURL: databaseURL).store
         return SearchEnvironment(
             applicationCatalog: catalog,
@@ -381,7 +550,9 @@ final class SearchEnvironment: ObservableObject {
             roots: roots,
             databaseURL: databaseURL,
             eventMonitor: FileEventMonitor(),
-            rootPersistence: rootPersistence
+            rootPersistence: rootPersistence,
+            exclusionRules: exclusionRules,
+            exclusionPersistence: exclusionPersistence
         )
     }
 

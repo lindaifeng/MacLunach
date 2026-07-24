@@ -3,7 +3,7 @@ set -euo pipefail
 
 app_path="${TOUCH_APP_PATH:-}"
 if [[ -z "$app_path" ]]; then
-  app_path=$(find "$HOME/Library/Developer/Xcode/DerivedData" -path '*/Build/Products/Release/触达.app' -print -quit)
+  app_path=$(find "$HOME/Library/Developer/Xcode/DerivedData" -path '*/Build/Products/Release/一念.app' -print -quit)
 fi
 
 if [[ -z "$app_path" || ! -d "$app_path" ]]; then

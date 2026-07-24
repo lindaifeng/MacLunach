@@ -14,6 +14,7 @@ public enum FileIndexScanner {
         root: URL,
         indexRoot: URL? = nil,
         includeRoot: Bool = false,
+        exclusionRules: [String]? = nil,
         batchSize: Int = 500
     ) -> AsyncThrowingStream<[FileIndexRecord], Error> {
         AsyncThrowingStream { continuation in
@@ -32,6 +33,7 @@ public enum FileIndexScanner {
                 )
                 var batch: [FileIndexRecord] = []
                 let recordRoot = (indexRoot ?? root).standardizedFileURL
+                let effectiveExclusionRules = exclusionRules ?? ["废纸篓", "Library/Caches"]
 
                 if includeRoot,
                    let record = makeRecord(for: root.standardizedFileURL, root: recordRoot, keys: keys) {
@@ -39,7 +41,7 @@ public enum FileIndexScanner {
                 }
 
                 while let url = enumerator?.nextObject() as? URL {
-                    if isExcluded(url, root: root) {
+                    if isExcluded(url, root: root, rules: effectiveExclusionRules) {
                         if (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true {
                             enumerator?.skipDescendants()
                         }
@@ -78,11 +80,38 @@ public enum FileIndexScanner {
         )
     }
 
-    private static func isExcluded(_ url: URL, root: URL) -> Bool {
+    public static func isExcluded(_ url: URL, root: URL, rules: [String]) -> Bool {
         let rootComponents = root.standardizedFileURL.pathComponents
         let components = Array(url.standardizedFileURL.pathComponents.dropFirst(rootComponents.count))
         guard !components.isEmpty else { return false }
-        if components.contains(".Trash") { return true }
-        return zip(components, components.dropFirst()).contains { $0 == "Library" && $1 == "Caches" }
+
+        return rules.contains { rawRule in
+            let rule = rawRule.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !rule.isEmpty else { return false }
+
+            if rule == "废纸篓" {
+                return components.contains(".Trash") || components.contains("废纸篓")
+            }
+            if rule == "系统目录" {
+                return components.first == "System"
+            }
+            if rule.hasPrefix("/") {
+                let excludedPath = URL(fileURLWithPath: rule).standardizedFileURL.path
+                let candidatePath = url.standardizedFileURL.path
+                return candidatePath == excludedPath || candidatePath.hasPrefix(excludedPath + "/")
+            }
+
+            let ruleComponents = rule
+                .split(separator: "/", omittingEmptySubsequences: true)
+                .map(String.init)
+            guard !ruleComponents.isEmpty, ruleComponents.count <= components.count else { return false }
+
+            for startIndex in 0...(components.count - ruleComponents.count) {
+                if Array(components[startIndex..<(startIndex + ruleComponents.count)]) == ruleComponents {
+                    return true
+                }
+            }
+            return false
+        }
     }
 }

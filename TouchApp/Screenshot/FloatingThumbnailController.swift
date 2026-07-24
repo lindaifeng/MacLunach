@@ -5,11 +5,18 @@ struct ScreenshotPostCapturePolicy: Equatable {
     var copiesToClipboard: Bool
     var showsThumbnail: Bool
     var beginsAnnotation: Bool
+    var savesToConfiguredLocation: Bool
 
-    init(copiesToClipboard: Bool, showsThumbnail: Bool, beginsAnnotation: Bool) {
+    init(
+        copiesToClipboard: Bool,
+        showsThumbnail: Bool,
+        beginsAnnotation: Bool,
+        savesToConfiguredLocation: Bool = false
+    ) {
         self.copiesToClipboard = copiesToClipboard
         self.showsThumbnail = showsThumbnail
         self.beginsAnnotation = beginsAnnotation
+        self.savesToConfiguredLocation = savesToConfiguredLocation
     }
 
     init(configuration: ScreenshotFeatureConfiguration) {
@@ -18,18 +25,22 @@ struct ScreenshotPostCapturePolicy: Equatable {
             copiesToClipboard = true
             showsThumbnail = configuration.showsFloatingThumbnail
             beginsAnnotation = false
+            savesToConfiguredLocation = false
         case .saveOnly:
             copiesToClipboard = false
             showsThumbnail = false
             beginsAnnotation = false
+            savesToConfiguredLocation = true
         case .copyAndSave:
             copiesToClipboard = true
             showsThumbnail = false
             beginsAnnotation = false
+            savesToConfiguredLocation = true
         case .annotate:
             copiesToClipboard = false
             showsThumbnail = false
             beginsAnnotation = true
+            savesToConfiguredLocation = false
         }
     }
 }

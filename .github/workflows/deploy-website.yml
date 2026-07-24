@@ -44,6 +44,8 @@ jobs:
       - name: Build site
         env:
           GITHUB_PAGES: "true"
+          VITE_DOWNLOAD_URL: https://github.com/lindaifeng/MacLunach/releases/download/v0.1.0-beta.1/Touch.dmg
+          VITE_APP_VERSION: 0.1.0-beta.1
         run: npm run build
 
       - name: Upload Pages artifact

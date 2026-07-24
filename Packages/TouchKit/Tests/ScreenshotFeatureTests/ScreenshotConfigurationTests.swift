@@ -13,7 +13,7 @@ import TouchFeatureAPI
         .colorPicker: KeyboardShortcut(modifiers: [.control, .option], key: "c")
     ]
     configuration.saveLocation = .customBookmark(Data([0x01, 0x02, 0x03]))
-    configuration.namingTemplate = "触达-{date}-{time}-{counter}"
+    configuration.namingTemplate = "一念-{date}-{time}-{counter}"
     configuration.output = ScreenshotOutputOptions(format: .jpeg, quality: 0.81)
     configuration.afterCaptureAction = .copyAndSave
     configuration.showsFloatingThumbnail = false

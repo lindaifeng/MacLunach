@@ -3,9 +3,13 @@ import SwiftUI
 
 @MainActor
 final class LauncherPanelController: NSObject {
+    /// 以 macOS Retina 2x 坐标呈现 2160 × 1120 px 的设计画布。
+    static let contentSize = NSSize(width: 1_080, height: 560)
+
     private let panel: LauncherPanel
     private let themeStore: ThemeStore
     private let searchCoordinator: SearchCoordinator
+    private let featureStore: FeatureAreaStore
 
     init(
         searchEnvironment: SearchEnvironment,
@@ -14,24 +18,39 @@ final class LauncherPanelController: NSObject {
         themeStore: ThemeStore
     ) {
         self.themeStore = themeStore
-        searchCoordinator = SearchCoordinator(environment: searchEnvironment)
+        self.featureStore = featureStore
+        searchCoordinator = SearchCoordinator(
+            environment: searchEnvironment,
+            actionSearch: { [weak featureStore] query in
+                featureStore?.searchLauncherActions(query: query) ?? []
+            },
+            actionActivation: { [weak featureStore] result in
+                featureStore?.performLauncherSearchResult(result)
+            }
+        )
         panel = LauncherPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 980, height: 500),
+            contentRect: NSRect(origin: .zero, size: Self.contentSize),
             styleMask: [.borderless, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
         super.init()
         panel.isFloatingPanel = true
+        // 启动器与普通功能区保持同一层级，由当前点击/Key Window 决定谁显示在最前。
         panel.level = .floating
-        panel.hidesOnDeactivate = true
+        // UI 测试宿主会在启动后短暂取得焦点；此时不应让待测面板立即消失。
+        panel.hidesOnDeactivate = !Self.isRunningUITests
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = true
+        panel.isMovableByWindowBackground = false
         panel.isRestorable = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.searchKeyHandler = { [weak self] event in
             self?.handleSearchKey(event) ?? false
+        }
+        panel.outsideSearchClickHandler = { [weak self] in
+            self?.searchCoordinator.exitActionSearch()
         }
         panel.contentView = NSHostingView(
             rootView: LauncherView(searchCoordinator: searchCoordinator)
@@ -63,11 +82,31 @@ final class LauncherPanelController: NSObject {
     }
 
     private func present() {
-        panel.center()
+        searchCoordinator.prepareForPresentation()
+        centerPanelOnActiveScreen()
         NSApp.activate()
-        panel.makeKeyAndOrderFront(nil)
-        panel.orderFrontRegardless()
         NotificationCenter.default.post(name: .touchLauncherWillDisplay, object: nil)
+        panel.makeKeyAndOrderFront(nil)
+        panel.makeFirstResponder(nil)
+        panel.orderFrontRegardless()
+    }
+
+    private func centerPanelOnActiveScreen() {
+        let mouseLocation = NSEvent.mouseLocation
+        let targetScreen = NSScreen.screens.first { $0.frame.contains(mouseLocation) }
+            ?? panel.screen
+            ?? NSScreen.main
+            ?? NSScreen.screens.first
+        guard let targetScreen else { return }
+
+        panel.setFrameOrigin(Self.centeredOrigin(panelSize: panel.frame.size, in: targetScreen.frame))
+    }
+
+    static func centeredOrigin(panelSize: NSSize, in screenFrame: NSRect) -> NSPoint {
+        NSPoint(
+            x: screenFrame.midX - panelSize.width / 2,
+            y: screenFrame.midY - panelSize.height / 2
+        )
     }
 
     func hide() {
@@ -82,7 +121,7 @@ final class LauncherPanelController: NSObject {
     private func handleSearchKey(_ event: NSEvent) -> Bool {
         switch event.keyCode {
         case 48:
-            searchCoordinator.toggleMode()
+            searchCoordinator.advanceMode()
             return true
         case 53:
             if searchCoordinator.clearOrDismiss() == .dismiss { hide() }
@@ -100,8 +139,29 @@ final class LauncherPanelController: NSObject {
             searchCoordinator.previewSelected()
             return true
         default:
-            return false
+            return performFeatureIfMapped(event)
         }
+    }
+
+    private func performFeatureIfMapped(_ event: NSEvent) -> Bool {
+        guard searchCoordinator.mode == .actions,
+              !(panel.firstResponder is any NSTextInputClient),
+              searchCoordinator.query.isEmpty,
+              !event.isARepeat,
+              event.modifierFlags.intersection([.command, .option, .control]).isEmpty,
+              let characters = event.charactersIgnoringModifiers,
+              let character = characters.first,
+              !character.isWhitespace else { return false }
+
+        let key = String(character).lowercased()
+        guard featureStore.hasLauncherAssignment(for: key) else { return false }
+
+        Task { await featureStore.performLauncherKey(key) }
+        return true
+    }
+
+    private static var isRunningUITests: Bool {
+        ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
     }
 
     func runPerformanceMeasurement(samples: Int, outputURL: URL) async {

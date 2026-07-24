@@ -105,6 +105,7 @@ final class AnnotationEditorController: NSWindowController, NSWindowDelegate {
         window.isRestorable = false
         window.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
         window.minSize = NSSize(width: 820, height: 560)
+        window.isMovableByWindowBackground = false
         window.contentViewController = NSHostingController(
             rootView: AnnotationEditorView(
                 state: state,
@@ -114,6 +115,7 @@ final class AnnotationEditorController: NSWindowController, NSWindowDelegate {
             )
             .environmentObject(themeStore)
         )
+        installWindowTopDragRegion(in: window)
         window.center()
         window.delegate = self
         installKeyMonitor()

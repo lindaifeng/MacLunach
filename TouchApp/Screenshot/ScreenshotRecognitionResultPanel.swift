@@ -231,19 +231,26 @@ private final class ScreenshotRecognitionWindowController: NSWindowController, N
 
         let panel = ScreenshotRecognitionNSPanel(
             contentRect: CGRect(x: 0, y: 0, width: 560, height: 520),
-            styleMask: [.titled, .closable, .resizable, .fullSizeContentView],
+            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
-        panel.title = "文字识别"
+        panel.title = ""
+        panel.titleVisibility = .hidden
+        panel.titlebarAppearsTransparent = true
         panel.identifier = NSUserInterfaceItemIdentifier("screenshot.recognition.\(artifact.id.uuidString)")
         panel.setAccessibilityLabel("文字识别结果")
         panel.isReleasedWhenClosed = false
         panel.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
         panel.minSize = CGSize(width: 440, height: 360)
+        panel.backgroundColor = .clear
+        panel.isOpaque = false
+        panel.hasShadow = true
+        panel.isMovableByWindowBackground = false
         panel.contentViewController = NSHostingController(
             rootView: ScreenshotRecognitionResultView(model: model)
         )
+        installWindowTopDragRegion(in: panel)
         panel.center()
 
         super.init(window: panel)
@@ -275,64 +282,92 @@ private final class ScreenshotRecognitionNSPanel: NSPanel {
 private struct ScreenshotRecognitionResultView: View {
     @ObservedObject var model: ScreenshotRecognitionPanelModel
 
+    private let accent = Color(red: 0.13, green: 0.52, blue: 0.96)
+    private let panelBackground = Color(nsColor: NSColor(
+        calibratedRed: 0.075,
+        green: 0.085,
+        blue: 0.105,
+        alpha: 0.98
+    ))
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 0) {
             header
-            Divider()
+                .padding(.horizontal, 18)
+                .padding(.vertical, 15)
+            separator
             content
-            Divider()
+                .padding(18)
+            separator
             footer
+                .padding(.horizontal, 18)
+                .padding(.vertical, 13)
         }
-        .padding(20)
         .frame(minWidth: 440, minHeight: 360)
+        .background(panelBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(Color.white.opacity(0.10), lineWidth: 1)
+        }
+        .padding(8)
+        .background(Color.clear)
+        .ignoresSafeArea(.container, edges: .top)
     }
 
     private var header: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 11) {
             Image(systemName: "text.viewfinder")
-                .font(.system(size: 28, weight: .semibold))
-                .foregroundStyle(.tint)
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 38, height: 38)
+                .background(accent.gradient, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             VStack(alignment: .leading, spacing: 3) {
                 Text("文字与二维码识别")
-                    .font(.title3.weight(.semibold))
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundStyle(.white)
                 Text(model.isRetrying ? "正在重新识别…" : summary)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.white.opacity(0.54))
             }
             Spacer()
             if model.isRetrying {
-                ProgressView().controlSize(.small)
+                ProgressView()
+                    .controlSize(.small)
+                    .tint(.white.opacity(0.75))
             }
         }
+        .padding(.leading, 58)
     }
 
     @ViewBuilder
     private var content: some View {
         switch model.presentation {
         case let .failure(message):
-            ContentUnavailableView(
-                "识别失败",
-                systemImage: "exclamationmark.triangle",
-                description: Text(message)
+            stateView(
+                title: "识别失败",
+                message: message,
+                symbol: "exclamationmark.triangle.fill",
+                color: .orange
             )
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
         case let .result(result):
             ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: 14) {
                     recognizedText(result)
                     if !result.barcodes.isEmpty {
                         barcodeList(result.barcodes)
                     }
                     if result.fullText.isEmpty, result.barcodes.isEmpty {
-                        ContentUnavailableView(
-                            "未识别到内容",
-                            systemImage: "text.magnifyingglass",
-                            description: Text("可以查看原图后调整选区，或重新识别。")
+                        stateView(
+                            title: "未识别到内容",
+                            message: "可以查看原图后调整选区，或重新识别。",
+                            symbol: "text.magnifyingglass",
+                            color: accent
                         )
-                        .frame(maxWidth: .infinity)
                     }
                 }
             }
+            .scrollIndicators(.hidden)
         }
     }
 
@@ -341,42 +376,54 @@ private struct ScreenshotRecognitionResultView: View {
         if !result.fullText.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
-                    Label("识别文字", systemImage: "text.alignleft")
-                        .font(.headline)
+                    sectionTitle("识别文字", symbol: "text.alignleft")
                     Spacer()
-                    Button("复制文字") { model.onCopy(result.fullText) }
+                    RecognitionActionButton(title: "复制", symbol: "doc.on.doc") {
+                        model.onCopy(result.fullText)
+                    }
                         .accessibilityIdentifier("screenshot.recognition.copyText")
                 }
                 Text(result.fullText)
                     .textSelection(.enabled)
+                    .font(.system(size: 13))
+                    .foregroundStyle(.white.opacity(0.88))
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(12)
-                    .background(.quaternary.opacity(0.7), in: RoundedRectangle(cornerRadius: 10))
+                    .padding(14)
+                    .background(Color.white.opacity(0.055), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 11, style: .continuous)
+                            .stroke(Color.white.opacity(0.07), lineWidth: 1)
+                    }
             }
         }
     }
 
     private func barcodeList(_ barcodes: [ScreenshotRecognizedBarcode]) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            Label("二维码（\(barcodes.count)）", systemImage: "qrcode.viewfinder")
-                .font(.headline)
+            sectionTitle("二维码（\(barcodes.count)）", symbol: "qrcode.viewfinder")
             ForEach(barcodes) { barcode in
                 HStack(alignment: .top, spacing: 12) {
                     Image(systemName: safeURL(for: barcode) == nil ? "qrcode" : "link")
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(accent)
                     Text(barcode.payload)
                         .textSelection(.enabled)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.white.opacity(0.82))
                         .frame(maxWidth: .infinity, alignment: .leading)
                     if let url = safeURL(for: barcode) {
-                        Button("打开链接") { model.onOpenURL(url) }
+                        RecognitionActionButton(title: "打开", symbol: "arrow.up.right") {
+                            model.onOpenURL(url)
+                        }
                             .accessibilityIdentifier("screenshot.recognition.openURL")
                     } else {
-                        Button("复制内容") { model.onCopy(barcode.payload) }
+                        RecognitionActionButton(title: "复制", symbol: "doc.on.doc") {
+                            model.onCopy(barcode.payload)
+                        }
                             .accessibilityIdentifier("screenshot.recognition.copyBarcode")
                     }
                 }
-                .padding(10)
-                .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
+                .padding(12)
+                .background(Color.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             }
         }
     }
@@ -387,14 +434,20 @@ private struct ScreenshotRecognitionResultView: View {
     }
 
     private var footer: some View {
-        HStack {
-            Button("查看原图") { model.onOpenOriginal(model.artifact) }
+        HStack(spacing: 8) {
+            RecognitionActionButton(title: "查看原图", symbol: "photo") {
+                model.onOpenOriginal(model.artifact)
+            }
                 .accessibilityIdentifier("screenshot.recognition.openOriginal")
-            Button("重新识别") { model.retry() }
+            RecognitionActionButton(title: "重新识别", symbol: "arrow.clockwise") {
+                model.retry()
+            }
                 .disabled(model.isRetrying)
                 .accessibilityIdentifier("screenshot.recognition.retry")
             Spacer()
-            Button("完成") { model.onClose() }
+            RecognitionActionButton(title: "完成", symbol: "checkmark", isPrimary: true) {
+                model.onClose()
+            }
                 .keyboardShortcut(.defaultAction)
                 .accessibilityIdentifier("screenshot.recognition.done")
         }
@@ -407,5 +460,84 @@ private struct ScreenshotRecognitionResultView: View {
         case let .result(result):
             "\(result.textBlocks.count) 段文字 · \(result.barcodes.count) 个二维码"
         }
+    }
+
+    private var separator: some View {
+        Rectangle()
+            .fill(Color.white.opacity(0.075))
+            .frame(height: 1)
+    }
+
+    private func sectionTitle(_ title: String, symbol: String) -> some View {
+        Label(title, systemImage: symbol)
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(.white.opacity(0.72))
+    }
+
+    private func iconButton(
+        symbol: String,
+        label: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.70))
+                .frame(width: 28, height: 28)
+                .background(Color.white.opacity(0.06), in: Circle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
+    }
+
+    private func stateView(
+        title: String,
+        message: String,
+        symbol: String,
+        color: Color
+    ) -> some View {
+        VStack(spacing: 10) {
+            Image(systemName: symbol)
+                .font(.system(size: 28, weight: .medium))
+                .foregroundStyle(color)
+            Text(title)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(.white)
+            Text(message)
+                .font(.system(size: 12))
+                .foregroundStyle(.white.opacity(0.52))
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(30)
+    }
+}
+
+private struct RecognitionActionButton: View {
+    let title: String
+    let symbol: String
+    var isPrimary = false
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Label(title, systemImage: symbol)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(isPrimary ? Color.white : Color.white.opacity(0.76))
+                .padding(.horizontal, 11)
+                .frame(height: 30)
+                .background(
+                    isPrimary
+                        ? Color(red: 0.13, green: 0.52, blue: 0.96)
+                        : Color.white.opacity(0.065),
+                    in: Capsule()
+                )
+                .overlay {
+                    if !isPrimary {
+                        Capsule().stroke(Color.white.opacity(0.08), lineWidth: 1)
+                    }
+                }
+        }
+        .buttonStyle(.plain)
     }
 }

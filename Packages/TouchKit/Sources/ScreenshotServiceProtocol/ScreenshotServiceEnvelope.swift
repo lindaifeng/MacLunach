@@ -41,6 +41,7 @@ public enum ScreenshotServiceResponsePayload: Codable, Equatable, Sendable {
     case recognition(Data)
     case artifactExport(Data)
     case artifactDeleted
+    case artifactRegistered
     case annotationProjectSaved(Data)
     case annotationProjectLoaded(Data)
     case annotationDocumentExported(Data)

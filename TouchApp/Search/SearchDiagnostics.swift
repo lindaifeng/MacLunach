@@ -2,6 +2,8 @@ import Foundation
 
 @MainActor
 final class SearchDiagnostics: ObservableObject {
+    static let defaultExclusionRules = ["废纸篓", "Library/Caches", "系统目录"]
+
     enum Status: Equatable {
         case waiting
         case indexing
@@ -25,21 +27,28 @@ final class SearchDiagnostics: ObservableObject {
     @Published private(set) var databaseSize: Int64
     @Published private(set) var lastUpdatedAt: Date?
     @Published private(set) var status: Status
-
-    let exclusionRules = ["废纸篓", "Library/Caches", "系统目录"]
+    @Published private(set) var exclusionRules: [String]
+    @Published private(set) var indexingProgress: Double?
+    @Published private(set) var indexingRootName: String?
 
     init(
         roots: [URL],
         fileCount: Int = 0,
         databaseSize: Int64 = 0,
         lastUpdatedAt: Date? = nil,
-        status: Status = .waiting
+        status: Status = .waiting,
+        exclusionRules: [String] = SearchDiagnostics.defaultExclusionRules,
+        indexingProgress: Double? = nil,
+        indexingRootName: String? = nil
     ) {
         self.roots = roots
         self.fileCount = fileCount
         self.databaseSize = databaseSize
         self.lastUpdatedAt = lastUpdatedAt
         self.status = status
+        self.exclusionRules = exclusionRules
+        self.indexingProgress = indexingProgress
+        self.indexingRootName = indexingRootName
     }
 
     var rootNames: [String] {
@@ -58,12 +67,29 @@ final class SearchDiagnostics: ObservableObject {
         fileCount: Int? = nil,
         databaseSize: Int64? = nil,
         lastUpdatedAt: Date?? = nil,
-        status: Status? = nil
+        status: Status? = nil,
+        exclusionRules: [String]? = nil
     ) {
         if let roots { self.roots = roots }
         if let fileCount { self.fileCount = fileCount }
         if let databaseSize { self.databaseSize = databaseSize }
         if let lastUpdatedAt { self.lastUpdatedAt = lastUpdatedAt }
-        if let status { self.status = status }
+        if let status {
+            self.status = status
+            if status != .indexing, status != .rebuilding {
+                indexingProgress = nil
+                indexingRootName = nil
+            }
+        }
+        if let exclusionRules { self.exclusionRules = exclusionRules }
+    }
+
+    func updateIndexingProgress(_ progress: Double, rootName: String?) {
+        indexingProgress = min(max(progress, 0), 1)
+        indexingRootName = rootName
+    }
+
+    var isActivelyIndexing: Bool {
+        status == .indexing || status == .rebuilding
     }
 }

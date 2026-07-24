@@ -6,12 +6,14 @@ final class SelectionOverlayView: NSView {
     private let display: ScreenshotDisplayDescriptor
     private weak var controller: SelectionOverlayController?
     private let sizeLabel = NSTextField(labelWithString: "")
+    private let toolHoverLabel = ToolHoverLabelView()
     private let toolbar: SelectionToolbarView
     private var selection: CGRect?
     private var pointer = CGPoint.zero
     private var scaleFactor: CGFloat = 1
     private var showsLabel = false
     private var annotations: [SelectionAnnotation] = []
+    private var selectedAnnotationID: UUID?
     private var trackingAreaReference: NSTrackingArea?
     private var inlineTextEditor: SelectionInlineTextEditor?
 
@@ -29,25 +31,41 @@ final class SelectionOverlayView: NSView {
         sizeLabel.identifier = NSUserInterfaceItemIdentifier("screenshot.selection.size-label")
         sizeLabel.setAccessibilityIdentifier("screenshot.selection.size-label")
         sizeLabel.setAccessibilityLabel("选区尺寸")
-        sizeLabel.textColor = .white
-        sizeLabel.backgroundColor = NSColor.black.withAlphaComponent(0.78)
+        sizeLabel.textColor = NSColor(calibratedWhite: 0.93, alpha: 1)
+        sizeLabel.backgroundColor = NSColor(calibratedWhite: 0.20, alpha: 0.8)
         sizeLabel.drawsBackground = true
         sizeLabel.isBordered = false
         sizeLabel.alignment = .center
-        sizeLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
+        sizeLabel.font = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
         sizeLabel.wantsLayer = true
-        sizeLabel.layer?.cornerRadius = 5
+        sizeLabel.layer?.cornerRadius = 3
         sizeLabel.isHidden = true
         addSubview(sizeLabel)
 
         toolbar.isHidden = true
         addSubview(toolbar)
+
+        toolHoverLabel.isHidden = true
+        toolHoverLabel.identifier = NSUserInterfaceItemIdentifier("screenshot.selection.toolbar.hover-label")
+        toolHoverLabel.setAccessibilityIdentifier("screenshot.selection.toolbar.hover-label")
+        addSubview(toolHoverLabel, positioned: .above, relativeTo: toolbar)
+        toolbar.onHoverTitleChanged = { [weak self] title, buttonCenterX in
+            self?.updateToolHoverLabel(title: title, buttonCenterX: buttonCenterX)
+        }
     }
 
     required init?(coder: NSCoder) { nil }
 
     override var acceptsFirstResponder: Bool { true }
     override var isFlipped: Bool { false }
+
+    var containsCurrentFirstResponder: Bool {
+        if toolbar.keepsOverlayFocusSuspended { return true }
+        guard let responder = window?.firstResponder else { return false }
+        if responder === self { return true }
+        guard let responderView = responder as? NSView else { return false }
+        return responderView === inlineTextEditor || responderView.isDescendant(of: self)
+    }
 
     override func updateTrackingAreas() {
         if let trackingAreaReference { removeTrackingArea(trackingAreaReference) }
@@ -72,20 +90,25 @@ final class SelectionOverlayView: NSView {
         windowShadowIncluded: Bool,
         showsWindowShadow: Bool,
         toolbarStatus: String,
-        annotations: [SelectionAnnotation]
+        annotationOptions: SelectionAnnotationOptions,
+        annotations: [SelectionAnnotation],
+        selectedAnnotationID: UUID?
     ) {
         self.selection = selection
         self.pointer = pointer
         self.scaleFactor = scaleFactor
         self.showsLabel = showsLabel && !showsToolbar
         self.annotations = annotations
+        self.selectedAnnotationID = selectedAnnotationID
+        window?.invalidateCursorRects(for: self)
         updateSizeLabel()
         updateToolbar(
             showsToolbar: showsToolbar,
             selectedItem: selectedToolbarItem,
             windowShadowIncluded: windowShadowIncluded,
             showsWindowShadow: showsWindowShadow,
-            status: toolbarStatus
+            status: toolbarStatus,
+            annotationOptions: annotationOptions
         )
         needsDisplay = true
     }
@@ -94,40 +117,59 @@ final class SelectionOverlayView: NSView {
     func beginTextEditing(
         at desktopPoint: CGPoint,
         kind: ScreenshotAnnotationKind,
-        completion: @escaping (String, CGRect) -> Void
+        fontSize: Double,
+        color: ScreenshotAnnotationColor = .red,
+        initialValue: String = "",
+        initialFrame: CGRect? = nil,
+        completion: @escaping (String?, CGRect) -> Void
     ) -> Bool {
-        guard kind == .text || kind == .note,
+        guard kind == .text || kind == .note || kind == .callout,
               let selection,
               let localSelection = localRect(for: selection) else { return false }
         commitInlineTextEditing()
 
-        let preferredSize = kind == .note
-            ? CGSize(width: 220, height: 96)
-            : CGSize(width: 240, height: 34)
-        let size = CGSize(
+        let preferredSize: CGSize = switch kind {
+        case .note: CGSize(width: 220, height: 96)
+        case .callout: CGSize(width: 120, height: 28)
+        default: CGSize(width: 240, height: 34)
+        }
+        let requestedFrame = initialFrame.flatMap(localRect(for:))
+        let size = requestedFrame?.size ?? CGSize(
             width: min(preferredSize.width, localSelection.width),
             height: min(preferredSize.height, localSelection.height)
         )
         guard size.width >= 40, size.height >= 24 else { return false }
         let localAnchor = localPoint(for: desktopPoint)
-        let origin = CGPoint(
+        let origin = requestedFrame?.origin ?? CGPoint(
             x: min(max(localAnchor.x, localSelection.minX), localSelection.maxX - size.width),
             y: min(max(localAnchor.y - size.height, localSelection.minY), localSelection.maxY - size.height)
         )
-        let editor = SelectionInlineTextEditor(kind: kind)
+        let editor = SelectionInlineTextEditor(kind: kind, fontSize: fontSize, color: color)
         editor.frame = CGRect(origin: origin, size: size)
+        editor.resizeBounds = localSelection
+        editor.string = initialValue
+        editor.fitContentToText()
         editor.onFinish = { [weak self, weak editor] value in
             guard let self, let editor else { return }
             let desktopRect = self.desktopRect(for: editor.frame)
             editor.removeFromSuperview()
             if self.inlineTextEditor === editor { self.inlineTextEditor = nil }
-            guard let value else { return }
             completion(value, desktopRect)
         }
         inlineTextEditor = editor
         addSubview(editor)
+        window?.makeKey()
         window?.makeFirstResponder(editor)
+        DispatchQueue.main.async { [weak self, weak editor] in
+            guard let self, let editor, self.inlineTextEditor === editor else { return }
+            self.window?.makeKey()
+            self.window?.makeFirstResponder(editor)
+        }
         return true
+    }
+
+    func updateInlineTextStyle(fontSize: Double, color: ScreenshotAnnotationColor) {
+        inlineTextEditor?.updateStyle(fontSize: fontSize, color: color)
     }
 
     func commitInlineTextEditing() {
@@ -154,14 +196,15 @@ final class SelectionOverlayView: NSView {
             mask.appendRect(localSelection)
         }
         mask.windingRule = .evenOdd
-        NSColor.black.withAlphaComponent(0.38).setFill()
+        NSColor.black.withAlphaComponent(0.6).setFill()
         mask.fill()
 
         guard let selection, let localSelection = localRect(for: selection) else { return }
 
         drawAnnotations(annotations, clippedTo: localSelection)
+        drawSelectedAnnotation()
 
-        NSColor.white.setStroke()
+        NSColor(calibratedRed: 0, green: 0.60, blue: 1, alpha: 1).setStroke()
         let border = NSBezierPath(rect: localSelection.insetBy(dx: 0.5, dy: 0.5))
         border.lineWidth = 1
         border.stroke()
@@ -169,11 +212,60 @@ final class SelectionOverlayView: NSView {
         for center in SelectionGeometry.handleCenters(for: selection).values {
             guard displayBounds.contains(center) else { continue }
             let local = localPoint(for: center)
-            let handleRect = CGRect(x: local.x - 3, y: local.y - 3, width: 6, height: 6)
+            let handleRect = CGRect(x: local.x - 4, y: local.y - 4, width: 8, height: 8)
             NSColor.white.setFill()
-            NSBezierPath(ovalIn: handleRect).fill()
-            NSColor.black.withAlphaComponent(0.6).setStroke()
-            NSBezierPath(ovalIn: handleRect).stroke()
+            NSBezierPath(rect: handleRect).fill()
+            NSColor(calibratedRed: 0, green: 0.60, blue: 1, alpha: 1).setStroke()
+            let handleBorder = NSBezierPath(rect: handleRect.insetBy(dx: 0.5, dy: 0.5))
+            handleBorder.lineWidth = 1
+            handleBorder.stroke()
+        }
+    }
+
+    private func drawSelectedAnnotation() {
+        guard let selectedAnnotationID,
+              let annotation = annotations.first(where: { $0.id == selectedAnnotationID }),
+              !annotation.points.isEmpty else { return }
+        let points = annotation.points.map(localPoint(for:))
+        let minX = points.map(\.x).min() ?? 0
+        let minY = points.map(\.y).min() ?? 0
+        let maxX = points.map(\.x).max() ?? minX
+        let maxY = points.map(\.y).max() ?? minY
+        let minimumSize: CGFloat = annotation.kind == .numberedMarker
+            ? max(20, CGFloat(annotation.text?.fontSize ?? 18) * 1.56)
+            : 12
+        let rawBox = CGRect(
+            x: minX - max(0, (minimumSize - (maxX - minX)) / 2),
+            y: minY - max(0, (minimumSize - (maxY - minY)) / 2),
+            width: max(minimumSize, maxX - minX),
+            height: max(minimumSize, maxY - minY)
+        )
+        let box = rawBox.insetBy(dx: -6, dy: -6)
+        let outline = NSBezierPath(rect: box)
+        outline.setLineDash([4, 3], count: 2, phase: 0)
+        outline.lineWidth = 1
+        NSColor.controlAccentColor.withAlphaComponent(0.9).setStroke()
+        outline.stroke()
+        let handles: [CGPoint]
+        switch annotation.kind {
+        case .arrow, .line, .rectangle, .ellipse:
+            handles = [points[0], points[points.count - 1]]
+        case .callout where points.count >= 4:
+            handles = [points[2], points[3]]
+        default:
+            handles = [
+                CGPoint(x: rawBox.minX, y: rawBox.minY),
+                CGPoint(x: rawBox.maxX, y: rawBox.maxY)
+            ]
+        }
+        for endpoint in handles {
+            let handle = CGRect(x: endpoint.x - 4, y: endpoint.y - 4, width: 8, height: 8)
+            NSColor.white.setFill()
+            NSBezierPath(ovalIn: handle).fill()
+            NSColor.controlAccentColor.setStroke()
+            let border = NSBezierPath(ovalIn: handle.insetBy(dx: 0.5, dy: 0.5))
+            border.lineWidth = 1
+            border.stroke()
         }
     }
 
@@ -253,6 +345,9 @@ final class SelectionOverlayView: NSView {
             case .numberedMarker:
                 drawNumberedMarker(annotation, points: points)
                 continue
+            case .callout:
+                drawCalloutAnnotation(annotation, points: points)
+                continue
             case .note:
                 drawNoteAnnotation(annotation, points: points)
                 continue
@@ -323,6 +418,48 @@ final class SelectionOverlayView: NSView {
         let value = NSAttributedString(string: text.value, attributes: attributes)
         let size = value.size()
         value.draw(at: CGPoint(x: center.x - size.width / 2, y: center.y - size.height / 2))
+    }
+
+    private func drawCalloutAnnotation(_ annotation: SelectionAnnotation, points: [CGPoint]) {
+        guard points.count >= 2 else { return }
+        let color = NSColor(
+            calibratedRed: annotation.style.color.red,
+            green: annotation.style.color.green,
+            blue: annotation.style.color.blue,
+            alpha: annotation.style.color.alpha
+        )
+        color.setStroke()
+        let connector = NSBezierPath()
+        connector.lineWidth = max(1, annotation.style.lineWidth)
+        connector.lineCapStyle = .round
+        connector.move(to: points[0])
+        connector.line(to: points[1])
+        connector.stroke()
+        color.setFill()
+        let dotRadius = max(4, CGFloat(annotation.style.lineWidth) * 1.4)
+        NSBezierPath(ovalIn: CGRect(
+            x: points[0].x - dotRadius,
+            y: points[0].y - dotRadius,
+            width: dotRadius * 2,
+            height: dotRadius * 2
+        )).fill()
+
+        guard points.count >= 4,
+              let rect = annotationRect(Array(points[2...3])),
+              rect.width > 4,
+              rect.height > 4 else { return }
+        NSBezierPath(roundedRect: rect, xRadius: 5, yRadius: 5).fill()
+        guard let text = annotation.text, !text.value.isEmpty else { return }
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineBreakMode = .byWordWrapping
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: text.fontSize, weight: .medium),
+            .foregroundColor: NSColor.white,
+            .paragraphStyle: paragraph
+        ]
+        NSAttributedString(string: text.value, attributes: attributes).draw(
+            in: rect.insetBy(dx: 6, dy: 4)
+        )
     }
 
     private func drawNoteAnnotation(_ annotation: SelectionAnnotation, points: [CGPoint]) {
@@ -496,6 +633,24 @@ final class SelectionOverlayView: NSView {
 
     override func resetCursorRects() {
         addCursorRect(bounds, cursor: .crosshair)
+        if let selectedAnnotationID,
+           let annotation = annotations.first(where: { $0.id == selectedAnnotationID }),
+           let desktopRect = annotation.calloutBoxRect,
+           let rect = localRect(for: desktopRect) {
+            let border: CGFloat = 7
+            let center = rect.insetBy(dx: border, dy: border)
+            if !center.isEmpty {
+                addCursorRect(center, cursor: .iBeam)
+            }
+            addCursorRect(CGRect(x: rect.minX - border, y: rect.minY - border, width: rect.width + border * 2, height: border * 2), cursor: .openHand)
+            addCursorRect(CGRect(x: rect.minX - border, y: rect.maxY - border, width: rect.width + border * 2, height: border * 2), cursor: .openHand)
+            addCursorRect(CGRect(x: rect.minX - border, y: rect.minY + border, width: border * 2, height: max(0, rect.height - border * 2)), cursor: .openHand)
+            addCursorRect(CGRect(x: rect.maxX - border, y: rect.minY + border, width: border * 2, height: max(0, rect.height - border * 2)), cursor: .openHand)
+            for endpoint in [annotation.points[2], annotation.points[3]] {
+                let local = localPoint(for: endpoint)
+                addCursorRect(CGRect(x: local.x - 8, y: local.y - 8, width: 16, height: 16), cursor: .resizeLeftRight)
+            }
+        }
         if !toolbar.isHidden {
             addCursorRect(toolbar.frame, cursor: .arrow)
         }
@@ -519,6 +674,20 @@ final class SelectionOverlayView: NSView {
     }
 
     override func keyDown(with event: NSEvent) {
+        if let inlineTextEditor {
+            if event.keyCode == 53 {
+                inlineTextEditor.finish(commit: false)
+            } else if event.keyCode == 36 || event.keyCode == 52 || event.keyCode == 76 {
+                if inlineTextEditor.kind == .text || event.modifierFlags.contains(.command) {
+                    inlineTextEditor.finish(commit: true)
+                } else {
+                    inlineTextEditor.handleRoutedKeyDown(event)
+                }
+            } else {
+                inlineTextEditor.handleRoutedKeyDown(event)
+            }
+            return
+        }
         controller?.keyDown(event)
     }
 
@@ -576,7 +745,7 @@ final class SelectionOverlayView: NSView {
         sizeLabel.setAccessibilityLabel("选区尺寸 \(text) 像素")
         sizeLabel.setAccessibilityValue("\(text) 像素")
         let textSize = sizeLabel.intrinsicContentSize
-        let labelSize = CGSize(width: max(92, textSize.width + 18), height: 28)
+        let labelSize = CGSize(width: max(84, textSize.width + 14), height: 25)
         let localPointer = localPoint(for: pointer)
         var preferred = CGPoint(x: localPointer.x, y: localPointer.y)
         if !bounds.contains(localPointer) {
@@ -595,31 +764,56 @@ final class SelectionOverlayView: NSView {
         selectedItem: SelectionToolbarItem?,
         windowShadowIncluded: Bool,
         showsWindowShadow: Bool,
-        status: String
+        status: String,
+        annotationOptions: SelectionAnnotationOptions
     ) {
         guard showsToolbar,
               let selection,
               let localSelection = localRect(for: selection) else {
             toolbar.isHidden = true
+            toolHoverLabel.isHidden = true
             window?.invalidateCursorRects(for: self)
             return
         }
 
         let pixels = SelectionGeometry.pixelSize(for: selection, scaleFactor: scaleFactor)
-        toolbar.update(
-            pixelSize: pixels,
-            windowShadowIncluded: windowShadowIncluded,
-            showsWindowShadow: showsWindowShadow,
-            selectedItem: selectedItem
-        )
-        toolbar.showStatus(status)
         toolbar.frame = SelectionToolbarLayout.frame(
             selection: localSelection,
             toolbarSize: SelectionToolbarView.preferredSize,
             in: bounds
         )
         toolbar.isHidden = false
+        toolbar.update(
+            pixelSize: pixels,
+            windowShadowIncluded: windowShadowIncluded,
+            showsWindowShadow: showsWindowShadow,
+            selectedItem: selectedItem,
+            annotationOptions: annotationOptions
+        )
+        toolbar.showStatus(status)
         window?.invalidateCursorRects(for: self)
+    }
+
+    private func updateToolHoverLabel(title: String?, buttonCenterX: CGFloat) {
+        guard let title, !toolbar.isHidden else {
+            toolHoverLabel.isHidden = true
+            toolHoverLabel.title = ""
+            return
+        }
+        toolHoverLabel.title = title
+        toolHoverLabel.setAccessibilityLabel(title)
+        let width = max(48, toolHoverLabel.preferredWidth)
+        let height: CGFloat = 26
+        let x = min(
+            max(bounds.minX, toolbar.frame.minX + buttonCenterX - width / 2),
+            bounds.maxX - width
+        )
+        let preferredAbove = toolbar.frame.maxY + 6
+        let y = preferredAbove + height <= bounds.maxY
+            ? preferredAbove
+            : max(bounds.minY, toolbar.frame.minY - height - 6)
+        toolHoverLabel.frame = CGRect(x: x, y: y, width: width, height: height)
+        toolHoverLabel.isHidden = false
     }
 }
 
@@ -629,31 +823,177 @@ private final class SelectionInlineTextEditor: NSTextView {
     let kind: ScreenshotAnnotationKind
     var onFinish: ((String?) -> Void)?
     private var hasFinished = false
+    private let backingTextStorage: NSTextStorage
+    var resizeBounds: CGRect = .zero
 
-    init(kind: ScreenshotAnnotationKind) {
+    private var resizeHandleRect: CGRect {
+        CGRect(x: max(0, bounds.maxX - 15), y: 0, width: 15, height: 15)
+    }
+
+    private var moveHandleRect: CGRect {
+        CGRect(x: 0, y: max(0, bounds.maxY - 15), width: 15, height: 15)
+    }
+
+    init(kind: ScreenshotAnnotationKind, fontSize: Double, color: ScreenshotAnnotationColor) {
         self.kind = kind
-        super.init(frame: .zero)
+        let storage = NSTextStorage()
+        let layoutManager = NSLayoutManager()
+        let textContainer = NSTextContainer(containerSize: CGSize(
+            width: CGFloat.greatestFiniteMagnitude,
+            height: CGFloat.greatestFiniteMagnitude
+        ))
+        storage.addLayoutManager(layoutManager)
+        layoutManager.addTextContainer(textContainer)
+        textContainer.widthTracksTextView = true
+        backingTextStorage = storage
+        // 直接使用完整的指定初始化器，避免 init(frame:) 的子类转发崩溃，
+        // 同时确保编辑器拥有可写入的文本存储。
+        super.init(frame: .zero, textContainer: textContainer)
         isRichText = false
         isEditable = true
         isSelectable = true
         allowsUndo = true
-        font = .systemFont(ofSize: kind == .note ? 14 : 18, weight: kind == .note ? .regular : .semibold)
-        textColor = kind == .note ? NSColor(calibratedWhite: 0.12, alpha: 1) : .red
-        backgroundColor = kind == .note
-            ? NSColor(calibratedRed: 1, green: 0.91, blue: 0.35, alpha: 0.96)
-            : NSColor.windowBackgroundColor.withAlphaComponent(0.92)
+        isHorizontallyResizable = false
+        isVerticallyResizable = false
+        textContainer.lineFragmentPadding = 0
+        let isNote = kind == .note
+        let isCallout = kind == .callout
+        font = .systemFont(
+            ofSize: isNote ? 14 : CGFloat(fontSize),
+            weight: isNote ? .regular : .semibold
+        )
+        textColor = isCallout
+            ? .white
+            : (isNote ? NSColor(calibratedWhite: 0.12, alpha: 1) : NSColor(screenshotColor: color))
+        backgroundColor = isCallout
+            ? NSColor(calibratedRed: 0.94, green: 0.12, blue: 0.14, alpha: 0.96)
+            : (isNote
+                ? NSColor(calibratedRed: 1, green: 0.91, blue: 0.35, alpha: 0.96)
+                : NSColor.windowBackgroundColor.withAlphaComponent(0.92))
         drawsBackground = true
         textContainerInset = CGSize(width: 6, height: 5)
         insertionPointColor = textColor
         wantsLayer = true
         layer?.cornerRadius = 6
         layer?.borderWidth = 1
-        layer?.borderColor = NSColor.controlAccentColor.cgColor
+        layer?.borderColor = isCallout
+            ? NSColor(calibratedRed: 0.62, green: 0.02, blue: 0.04, alpha: 1).cgColor
+            : NSColor.controlAccentColor.cgColor
         setAccessibilityIdentifier("screenshot.selection.inline-text-editor")
-        setAccessibilityLabel(kind == .note ? "输入备注，Command 回车完成" : "输入文本，回车完成")
+        let accessibilityLabel = switch kind {
+        case .note: "输入备注，Command 回车完成"
+        case .callout: "输入批注，Command 回车完成"
+        default: "输入文本，回车完成"
+        }
+        setAccessibilityLabel(accessibilityLabel)
     }
 
     required init?(coder: NSCoder) { nil }
+
+    override func resetCursorRects() {
+        super.resetCursorRects()
+        guard kind == .callout else { return }
+        addCursorRect(resizeHandleRect, cursor: .resizeLeftRight)
+        addCursorRect(moveHandleRect, cursor: .openHand)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        guard kind == .callout else { return }
+        let color = NSColor.white.withAlphaComponent(0.78)
+        color.setStroke()
+        let path = NSBezierPath()
+        path.lineWidth = 1.25
+        path.move(to: CGPoint(x: bounds.maxX - 10, y: 3))
+        path.line(to: CGPoint(x: bounds.maxX - 3, y: 10))
+        path.move(to: CGPoint(x: bounds.maxX - 6, y: 3))
+        path.line(to: CGPoint(x: bounds.maxX - 3, y: 6))
+        path.move(to: CGPoint(x: 4, y: bounds.maxY - 5))
+        path.line(to: CGPoint(x: 11, y: bounds.maxY - 5))
+        path.move(to: CGPoint(x: 4, y: bounds.maxY - 9))
+        path.line(to: CGPoint(x: 11, y: bounds.maxY - 9))
+        path.stroke()
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        let local = convert(event.locationInWindow, from: nil)
+        guard kind == .callout else {
+            super.mouseDown(with: event)
+            return
+        }
+        if moveHandleRect.contains(local) {
+            moveCallout(with: event)
+            return
+        }
+        guard resizeHandleRect.contains(local) else {
+            super.mouseDown(with: event)
+            return
+        }
+        let startLocation = event.locationInWindow
+        let startSize = frame.size
+        while let next = window?.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) {
+            if next.type == .leftMouseUp { break }
+            let current = next.locationInWindow
+            let maximumWidth = max(80, resizeBounds.maxX - frame.minX)
+            let maximumHeight = max(34, resizeBounds.maxY - frame.minY)
+            let width = min(maximumWidth, max(80, startSize.width + current.x - startLocation.x))
+            let height = min(maximumHeight, max(34, startSize.height + current.y - startLocation.y))
+            setFrameSize(CGSize(width: width, height: height))
+            needsDisplay = true
+            window?.invalidateCursorRects(for: self)
+        }
+    }
+
+    override func didChangeText() {
+        super.didChangeText()
+        fitContentToText()
+    }
+
+    private func moveCallout(with event: NSEvent) {
+        let startLocation = event.locationInWindow
+        let startOrigin = frame.origin
+        while let next = window?.nextEvent(matching: [.leftMouseDragged, .leftMouseUp]) {
+            if next.type == .leftMouseUp { break }
+            let deltaX = next.locationInWindow.x - startLocation.x
+            let deltaY = next.locationInWindow.y - startLocation.y
+            let x = min(
+                max(resizeBounds.minX, startOrigin.x + deltaX),
+                resizeBounds.maxX - frame.width
+            )
+            let y = min(
+                max(resizeBounds.minY, startOrigin.y + deltaY),
+                resizeBounds.maxY - frame.height
+            )
+            setFrameOrigin(CGPoint(x: x, y: y))
+        }
+    }
+
+    func updateStyle(fontSize: Double, color: ScreenshotAnnotationColor) {
+        guard kind != .note else { return }
+        font = .systemFont(ofSize: CGFloat(fontSize), weight: .semibold)
+        if kind == .text {
+            textColor = NSColor(screenshotColor: color)
+            insertionPointColor = textColor
+        }
+        fitContentToText()
+        needsDisplay = true
+    }
+
+    func fitContentToText() {
+        guard kind == .callout, let font, !resizeBounds.isEmpty else { return }
+        let size = SelectionCalloutLayout.size(
+            text: string,
+            fontSize: Double(font.pointSize),
+            maximumSize: resizeBounds.size
+        )
+        let origin = CGPoint(
+            x: min(max(resizeBounds.minX, frame.minX), resizeBounds.maxX - size.width),
+            y: min(max(resizeBounds.minY, frame.minY), resizeBounds.maxY - size.height)
+        )
+        frame = CGRect(origin: origin, size: size)
+        needsDisplay = true
+        window?.invalidateCursorRects(for: self)
+    }
 
     override func keyDown(with event: NSEvent) {
         if event.keyCode == 53 {
@@ -661,7 +1001,7 @@ private final class SelectionInlineTextEditor: NSTextView {
             return
         }
         let isReturn = event.keyCode == 36 || event.keyCode == 52 || event.keyCode == 76
-        if isReturn, kind == .text || (isReturn && event.modifierFlags.contains(.command)) {
+        if isReturn, kind == .text || event.modifierFlags.contains(.command) {
             finish(commit: true)
             return
         }
@@ -675,5 +1015,57 @@ private final class SelectionInlineTextEditor: NSTextView {
         let callback = onFinish
         onFinish = nil
         callback?(commit && !value.isEmpty ? value : nil)
+    }
+
+    func handleRoutedKeyDown(_ event: NSEvent) {
+        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if modifiers == .command,
+           event.charactersIgnoringModifiers?.lowercased() == "v",
+           let value = NSPasteboard.general.string(forType: .string) {
+            insertText(value, replacementRange: selectedRange())
+            return
+        }
+        if event.keyCode == 51 || event.keyCode == 117 {
+            let range = selectedRange()
+            if range.length > 0 {
+                insertText("", replacementRange: range)
+            } else if range.location > 0 {
+                insertText("", replacementRange: NSRange(location: range.location - 1, length: 1))
+            }
+            return
+        }
+        guard !modifiers.contains(.command),
+              !modifiers.contains(.control),
+              let characters = event.characters,
+              !characters.isEmpty else { return }
+        insertText(characters, replacementRange: selectedRange())
+    }
+}
+
+private final class ToolHoverLabelView: NSView {
+    var title = "" {
+        didSet { needsDisplay = true }
+    }
+
+    var preferredWidth: CGFloat {
+        let font = NSFont.systemFont(ofSize: 12, weight: .medium)
+        return ceil((title as NSString).size(withAttributes: [.font: font]).width) + 18
+    }
+
+    override var isOpaque: Bool { false }
+
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor(calibratedWhite: 0.12, alpha: 0.94).setFill()
+        NSBezierPath(roundedRect: bounds, xRadius: 5, yRadius: 5).fill()
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 12, weight: .medium),
+            .foregroundColor: NSColor.white
+        ]
+        let size = (title as NSString).size(withAttributes: attributes)
+        let origin = CGPoint(
+            x: floor((bounds.width - size.width) / 2),
+            y: floor((bounds.height - size.height) / 2)
+        )
+        (title as NSString).draw(at: origin, withAttributes: attributes)
     }
 }

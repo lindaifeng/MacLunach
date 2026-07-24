@@ -367,14 +367,14 @@ final class AnnotationEditorState: ObservableObject {
             magnifier: kind == .magnifier ? .init() : nil,
             sticker: kind == .sticker ? .init(value: "😊", size: 48) : nil,
             watermark: kind == .watermark
-                ? .init(value: "触达", fontSize: 20, opacity: 0.25, angleDegrees: -25, spacing: 120)
+                ? .init(value: "一念", fontSize: 20, opacity: 0.25, angleDegrees: -25, spacing: 120)
                 : nil,
             beautify: kind == .beautify ? defaultBeautify() : nil
         )
         let layer = AnnotationLayer(
             annotation: annotation,
             opacity: kind == .highlighter ? 0.55 : 1,
-            font: [.text, .numberedMarker, .note].contains(kind)
+            font: [.text, .numberedMarker, .callout, .note].contains(kind)
                 ? .init(size: 18)
                 : nil,
             cornerRadius: kind == .note ? 10 : 0,
@@ -429,7 +429,7 @@ final class AnnotationEditorState: ObservableObject {
         guard let layer = selectedLayer else { return false }
         var annotation = layer.annotation
         switch layer.kind {
-        case .text, .numberedMarker, .note:
+        case .text, .numberedMarker, .callout, .note:
             guard var text = annotation.text else { return false }
             text.value = value
             annotation.text = text
@@ -716,6 +716,7 @@ final class AnnotationEditorState: ObservableObject {
                 value: String(document.layers.filter { $0.kind == .numberedMarker }.count + 1),
                 fontSize: 16
             )
+        case .callout: .init(value: "批注", fontSize: 16)
         case .note: .init(value: "便签", fontSize: 18)
         default: nil
         }

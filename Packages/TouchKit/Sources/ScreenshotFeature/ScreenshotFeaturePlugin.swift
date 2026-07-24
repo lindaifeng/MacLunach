@@ -27,7 +27,7 @@ public struct ScreenshotFeaturePlugin: FeaturePlugin, FeatureLifecycleHandling {
         summary: "截图、标注与钉图",
         symbolName: "crop",
         defaultOrder: 1,
-        defaultShortcut: .init(modifiers: [.command], key: "2")
+        defaultShortcut: .init(modifiers: [], key: "2")
     )
 
     public func initialState() async -> FeatureState {

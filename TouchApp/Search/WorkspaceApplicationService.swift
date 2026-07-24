@@ -42,18 +42,29 @@ struct WorkspaceApplicationLauncher: ApplicationLaunching {
 
     func openApplication(at url: URL) async throws {
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            Task { @MainActor in
+            let completionHandler = Self.makeCompletionHandler(for: continuation)
+            Task { @MainActor [url, completionHandler] in
                 let configuration = NSWorkspace.OpenConfiguration()
                 configuration.activates = true
-                NSWorkspace.shared.openApplication(at: url, configuration: configuration) { application, error in
-                    if let error {
-                        continuation.resume(throwing: error)
-                    } else if application == nil {
-                        continuation.resume(throwing: LaunchError.noRunningApplication)
-                    } else {
-                        continuation.resume()
-                    }
-                }
+                NSWorkspace.shared.openApplication(
+                    at: url,
+                    configuration: configuration,
+                    completionHandler: completionHandler
+                )
+            }
+        }
+    }
+
+    static func makeCompletionHandler(
+        for continuation: CheckedContinuation<Void, Error>
+    ) -> @Sendable (NSRunningApplication?, Error?) -> Void {
+        { application, error in
+            if let error {
+                continuation.resume(throwing: error)
+            } else if application == nil {
+                continuation.resume(throwing: LaunchError.noRunningApplication)
+            } else {
+                continuation.resume()
             }
         }
     }

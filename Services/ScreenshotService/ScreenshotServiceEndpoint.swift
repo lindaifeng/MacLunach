@@ -93,6 +93,7 @@ final class ScreenshotServiceEndpoint: NSObject, ScreenshotXPCProtocol, @uncheck
                 || request.action.name == "recognize"
                 || request.action.name == "exportArtifact"
                 || request.action.name == "deleteArtifact"
+                || request.action.name == "registerArtifact"
                 || request.action.name == "saveAnnotationProject"
                 || request.action.name == "loadAnnotationProject"
                 || request.action.name == "exportAnnotationDocument"
@@ -126,6 +127,8 @@ final class ScreenshotServiceEndpoint: NSObject, ScreenshotXPCProtocol, @uncheck
                 response = await processArtifactExport(request)
             } else if request.action.name == "deleteArtifact" {
                 response = await processArtifactDeletion(request)
+            } else if request.action.name == "registerArtifact" {
+                response = await processArtifactRegistration(request)
             } else if request.action.name == "saveAnnotationProject" {
                 response = await processAnnotationProjectSave(request)
             } else if request.action.name == "loadAnnotationProject" {
@@ -239,6 +242,44 @@ final class ScreenshotServiceEndpoint: NSObject, ScreenshotXPCProtocol, @uncheck
                 requestID: serviceRequest.id,
                 payload: .artifactExport(try JSONEncoder().encode(result))
             )
+        } catch is CancellationError {
+            return .init(requestID: serviceRequest.id, payload: .failure(.cancelled))
+        } catch let error as ScreenshotFeatureError {
+            return .init(requestID: serviceRequest.id, payload: .failure(map(error)))
+        } catch {
+            return .init(
+                requestID: serviceRequest.id,
+                payload: .failure(.storageFailed(String(describing: error)))
+            )
+        }
+    }
+
+    private func processArtifactRegistration(
+        _ serviceRequest: ScreenshotServiceRequest
+    ) async -> ScreenshotServiceResponse {
+        do {
+            try Task.checkCancellation()
+            guard let payload = serviceRequest.action.payload else {
+                return .init(
+                    requestID: serviceRequest.id,
+                    payload: .failure(.malformedRequest(
+                        "registerArtifact action is missing its payload"
+                    ))
+                )
+            }
+            let request = try JSONDecoder().decode(
+                ScreenshotArtifactRegistrationRequest.self,
+                from: payload
+            )
+            // 滚动截图的 PNG 已由主进程写入同一插件根目录；历史服务负责校验
+            // 相对路径、写入 SQLite 和执行保留策略。历史关闭时不触碰用户文件。
+            if request.history.isEnabled, let retentionController {
+                try await retentionController.recordCapture(
+                    request.artifact,
+                    configuration: request.history
+                )
+            }
+            return .init(requestID: serviceRequest.id, payload: .artifactRegistered)
         } catch is CancellationError {
             return .init(requestID: serviceRequest.id, payload: .failure(.cancelled))
         } catch let error as ScreenshotFeatureError {

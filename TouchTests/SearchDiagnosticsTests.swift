@@ -21,4 +21,23 @@ final class SearchDiagnosticsTests: XCTestCase {
         XCTAssertFalse(diagnostics.visibleSummary.contains("/Volumes/Private"))
         XCTAssertTrue(diagnostics.visibleSummary.contains("42"))
     }
+
+    func testIndexingProgressIsClampedAndClearedWhenReady() {
+        let diagnostics = SearchDiagnostics(
+            roots: [URL(fileURLWithPath: "/tmp/Desktop")],
+            status: .indexing
+        )
+
+        diagnostics.updateIndexingProgress(1.4, rootName: "Desktop")
+
+        XCTAssertEqual(diagnostics.indexingProgress, 1)
+        XCTAssertEqual(diagnostics.indexingRootName, "Desktop")
+        XCTAssertTrue(diagnostics.isActivelyIndexing)
+
+        diagnostics.update(status: .ready)
+
+        XCTAssertNil(diagnostics.indexingProgress)
+        XCTAssertNil(diagnostics.indexingRootName)
+        XCTAssertFalse(diagnostics.isActivelyIndexing)
+    }
 }

@@ -49,6 +49,75 @@ private final class CoordinatorSearchActions: SearchActionServicing {
 
 @MainActor
 final class SearchCoordinatorTests: XCTestCase {
+    func testPresentationStartsInActionModeWithoutSearchFocus() async throws {
+        let coordinator = try await makeCoordinator()
+        coordinator.query = "stale"
+
+        coordinator.prepareForPresentation()
+
+        XCTAssertEqual(coordinator.mode, .actions)
+        XCTAssertEqual(coordinator.query, "")
+        XCTAssertFalse(coordinator.isSearchFieldFocused)
+        XCTAssertEqual(coordinator.state, .idle)
+    }
+
+    func testTabCycleMovesThroughActionApplicationAndFileFocusStates() async throws {
+        let coordinator = try await makeCoordinator()
+        coordinator.prepareForPresentation()
+
+        coordinator.advanceMode()
+        XCTAssertEqual(coordinator.mode, .applications)
+        XCTAssertTrue(coordinator.isSearchFieldFocused)
+
+        coordinator.advanceMode()
+        XCTAssertEqual(coordinator.mode, .files)
+        XCTAssertTrue(coordinator.isSearchFieldFocused)
+
+        coordinator.advanceMode()
+        XCTAssertEqual(coordinator.mode, .actions)
+        XCTAssertFalse(coordinator.isSearchFieldFocused)
+    }
+
+    func testFocusedActionModeSearchesProvidedActions() async throws {
+        let coordinator = try await makeCoordinator { query in
+            SearchRanking.sort(
+                [
+                    SearchResult(
+                        id: "action.feature.screenshot",
+                        title: "截取屏幕",
+                        subtitle: "内置功能 · A 键",
+                        pinyin: "截图、标注与钉图",
+                        initials: "A",
+                        kind: .action
+                    )
+                ],
+                query: query
+            )
+        }
+        coordinator.mode = .actions
+        coordinator.isSearchFieldFocused = true
+
+        coordinator.query = "截图"
+
+        try await waitUntil { coordinator.state.phase == .results }
+        XCTAssertEqual(coordinator.state.results.map(\.title), ["截取屏幕"])
+    }
+
+    func testLeavingActionSearchClearsQueryAndFocus() async throws {
+        let coordinator = try await makeCoordinator { _ in
+            [SearchResult(title: "截取屏幕", kind: .action)]
+        }
+        coordinator.mode = .actions
+        coordinator.isSearchFieldFocused = true
+        coordinator.query = "截图"
+
+        coordinator.exitActionSearch()
+
+        XCTAssertEqual(coordinator.query, "")
+        XCTAssertFalse(coordinator.isSearchFieldFocused)
+        XCTAssertEqual(coordinator.state, .idle)
+    }
+
     func testSearchWaitsForSharedEnvironmentPreparation() async throws {
         let catalog = ApplicationCatalog(
             discoverer: DelayedApplicationDiscoverer(
@@ -170,7 +239,8 @@ final class SearchCoordinatorTests: XCTestCase {
     private func makeCoordinator(
         applications: [ApplicationRecord] = [],
         fileIndexStore: FileIndexStore? = nil,
-        actions: CoordinatorSearchActions = CoordinatorSearchActions()
+        actions: CoordinatorSearchActions = CoordinatorSearchActions(),
+        actionSearch: @escaping @MainActor (String) -> [SearchResult] = { _ in [] }
     ) async throws -> SearchCoordinator {
         let catalog = ApplicationCatalog(
             discoverer: CoordinatorApplicationDiscoverer(applications: applications),
@@ -182,7 +252,7 @@ final class SearchCoordinatorTests: XCTestCase {
             systemActions: actions
         )
         await environment.prepare()
-        return SearchCoordinator(environment: environment)
+        return SearchCoordinator(environment: environment, actionSearch: actionSearch)
     }
 
     private func application(id: String, name: String) -> ApplicationRecord {

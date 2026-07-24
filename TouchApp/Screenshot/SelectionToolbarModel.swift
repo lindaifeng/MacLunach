@@ -19,10 +19,11 @@ enum SelectionSticker: String, CaseIterable, Equatable, Sendable {
         case .star: "重点"
         }
     }
+
 }
 
 enum SelectionWatermark: String, CaseIterable, Equatable, Sendable {
-    case touch = "触达"
+    case touch = "一念"
     case confidential = "机密"
     case internalOnly = "仅供内部使用"
     case draft = "草稿"
@@ -130,6 +131,7 @@ enum SelectionToolbarItem: String, CaseIterable, Equatable, Sendable {
     case highlighter
     case text
     case numberedMarker
+    case callout
     case note
     case sticker
     case mosaic
@@ -141,6 +143,7 @@ enum SelectionToolbarItem: String, CaseIterable, Equatable, Sendable {
     case translate
     case pin
     case cancel
+    case save
     case copy
 
     enum Kind: Equatable, Sendable {
@@ -160,6 +163,7 @@ enum SelectionToolbarItem: String, CaseIterable, Equatable, Sendable {
         .highlighter,
         .text,
         .numberedMarker,
+        .callout,
         .note,
         .sticker,
         .mosaic,
@@ -171,8 +175,32 @@ enum SelectionToolbarItem: String, CaseIterable, Equatable, Sendable {
         .translate,
         .pin,
         .cancel,
+        .save,
         .copy
     ]
+
+    /// 新版 Mac QQ 截图将高频标注与完成动作保持在单行工具栏，低频能力收进“更多”。
+    static let qqPrimaryOrder: [SelectionToolbarItem] = [
+        .rectangle,
+        .ellipse,
+        .arrow,
+        .freehand,
+        .text,
+        .numberedMarker,
+        .callout,
+        .mosaic,
+        .scrollingCapture,
+        .recognizeText,
+        .translate,
+        .pin,
+        .cancel,
+        .save,
+        .copy
+    ]
+
+    static let qqOverflowOrder: [SelectionToolbarItem] = referenceOrder.filter {
+        !qqPrimaryOrder.contains($0)
+    }
 
     var title: String {
         switch self {
@@ -184,6 +212,7 @@ enum SelectionToolbarItem: String, CaseIterable, Equatable, Sendable {
         case .highlighter: "荧光笔"
         case .text: "文本"
         case .numberedMarker: "数字点"
+        case .callout: "批注"
         case .note: "备注"
         case .sticker: "贴纸"
         case .mosaic: "马赛克"
@@ -195,7 +224,21 @@ enum SelectionToolbarItem: String, CaseIterable, Equatable, Sendable {
         case .translate: "翻译"
         case .pin: "钉至桌面"
         case .cancel: "取消"
+        case .save: "保存"
         case .copy: "拷贝"
+        }
+    }
+
+    /// 鼠标悬停文案使用用户更熟悉的工具名称。
+    var hoverTitle: String {
+        switch self {
+        case .rectangle: "正方形"
+        case .ellipse: "圆形"
+        case .text: "文字"
+        case .arrow: "箭头"
+        case .numberedMarker: "序号"
+        case .callout: "批注"
+        default: title
         }
     }
 
@@ -206,6 +249,7 @@ enum SelectionToolbarItem: String, CaseIterable, Equatable, Sendable {
         case .line: "L"
         case .text: "T"
         case .numberedMarker: "1"
+        case .callout: "C"
         case .note: "N"
         case .pin: "P"
         case .cancel: "ESC"
@@ -221,7 +265,7 @@ enum SelectionToolbarItem: String, CaseIterable, Equatable, Sendable {
     var kind: Kind {
         switch self {
         case .rectangle, .ellipse, .line, .arrow, .freehand, .highlighter,
-             .text, .numberedMarker, .note, .sticker:
+             .text, .numberedMarker, .callout, .note, .sticker:
             .annotation
         case .mosaic, .watermark, .beautify:
             .effect
@@ -229,7 +273,7 @@ enum SelectionToolbarItem: String, CaseIterable, Equatable, Sendable {
             .captureExtension
         case .recognizeText, .translate:
             .recognition
-        case .pin, .cancel, .copy:
+        case .pin, .cancel, .save, .copy:
             .completion
         }
     }
@@ -244,6 +288,7 @@ enum SelectionToolbarItem: String, CaseIterable, Equatable, Sendable {
         case .highlighter: "highlighter"
         case .text: "textformat"
         case .numberedMarker: "1.circle"
+        case .callout: "bubble.left.and.text.bubble.right"
         case .note: "note.text"
         case .sticker: "face.smiling"
         case .mosaic: "square.grid.3x3.fill"
@@ -255,7 +300,18 @@ enum SelectionToolbarItem: String, CaseIterable, Equatable, Sendable {
         case .translate: "character.book.closed"
         case .pin: "pin"
         case .cancel: "xmark"
+        case .save: "arrow.down.to.line"
         case .copy: "checkmark"
+        }
+    }
+
+    var supportsQQOptions: Bool {
+        switch self {
+        case .rectangle, .ellipse, .line, .arrow, .freehand, .highlighter,
+             .text, .numberedMarker, .callout, .note, .sticker, .mosaic:
+            true
+        default:
+            false
         }
     }
 
@@ -263,6 +319,8 @@ enum SelectionToolbarItem: String, CaseIterable, Equatable, Sendable {
         switch self {
         case .copy:
             .copy
+        case .save:
+            .save
         case .pin:
             .pin
         case .recognizeText:

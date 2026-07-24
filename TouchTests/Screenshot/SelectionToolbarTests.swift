@@ -1,8 +1,133 @@
+import AppKit
 import CoreGraphics
+import ScreenshotFeature
 import XCTest
 @testable import 触达
 
 final class SelectionToolbarTests: XCTestCase {
+    @MainActor
+    func testPinnedImageUsesOriginalPixelsAndOnlyOverlaysOpacitySlider() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "touch-pin-test-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        let captureDirectory = root.appendingPathComponent("Captures", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: captureDirectory,
+            withIntermediateDirectories: true
+        )
+        let imageURL = captureDirectory.appendingPathComponent("pin.png")
+        let representation = try XCTUnwrap(NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: 800,
+            pixelsHigh: 400,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0,
+            bitsPerPixel: 0
+        ))
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: representation)
+        NSColor.systemRed.setFill()
+        NSBezierPath(rect: CGRect(x: 0, y: 0, width: 800, height: 400)).fill()
+        NSGraphicsContext.restoreGraphicsState()
+        try XCTUnwrap(representation.representation(using: .png, properties: [:])).write(to: imageURL)
+
+        let id = UUID()
+        let artifact = ScreenshotArtifact(
+            id: id,
+            createdAt: Date(),
+            captureMode: .region,
+            relativePath: "Captures/pin.png",
+            thumbnailRelativePath: nil,
+            pointSize: .init(width: 400, height: 200),
+            pixelSize: .init(width: 800, height: 400),
+            uniformTypeIdentifier: "public.png",
+            sha256: "test",
+            displays: []
+        )
+        let manager = ScreenshotPinWindowManager(pathsProvider: {
+            ScreenshotFeaturePaths(rootURL: root)
+        })
+        try manager.pin(
+            artifact,
+            preferredFrame: CGRect(x: 180, y: 220, width: 400, height: 200)
+        )
+        let panel = try XCTUnwrap(NSApp.windows.first {
+            $0.identifier?.rawValue == "screenshot.pin.\(id.uuidString)"
+        })
+        defer { panel.close() }
+        let identifiers = Set(descendants(of: try XCTUnwrap(panel.contentView)).compactMap {
+            $0.identifier?.rawValue
+        })
+
+        XCTAssertTrue(identifiers.contains("screenshot.pin.opacity"))
+        XCTAssertFalse(identifiers.contains("screenshot.pin.scale"))
+        XCTAssertEqual(panel.frame.width, 400, accuracy: 0.5)
+        XCTAssertEqual(
+            panel.frame.height,
+            200 + ScreenshotPinLayout.controlBarHeight,
+            accuracy: 0.5
+        )
+        XCTAssertEqual(panel.frame.minX, 180, accuracy: 0.5)
+        XCTAssertEqual(panel.frame.maxY, 420, accuracy: 0.5)
+        XCTAssertLessThanOrEqual(ScreenshotPinLayout.controlBarHeight, 40)
+
+        let initialWidth = panel.frame.width
+        let cgEvent = try XCTUnwrap(CGEvent(
+            scrollWheelEvent2Source: nil,
+            units: .pixel,
+            wheelCount: 1,
+            wheel1: 8,
+            wheel2: 0,
+            wheel3: 0
+        ))
+        let scrollEvent = try XCTUnwrap(NSEvent(cgEvent: cgEvent))
+        try XCTUnwrap(panel.contentView).scrollWheel(with: scrollEvent)
+        XCTAssertGreaterThan(panel.frame.width, initialWidth)
+    }
+
+    func testPinLayoutKeepsImageAspectRatioWithoutExternalControlBar() {
+        let layout = ScreenshotPinLayout(baseImageSize: CGSize(width: 600, height: 300))
+
+        XCTAssertEqual(ScreenshotPinLayout.controlBarHeight, 0)
+
+        XCTAssertEqual(layout.imageSize(scale: 0.5), CGSize(width: 300, height: 150))
+        XCTAssertEqual(
+            layout.contentSize(scale: 0.5),
+            CGSize(width: 300, height: 150 + ScreenshotPinLayout.controlBarHeight)
+        )
+        XCTAssertEqual(
+            layout.contentSize(forRequestedWidth: 900),
+            CGSize(width: 900, height: 450 + ScreenshotPinLayout.controlBarHeight)
+        )
+    }
+
+    func testPinWheelScaleTracksDeltasInRealTimeAndClampsRange() {
+        let enlarged = ScreenshotPinLayout.scale(current: 1, wheelDelta: 12, precise: true)
+        let reduced = ScreenshotPinLayout.scale(current: 1, wheelDelta: -12, precise: true)
+
+        XCTAssertGreaterThan(enlarged, 1)
+        XCTAssertLessThan(reduced, 1)
+        XCTAssertEqual(
+            ScreenshotPinLayout.scale(current: 2.5, wheelDelta: 10_000, precise: false),
+            2.5
+        )
+        XCTAssertEqual(
+            ScreenshotPinLayout.scale(current: 0.25, wheelDelta: -10_000, precise: false),
+            0.25
+        )
+    }
+
+    @MainActor
+    private func descendants(of view: NSView) -> [NSView] {
+        [view] + view.subviews.flatMap(descendants(of:))
+    }
+
     func testReferenceOrderMatchesQQVideo() {
         XCTAssertEqual(
             SelectionToolbarItem.referenceOrder,
@@ -15,6 +140,7 @@ final class SelectionToolbarTests: XCTestCase {
                 .highlighter,
                 .text,
                 .numberedMarker,
+                .callout,
                 .note,
                 .sticker,
                 .mosaic,
@@ -26,6 +152,7 @@ final class SelectionToolbarTests: XCTestCase {
                 .translate,
                 .pin,
                 .cancel,
+                .save,
                 .copy
             ]
         )
@@ -42,6 +169,7 @@ final class SelectionToolbarTests: XCTestCase {
             (.highlighter, "荧光笔", nil),
             (.text, "文本", "T"),
             (.numberedMarker, "数字点", "1"),
+            (.callout, "批注", "C"),
             (.note, "备注", "N"),
             (.sticker, "贴纸", nil),
             (.mosaic, "马赛克", nil),
@@ -53,6 +181,7 @@ final class SelectionToolbarTests: XCTestCase {
             (.translate, "翻译", nil),
             (.pin, "钉至桌面", "P"),
             (.cancel, "取消", "ESC"),
+            (.save, "保存", nil),
             (.copy, "拷贝", nil)
         ]
 
@@ -60,6 +189,51 @@ final class SelectionToolbarTests: XCTestCase {
             XCTAssertEqual(item.title, title, "\(item) 标题错误")
             XCTAssertEqual(item.shortcut, shortcut, "\(item) 快捷键错误")
         }
+    }
+
+    func testQQPrimaryToolbarKeepsCoreActionsVisibleAndMovesExtensionsToOverflow() {
+        XCTAssertEqual(
+            SelectionToolbarItem.qqPrimaryOrder,
+            [
+                .rectangle,
+                .ellipse,
+                .arrow,
+                .freehand,
+                .text,
+                .numberedMarker,
+                .callout,
+                .mosaic,
+                .scrollingCapture,
+                .recognizeText,
+                .translate,
+                .pin,
+                .cancel,
+                .save,
+                .copy
+            ]
+        )
+        XCTAssertEqual(
+            Set(SelectionToolbarItem.qqPrimaryOrder + SelectionToolbarItem.qqOverflowOrder),
+            Set(SelectionToolbarItem.allCases)
+        )
+        XCTAssertTrue(Set(SelectionToolbarItem.qqPrimaryOrder).isDisjoint(
+            with: Set(SelectionToolbarItem.qqOverflowOrder)
+        ))
+    }
+
+    func testQQOptionPanelUsesVerifiedWidthsAndCoversEditableCoreTools() {
+        XCTAssertEqual(SelectionAnnotationOptions.lineWidths, [3, 6, 9])
+        XCTAssertEqual(SelectionAnnotationOptions.fontSizes, [14, 18, 24])
+        XCTAssertEqual(SelectionAnnotationOptions.lineWidthRange, 1...30)
+        XCTAssertEqual(SelectionAnnotationOptions.fontSizeRange, 8...72)
+        XCTAssertEqual(SelectionAnnotationOptions.colors.count, 8)
+
+        let optionItems = SelectionToolbarItem.allCases.filter(\.supportsQQOptions)
+        XCTAssertEqual(
+            optionItems,
+            [.rectangle, .ellipse, .line, .arrow, .freehand, .highlighter,
+             .text, .numberedMarker, .callout, .note, .sticker, .mosaic]
+        )
     }
 
     func testStickerCatalogProvidesDistinctRenderableChoices() {
@@ -90,7 +264,7 @@ final class SelectionToolbarTests: XCTestCase {
         XCTAssertEqual(
             SelectionToolbarItem.referenceOrder.filter { $0.kind == .annotation },
             [.rectangle, .ellipse, .line, .arrow, .freehand, .highlighter,
-             .text, .numberedMarker, .note, .sticker]
+             .text, .numberedMarker, .callout, .note, .sticker]
         )
         XCTAssertEqual(
             SelectionToolbarItem.referenceOrder.filter { $0.kind == .effect },
@@ -106,7 +280,7 @@ final class SelectionToolbarTests: XCTestCase {
         )
         XCTAssertEqual(
             SelectionToolbarItem.referenceOrder.filter { $0.kind == .completion },
-            [.pin, .cancel, .copy]
+            [.pin, .cancel, .save, .copy]
         )
     }
 

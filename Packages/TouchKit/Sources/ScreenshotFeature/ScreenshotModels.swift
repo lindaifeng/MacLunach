@@ -214,6 +214,20 @@ public struct ScreenshotArtifact: Codable, Equatable, Sendable, Identifiable {
     }
 }
 
+/// 主进程完成滚动拼接后，将已经写入插件目录的产物交给截图服务登记到历史。
+public struct ScreenshotArtifactRegistrationRequest: Codable, Equatable, Sendable {
+    public var artifact: ScreenshotArtifact
+    public var history: ScreenshotHistoryConfiguration
+
+    public init(
+        artifact: ScreenshotArtifact,
+        history: ScreenshotHistoryConfiguration = .init()
+    ) {
+        self.artifact = artifact
+        self.history = history
+    }
+}
+
 public enum ScreenshotPermissionState: String, Codable, Equatable, Sendable {
     case notRequested
     case authorized

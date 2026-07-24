@@ -20,10 +20,11 @@ struct AnnotationEditorView: View {
             reduceTransparency: reduceTransparency || hasArgument("--reduce-transparency"),
             increasedContrast: colorSchemeContrast == .increased || hasArgument("--increase-contrast")
         )
+        let theme = ThemeRegistry.shared.definition(for: themeStore.theme)
 
         ZStack {
             GlassBackground(
-                theme: themeStore.theme,
+                theme: theme,
                 reduceTransparency: appearance.reduceTransparency
             )
             if appearance.reduceTransparency {

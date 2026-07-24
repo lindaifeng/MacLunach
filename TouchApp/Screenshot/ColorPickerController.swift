@@ -30,6 +30,13 @@ final class SystemScreenshotColorClipboardWriter: ScreenshotColorClipboardWritin
 
 @MainActor
 final class ColorPickerController: ScreenshotColorPickerPresenting {
+    private struct PendingSample {
+        let displayID: UInt32
+        let point: CGPoint
+        let immediately: Bool
+        let completesOnSuccess: Bool
+    }
+
     typealias SampleAcceptedHandler = @MainActor (
         _ displayID: UInt32,
         _ point: CGPoint,
@@ -43,7 +50,7 @@ final class ColorPickerController: ScreenshotColorPickerPresenting {
     private var views: [UInt32: ColorPickerOverlayView] = [:]
     private var continuation: CheckedContinuation<ScreenshotColor?, Never>?
     private var sampleTask: Task<Void, Never>?
-    private var latestRequestID: UUID?
+    private var pendingSample: PendingSample?
     private var latestSample: ScreenshotColorSample?
     private var latestSampleDisplayID: UInt32?
     private var latestPoint: CGPoint?
@@ -102,6 +109,7 @@ final class ColorPickerController: ScreenshotColorPickerPresenting {
         latestSampleDisplayID = nil
         latestPoint = nil
         lastSampleStartedAt = nil
+        pendingSample = nil
 
         for display in content.displays {
             guard let screen = screen(for: display.id) else { continue }
@@ -146,45 +154,57 @@ final class ColorPickerController: ScreenshotColorPickerPresenting {
         immediately: Bool,
         completesOnSuccess: Bool = false
     ) {
-        sampleTask?.cancel()
-        let requestID = UUID()
-        latestRequestID = requestID
-        let captureService = captureService
-        let delay: Duration
-        if immediately {
-            delay = .zero
-        } else if let lastSampleStartedAt {
-            let elapsed = lastSampleStartedAt.duration(to: ContinuousClock.now)
-            delay = elapsed < minimumSampleInterval ? minimumSampleInterval - elapsed : .zero
-        } else {
-            delay = .zero
-        }
+        pendingSample = PendingSample(
+            displayID: displayID,
+            point: point,
+            immediately: immediately,
+            completesOnSuccess: completesOnSuccess
+        )
+        startSampleWorkerIfNeeded()
+    }
 
+    private func startSampleWorkerIfNeeded() {
+        guard sampleTask == nil else { return }
+        let captureService = captureService
         sampleTask = Task { @MainActor [weak self] in
-            do {
-                if delay > .zero { try await Task.sleep(for: delay) }
-                guard let self, self.latestRequestID == requestID else { return }
-                self.lastSampleStartedAt = ContinuousClock.now
-                let sample = try await captureService.sampleColor(.init(
-                    displayID: displayID,
-                    desktopPoint: .init(x: point.x, y: point.y)
-                ))
-                try Task.checkCancellation()
-                guard self.latestRequestID == requestID else { return }
-                self.latestSample = sample
-                self.latestSampleDisplayID = displayID
-                self.latestPoint = point
-                self.views[displayID]?.update(pointer: point, sample: sample)
-                self.sampleAcceptedHandler?(displayID, point, sample)
-                if completesOnSuccess { self.finish(with: sample.color) }
-            } catch is CancellationError {
-                return
-            } catch let error as ScreenshotFeatureError where error == .cancelled {
-                return
-            } catch {
-                guard let self, self.latestRequestID == requestID else { return }
-                self.views[displayID]?.showError("无法读取屏幕颜色")
-                NSSound.beep()
+            guard let self else { return }
+            defer { self.sampleTask = nil }
+            while !Task.isCancelled, let request = self.pendingSample {
+                self.pendingSample = nil
+                do {
+                    if !request.immediately, let lastSampleStartedAt = self.lastSampleStartedAt {
+                        let elapsed = lastSampleStartedAt.duration(to: ContinuousClock.now)
+                        if elapsed < self.minimumSampleInterval {
+                            try await Task.sleep(for: self.minimumSampleInterval - elapsed)
+                        }
+                    }
+                    try Task.checkCancellation()
+                    self.lastSampleStartedAt = ContinuousClock.now
+                    let sample = try await captureService.sampleColor(.init(
+                        displayID: request.displayID,
+                        desktopPoint: .init(x: request.point.x, y: request.point.y)
+                    ))
+                    try Task.checkCancellation()
+                    // 采集中发生的新移动只保留最后一个位置；旧结果不再刷新界面。
+                    if self.pendingSample != nil { continue }
+                    self.latestSample = sample
+                    self.latestSampleDisplayID = request.displayID
+                    self.latestPoint = request.point
+                    self.views[request.displayID]?.update(pointer: request.point, sample: sample)
+                    self.sampleAcceptedHandler?(request.displayID, request.point, sample)
+                    if request.completesOnSuccess {
+                        self.finish(with: sample.color)
+                        return
+                    }
+                } catch is CancellationError {
+                    return
+                } catch let error as ScreenshotFeatureError where error == .cancelled {
+                    return
+                } catch {
+                    guard self.pendingSample == nil else { continue }
+                    self.views[request.displayID]?.showError("无法读取屏幕颜色")
+                    NSSound.beep()
+                }
             }
         }
     }
@@ -192,7 +212,7 @@ final class ColorPickerController: ScreenshotColorPickerPresenting {
     private func finish(with color: ScreenshotColor?) {
         sampleTask?.cancel()
         sampleTask = nil
-        latestRequestID = nil
+        pendingSample = nil
         guard let continuation else {
             closePanels()
             return

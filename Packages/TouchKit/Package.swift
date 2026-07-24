@@ -12,6 +12,15 @@ let package = Package(
         .library(name: "ScreenshotServiceProtocol", targets: ["ScreenshotServiceProtocol"]),
         .library(name: "ScreenshotServiceCore", targets: ["ScreenshotServiceCore"]),
         .library(name: "SuperRightFeature", targets: ["SuperRightFeature"]),
+        .library(name: "DailyTaskFeature", targets: ["DailyTaskFeature"]),
+        .library(name: "PomodoroFeature", targets: ["PomodoroFeature"]),
+        .library(name: "HolidayCalendarFeature", targets: ["HolidayCalendarFeature"]),
+        .library(name: "MarkdownPreviewFeature", targets: ["MarkdownPreviewFeature"]),
+        .library(name: "ParserToolsFeature", targets: ["ParserToolsFeature"]),
+        .library(name: "ClipboardFeature", targets: ["ClipboardFeature"]),
+        .library(name: "TranslationFeature", targets: ["TranslationFeature"]),
+        .library(name: "OCRFeature", targets: ["OCRFeature"]),
+        .library(name: "FileActionServiceProtocol", targets: ["FileActionServiceProtocol"]),
         .executable(name: "SearchBenchmark", targets: ["SearchBenchmark"])
     ],
     targets: [
@@ -32,10 +41,30 @@ let package = Package(
             dependencies: ["ScreenshotFeature"],
             linkerSettings: [.linkedLibrary("sqlite3")]
         ),
-        .target(name: "SuperRightFeature", dependencies: ["TouchFeatureAPI"]),
+        .target(name: "FileActionServiceProtocol"),
+        .target(
+            name: "SuperRightFeature",
+            dependencies: ["TouchFeatureAPI", "FileActionServiceProtocol"]
+        ),
+        .target(
+            name: "DailyTaskFeature",
+            dependencies: ["TouchFeatureAPI"],
+            linkerSettings: [.linkedFramework("EventKit")]
+        ),
+        .target(name: "PomodoroFeature", dependencies: ["TouchFeatureAPI"]),
+        .target(name: "HolidayCalendarFeature", dependencies: ["TouchFeatureAPI"]),
+        .target(name: "MarkdownPreviewFeature", dependencies: ["TouchFeatureAPI"]),
+        .target(name: "ParserToolsFeature", dependencies: ["TouchFeatureAPI"]),
+        .target(name: "ClipboardFeature", dependencies: ["TouchFeatureAPI"], linkerSettings: [.linkedLibrary("sqlite3"), .linkedFramework("Security")]),
+        .target(name: "TranslationFeature", dependencies: ["TouchFeatureAPI"]),
+        .target(name: "OCRFeature", dependencies: ["TouchFeatureAPI"]),
         .executableTarget(name: "SearchBenchmark", dependencies: ["TouchCore"]),
         .testTarget(name: "TouchFeatureAPITests", dependencies: ["TouchFeatureAPI"]),
         .testTarget(name: "TouchCoreTests", dependencies: ["TouchCore", "TouchFeatureAPI"]),
+        .testTarget(name: "ClipboardFeatureTests", dependencies: ["ClipboardFeature"]),
+        .testTarget(name: "TranslationFeatureTests", dependencies: ["TranslationFeature", "TouchFeatureAPI"]),
+        .testTarget(name: "OCRFeatureTests", dependencies: ["OCRFeature", "TouchFeatureAPI"]),
+        .testTarget(name: "MarkdownPreviewFeatureTests", dependencies: ["MarkdownPreviewFeature"]),
         .testTarget(
             name: "ScreenshotFeatureTests",
             dependencies: ["ScreenshotFeature", "ScreenshotServiceProtocol", "TouchFeatureAPI"]
@@ -45,6 +74,23 @@ let package = Package(
             dependencies: ["ScreenshotServiceCore", "ScreenshotFeature"],
             resources: [.copy("Fixtures")]
         ),
-        .testTarget(name: "FeaturePluginTests", dependencies: ["FinderFeature", "ScreenshotFeature", "SuperRightFeature", "TouchFeatureAPI"])
+        .testTarget(
+            name: "FeaturePluginTests",
+            dependencies: [
+                "FileActionServiceProtocol",
+                "FinderFeature",
+                "ScreenshotFeature",
+                "SuperRightFeature",
+                "DailyTaskFeature",
+                "PomodoroFeature",
+                "HolidayCalendarFeature",
+                "MarkdownPreviewFeature",
+                "ParserToolsFeature",
+                "ClipboardFeature",
+                "TranslationFeature",
+                "OCRFeature",
+                "TouchFeatureAPI"
+            ]
+        )
     ]
 )

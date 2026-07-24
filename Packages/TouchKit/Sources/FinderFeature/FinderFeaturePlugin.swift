@@ -10,7 +10,7 @@ public struct FinderFeaturePlugin: FeaturePlugin {
         summary: "打开 Finder",
         symbolName: "face.smiling",
         defaultOrder: 0,
-        defaultShortcut: .init(modifiers: [.command], key: "1")
+        defaultShortcut: .init(modifiers: [], key: "1")
     )
 
     public func initialState() async -> FeatureState { .available }

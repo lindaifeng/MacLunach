@@ -47,6 +47,8 @@ public enum ScreenshotAnnotationKind: String, Codable, CaseIterable, Equatable, 
     case highlighter
     case text
     case numberedMarker
+    /// 点、连接线和文本框组成的批注。
+    case callout
     case note
     case sticker
     case mosaic

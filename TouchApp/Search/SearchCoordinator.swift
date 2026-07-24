@@ -33,21 +33,44 @@ final class SearchCoordinator: ObservableObject {
     @Published var mode: SearchMode = .applications {
         didSet {
             guard mode != oldValue else { return }
+            if mode == .actions {
+                query = ""
+                isSearchFieldFocused = false
+            } else {
+                isSearchFieldFocused = true
+            }
+            if mode == .files {
+                let environment = environment
+                Task { await environment.prepareFileIndex() }
+            }
             scheduleSearch(query: query, mode: mode)
         }
     }
+    @Published var isSearchFieldFocused = true
     @Published private(set) var state = SearchPresentationState.idle
 
     private let environment: SearchEnvironment
+    private let actionSearch: @MainActor (String) -> [SearchResult]
+    private let actionActivation: @MainActor (SearchResult) -> Void
     private var searchTask: Task<Void, Never>?
     private var isKeyboardSelectionActive = false
 
-    init(environment: SearchEnvironment) {
+    init(
+        environment: SearchEnvironment,
+        actionSearch: @escaping @MainActor (String) -> [SearchResult] = { _ in [] },
+        actionActivation: @escaping @MainActor (SearchResult) -> Void = { _ in }
+    ) {
         self.environment = environment
+        self.actionSearch = actionSearch
+        self.actionActivation = actionActivation
     }
 
     deinit {
         searchTask?.cancel()
+    }
+
+    var diagnostics: SearchDiagnostics {
+        environment.diagnostics
     }
 
     func update(query: String, mode: SearchMode) {
@@ -71,18 +94,22 @@ final class SearchCoordinator: ObservableObject {
 
         state = SearchPresentationState(phase: .searching, results: [], selectedIndex: nil)
         let environment = environment
+        let actionSearch = actionSearch
         searchTask = Task { [weak self] in
             do {
                 try await Task.sleep(for: .milliseconds(40))
                 try Task.checkCancellation()
-                await environment.prepare()
-                try Task.checkCancellation()
-
                 let results: [SearchResult]
                 switch mode {
+                case .actions:
+                    results = actionSearch(trimmedQuery)
                 case .applications:
+                    await environment.prepareApplications()
+                    try Task.checkCancellation()
                     results = await environment.applicationCatalog.search(query: trimmedQuery)
                 case .files:
+                    await environment.prepareFileIndex()
+                    try Task.checkCancellation()
                     guard let store = environment.fileIndexStore else {
                         self?.state = SearchPresentationState(
                             phase: .failed("文件索引暂不可用，应用搜索仍可正常使用。"),
@@ -124,8 +151,32 @@ final class SearchCoordinator: ObservableObject {
         }
     }
 
-    func toggleMode() {
-        mode = mode == .applications ? .files : .applications
+    func advanceMode() {
+        switch mode {
+        case .actions:
+            mode = .applications
+        case .applications:
+            mode = .files
+        case .files:
+            mode = .actions
+        }
+    }
+
+    func prepareForPresentation() {
+        searchTask?.cancel()
+        query = ""
+        mode = .actions
+        isSearchFieldFocused = false
+        state = .idle
+        isKeyboardSelectionActive = false
+    }
+
+    func exitActionSearch() {
+        guard mode == .actions, isSearchFieldFocused else { return }
+        query = ""
+        isSearchFieldFocused = false
+        state = .idle
+        isKeyboardSelectionActive = false
     }
 
     func moveSelection(by offset: Int) {
@@ -138,12 +189,18 @@ final class SearchCoordinator: ObservableObject {
     func activateSelected(commandModifier: Bool = false) {
         guard let result = selectedResult else { return }
         let environment = environment
+        if result.kind == .action {
+            actionActivation(result)
+            return
+        }
         Task { [weak self] in
             do {
                 if commandModifier {
                     try environment.systemActions.revealFile(at: URL(fileURLWithPath: result.path))
                 } else {
                     switch result.kind {
+                    case .action:
+                        break
                     case .application:
                         try await environment.applicationCatalog.launch(bundleIdentifier: result.id)
                     case .file:

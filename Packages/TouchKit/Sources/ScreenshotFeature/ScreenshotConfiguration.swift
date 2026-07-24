@@ -10,6 +10,7 @@ public enum ScreenshotAfterCaptureAction: String, Codable, CaseIterable, Sendabl
 
 public enum ScreenshotSaveLocation: Codable, Equatable, Sendable {
     case pluginDirectory
+    case downloads
     case desktop
     case customBookmark(Data)
 }
@@ -208,8 +209,8 @@ public struct ScreenshotFeatureConfiguration: Codable, Equatable, Sendable {
             .allDisplays: .init(modifiers: [.command, .shift], key: "2"),
             .colorPicker: .init(modifiers: [.control, .option], key: "c")
         ],
-        saveLocation: ScreenshotSaveLocation = .pluginDirectory,
-        namingTemplate: String = "触达-{date}-{time}",
+        saveLocation: ScreenshotSaveLocation = .downloads,
+        namingTemplate: String = "一念-{date}-{time}",
         output: ScreenshotOutputOptions = .init(),
         afterCaptureAction: ScreenshotAfterCaptureAction = .copyAndShowThumbnail,
         showsFloatingThumbnail: Bool = true,

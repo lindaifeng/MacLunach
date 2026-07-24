@@ -2,7 +2,7 @@ import SwiftUI
 
 struct SearchResultsView: View {
     @ObservedObject var coordinator: SearchCoordinator
-    let palette: ThemePalette
+    let theme: ThemeDefinition
 
     var body: some View {
         Group {
@@ -13,7 +13,7 @@ struct SearchResultsView: View {
                 VStack(spacing: 10) {
                     ProgressView()
                     Text("正在搜索…")
-                        .foregroundStyle(palette.secondaryText)
+                        .foregroundStyle(theme.text.secondary.color)
                 }
                 .frame(maxWidth: .infinity, minHeight: 180)
             case .results:
@@ -24,7 +24,7 @@ struct SearchResultsView: View {
                                 result: result,
                                 query: coordinator.query,
                                 isSelected: coordinator.state.selectedIndex == index,
-                                palette: palette
+                                theme: theme
                             ) {
                                 coordinator.moveSelection(by: index - (coordinator.state.selectedIndex ?? 0))
                                 coordinator.activateSelected()
@@ -35,10 +35,8 @@ struct SearchResultsView: View {
                 .frame(maxHeight: 260)
             case .noResults:
                 emptyState(
-                    title: "没有找到匹配结果",
-                    message: coordinator.mode == .applications
-                        ? "可以切换到文件搜索，或尝试应用名称、拼音和首字母。"
-                        : "请检查索引范围，或前往设置重建文件索引。"
+                    title: noResultsTitle,
+                    message: noResultsMessage
                 )
             case let .failed(message):
                 emptyState(title: "操作未完成", message: message)
@@ -47,6 +45,22 @@ struct SearchResultsView: View {
         .id(transitionIdentity)
         .transition(.opacity)
         .animation(.easeInOut(duration: 0.08), value: transitionIdentity)
+    }
+
+    private var noResultsTitle: String {
+        switch coordinator.mode {
+        case .actions: "没有找到匹配的动作"
+        case .applications: "没有找到匹配的应用"
+        case .files: "没有找到匹配的文件"
+        }
+    }
+
+    private var noResultsMessage: String {
+        switch coordinator.mode {
+        case .actions: "请尝试功能名称或自定义动作名称。"
+        case .applications: "请尝试应用名称、拼音或首字母。"
+        case .files: ""
+        }
     }
 
     private var transitionIdentity: String {
@@ -67,26 +81,24 @@ struct SearchResultsView: View {
                 .font(.system(size: 28, weight: .medium))
             Text(title)
                 .font(.system(size: 17, weight: .semibold))
-                .foregroundStyle(palette.primaryText)
-            Text(message)
-                .font(.system(size: 13))
-                .foregroundStyle(palette.secondaryText)
-                .multilineTextAlignment(.center)
-            HStack(spacing: 10) {
-                Button(coordinator.mode == .applications ? "切换到文件" : "切换到应用") {
-                    coordinator.toggleMode()
-                }
-                .accessibilityIdentifier("search.empty.switch-mode")
-                Button("检查索引范围") {
-                    NotificationCenter.default.post(name: .openTouchSettings, object: TouchSettingsSection.search)
-                }
-                .accessibilityIdentifier("search.empty.index-settings")
-                Button("重建索引") {
-                    NotificationCenter.default.post(name: .rebuildTouchSearchIndex, object: nil)
-                }
-                .accessibilityIdentifier("search.empty.rebuild-index")
+                .foregroundStyle(theme.text.primary.color)
+            if !message.isEmpty {
+                Text(message)
+                    .font(.system(size: 13))
+                    .foregroundStyle(theme.text.secondary.color)
+                    .multilineTextAlignment(.center)
             }
-            .buttonStyle(.bordered)
+            if coordinator.mode == .files {
+                Button {
+                    NotificationCenter.default.post(name: .openTouchSettings, object: TouchSettingsSection.search)
+                } label: {
+                    Text("检查索引范围")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(theme.text.secondary.color)
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("search.empty.index-settings")
+            }
         }
         .frame(maxWidth: .infinity, minHeight: 180)
     }

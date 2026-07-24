@@ -9,13 +9,13 @@ fi
 
 app_path="${TOUCH_APP_PATH:-}"
 if [[ -z "$app_path" ]]; then
-  app_path=$(find "$HOME/Library/Developer/Xcode/DerivedData" -path '*/Build/Products/Release/触达.app' -print -quit)
+  app_path=$(find "$HOME/Library/Developer/Xcode/DerivedData" -path '*/Build/Products/Release/一念.app' -print -quit)
 fi
 if [[ -z "$app_path" || ! -d "$app_path" ]]; then
   print -u2 "Release app not found; set TOUCH_APP_PATH"
   exit 1
 fi
-app_executable="$app_path/Contents/MacOS/触达"
+app_executable="$app_path/Contents/MacOS/一念"
 if [[ ! -x "$app_executable" ]]; then
   print -u2 "Touch executable not found in $app_path"
   exit 1

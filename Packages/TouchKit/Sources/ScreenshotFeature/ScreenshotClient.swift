@@ -256,6 +256,32 @@ public actor ScreenshotClient {
         }
     }
 
+    public func registerArtifact(
+        _ artifact: ScreenshotArtifact,
+        history: ScreenshotHistoryConfiguration,
+        timeout: Duration = .seconds(10)
+    ) async throws {
+        let requestData: Data
+        do {
+            requestData = try JSONEncoder().encode(
+                ScreenshotArtifactRegistrationRequest(artifact: artifact, history: history)
+            )
+        } catch {
+            throw ScreenshotFeatureError.serviceFailed(
+                message: "artifact registration request encoding failed: \(error)"
+            )
+        }
+        let payload = try await perform(
+            action: .registerArtifact(requestData: requestData),
+            timeout: timeout
+        )
+        guard case .artifactRegistered = payload else {
+            throw ScreenshotFeatureError.serviceFailed(
+                message: "registerArtifact returned an unexpected payload"
+            )
+        }
+    }
+
     public func saveAnnotationProject(
         _ document: AnnotationDocument,
         timeout: Duration = .seconds(10)

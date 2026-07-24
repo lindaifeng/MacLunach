@@ -1,6 +1,7 @@
 .worktrees/
 DerivedData/
 build/
+.build/
 .DS_Store
 Touch.xcodeproj/
 Packages/TouchKit/.build/

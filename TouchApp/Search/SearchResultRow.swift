@@ -55,7 +55,13 @@ private final class SearchIconCache {
         if let cached = cache.object(forKey: key) { return cached }
         let image: NSImage
         if result.path.isEmpty {
-            image = NSImage(systemSymbolName: result.kind == .application ? "app" : "doc", accessibilityDescription: nil)
+            let symbolName: String
+            switch result.kind {
+            case .action: symbolName = "bolt.fill"
+            case .application: symbolName = "app"
+            case .file: symbolName = "doc"
+            }
+            image = NSImage(systemSymbolName: symbolName, accessibilityDescription: nil)
                 ?? NSImage()
         } else {
             image = NSWorkspace.shared.icon(forFile: result.path)
@@ -70,15 +76,12 @@ struct SearchResultRow: View {
     let result: SearchResult
     let query: String
     let isSelected: Bool
-    let palette: ThemePalette
+    let theme: ThemeDefinition
     let action: () -> Void
 
     var body: some View {
         HStack(spacing: 14) {
-            Image(nsImage: SearchIconCache.shared.icon(for: result))
-                .resizable()
-                .scaledToFit()
-                .frame(width: 34, height: 34)
+            resultIcon
 
             VStack(alignment: .leading, spacing: 3) {
                 highlightedTitle
@@ -86,20 +89,27 @@ struct SearchResultRow: View {
                     .lineLimit(1)
                 Text(result.subtitle)
                     .font(.system(size: 12, weight: .regular))
-                    .foregroundStyle(palette.secondaryText)
+                    .foregroundStyle(theme.text.secondary.color)
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
             Spacer(minLength: 12)
             if isSelected {
-                Text(result.kind == .file ? "↩ 打开  ⌘↩ 显示" : "↩ 打开  ⌘↩ 显示")
+                Text(result.kind == .action ? "↩ 执行" : "↩ 打开  ⌘↩ 显示")
                     .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(palette.secondaryText)
+                    .foregroundStyle(theme.text.secondary.color)
             }
         }
         .padding(.horizontal, 14)
         .frame(height: 56)
-        .background(isSelected ? palette.accent.opacity(0.22) : .clear, in: RoundedRectangle(cornerRadius: 12))
+        .background(isSelected ? theme.card.selectedFill.color : .clear, in: RoundedRectangle(cornerRadius: 12))
+        .overlay(alignment: .leading) {
+            if isSelected {
+                Capsule()
+                    .fill(theme.accent.color)
+                    .frame(width: 2, height: 28)
+            }
+        }
         .contentShape(Rectangle())
         .onTapGesture(perform: action)
         .accessibilityElement(children: .contain)
@@ -110,10 +120,28 @@ struct SearchResultRow: View {
         .accessibilityIdentifier("search.result.\(result.id)")
     }
 
+    @ViewBuilder
+    private var resultIcon: some View {
+        let featurePrefix = "action.feature."
+        if result.kind == .action, result.id.hasPrefix(featurePrefix) {
+            LauncherFeatureIcon(
+                pluginID: String(result.id.dropFirst(featurePrefix.count)),
+                fallbackSymbolName: "bolt.fill",
+                size: 34,
+                fallbackColor: theme.icon.primary.color
+            )
+        } else {
+            Image(nsImage: SearchIconCache.shared.icon(for: result))
+                .resizable()
+                .scaledToFit()
+                .frame(width: 34, height: 34)
+        }
+    }
+
     private var highlightedTitle: Text {
         let ranges = SearchResultHighlighting.matchedRanges(in: result, query: query)
         guard !ranges.isEmpty else {
-            return Text(result.title).foregroundColor(palette.primaryText)
+            return Text(result.title).foregroundColor(theme.text.primary.color)
         }
 
         var text = Text("")
@@ -121,16 +149,16 @@ struct SearchResultRow: View {
         for range in ranges {
             if cursor < range.lowerBound {
                 text = text + Text(String(result.title[cursor..<range.lowerBound]))
-                    .foregroundColor(palette.primaryText)
+                    .foregroundColor(theme.text.primary.color)
             }
             text = text + Text(String(result.title[range]))
-                .foregroundColor(palette.accent)
+                .foregroundColor(theme.accent.color)
                 .bold()
             cursor = range.upperBound
         }
         if cursor < result.title.endIndex {
             text = text + Text(String(result.title[cursor...]))
-                .foregroundColor(palette.primaryText)
+                .foregroundColor(theme.text.primary.color)
         }
         return text
     }

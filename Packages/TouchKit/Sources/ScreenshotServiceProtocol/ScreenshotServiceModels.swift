@@ -46,6 +46,11 @@ public struct ScreenshotServiceAction: Codable, Equatable, Sendable {
         .init(name: "deleteArtifact", isIdempotent: true, payload: requestData)
     }
 
+    /// 为已经由主进程生成的截图补写历史记录。文件必须已经位于截图插件根目录内。
+    public static func registerArtifact(requestData: Data) -> Self {
+        .init(name: "registerArtifact", isIdempotent: true, payload: requestData)
+    }
+
     public static func saveAnnotationProject(requestData: Data) -> Self {
         .init(name: "saveAnnotationProject", isIdempotent: false, payload: requestData)
     }

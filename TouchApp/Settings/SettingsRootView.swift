@@ -21,7 +21,7 @@ enum TouchSettingsSection: String, CaseIterable, Identifiable {
         case .permissions: "权限"
         case .update: "更新"
         case .privacy: "隐私与存储"
-        case .about: "关于触达"
+        case .about: "关于一念"
         }
     }
 
@@ -70,6 +70,8 @@ final class SettingsNavigationModel: ObservableObject {
 }
 
 struct SettingsRootView: View {
+    @EnvironmentObject private var themeStore: ThemeStore
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @ObservedObject var searchEnvironment: SearchEnvironment
     @ObservedObject var navigation: SettingsNavigationModel
 
@@ -81,47 +83,149 @@ struct SettingsRootView: View {
         self.navigation = navigation
     }
 
+    private var theme: ThemeDefinition {
+        ThemeRegistry.shared.definition(for: themeStore.theme)
+    }
+
     var body: some View {
-        NavigationSplitView {
-            List {
-                ForEach(TouchSettingsSection.allCases) { item in
-                    Button {
-                        navigation.section = item
-                        navigation.featureID = nil
-                    } label: {
-                        Label(item.title, systemImage: item.symbol)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .contentShape(Rectangle())
+        ZStack {
+            GlassBackground(
+                theme: theme,
+                reduceTransparency: reduceTransparency,
+                themeColorOpacity: themeStore.themeColorOpacity
+            )
+            PanelThemeBackground(
+                theme: theme,
+                reduceTransparency: reduceTransparency,
+                themeColorOpacity: themeStore.themeColorOpacity
+            )
+
+            HStack(spacing: 0) {
+                sidebar
+                    .frame(width: 196)
+                SettingsDivider(theme: theme)
+                    .frame(width: 1)
+                ScrollView {
+                    settingsDetail
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 30)
+                        .padding(.vertical, 26)
+                }
+                .id("\(navigation.section.rawValue):\(navigation.featureID ?? "root")")
+                .scrollIndicators(.hidden)
+            }
+        }
+        .ignoresSafeArea(.container, edges: .top)
+        .tint(theme.accent.color)
+        .preferredColorScheme(settingsColorScheme)
+    }
+
+    private var settingsColorScheme: ColorScheme? {
+        switch themeStore.theme {
+        case .night, .graphite:
+            return .dark
+        case .day:
+            return .light
+        case .defaultGlass:
+            return nil
+        }
+    }
+
+    private var sidebar: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ZStack {
+                WindowDragHandle()
+                    .accessibilityHidden(true)
+                HStack(spacing: 8) {
+                    BrandLogoView(size: 26)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text("一念")
+                            .font(.custom("PingFangSC-Semibold", fixedSize: 17))
+                            .foregroundStyle(theme.icon.brandGradient.gradient)
+                        Text("偏好设置")
+                            .font(.custom("PingFangSC-Medium", fixedSize: 10.5))
+                            .foregroundStyle(theme.text.secondary.color)
                     }
-                    .buttonStyle(.plain)
-                    .padding(.vertical, 5)
-                    .accessibilityIdentifier(item.accessibilityIdentifier)
+                    Spacer()
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 27)
+            }
+            .frame(height: 84)
+            .accessibilityIdentifier("settings.drag-handle")
+
+            VStack(spacing: 3) {
+                ForEach(TouchSettingsSection.allCases) { item in
+                    sidebarItem(item)
                 }
             }
-            .navigationTitle("触达设置")
-            .navigationSplitViewColumnWidth(min: 180, ideal: 200, max: 230)
-        } detail: {
-            settingsDetail
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .padding(.horizontal, 10)
+
+            Spacer()
         }
+        .background(theme.panel.tint.color.opacity(0.22 * themeStore.themeColorOpacity))
+    }
+
+    private func sidebarItem(_ item: TouchSettingsSection) -> some View {
+        let isSelected = navigation.section == item
+        return Button {
+            navigation.section = item
+            navigation.featureID = nil
+        } label: {
+            HStack(spacing: 10) {
+                Image(systemName: item.symbol)
+                    .font(.system(size: 13, weight: .semibold))
+                    .frame(width: 17)
+                Text(item.title)
+                    .font(.system(size: 13, weight: isSelected ? .semibold : .medium))
+                Spacer()
+            }
+            .foregroundStyle(isSelected ? theme.accent.color : theme.text.secondary.color)
+            .padding(.horizontal, 11)
+            .frame(maxWidth: .infinity, minHeight: 35, maxHeight: 35, alignment: .leading)
+            .contentShape(Rectangle())
+            .background(
+                isSelected ? theme.accent.color.opacity(0.13) : .clear,
+                in: RoundedRectangle(cornerRadius: 10, style: .continuous)
+            )
+            .overlay(alignment: .leading) {
+                if isSelected {
+                    Capsule()
+                        .fill(theme.accent.color)
+                        .frame(width: 2, height: 18)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .contentShape(Rectangle())
+        .buttonStyle(.plain)
+        .accessibilityIdentifier(item.accessibilityIdentifier)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 
     @ViewBuilder
     private var settingsDetail: some View {
         if navigation.section == .search {
-            FileIndexSettingsView(environment: searchEnvironment)
+            FileIndexSettingsView(environment: searchEnvironment, theme: theme)
         } else if navigation.section == .featureArea {
             if let featureID = navigation.featureID {
-                FeatureDetailSettingsView(featureID: featureID) {
-                    navigation.featureID = nil
-                }
+                FeatureDetailSettingsView(
+                    featureID: featureID,
+                    theme: theme,
+                    onBack: {
+                        navigation.featureID = nil
+                    },
+                    onOpenPermissions: {
+                        navigation.navigate(to: TouchSettingsDestination(section: .permissions))
+                    }
+                )
             } else {
-                FeatureAreaSettingsView { featureID in
+                FeatureAreaSettingsView(theme: theme) { featureID in
                     navigation.featureID = featureID
                 }
             }
         } else {
-            GeneralSettingsView(section: navigation.section)
+            GeneralSettingsView(section: navigation.section, theme: theme)
         }
     }
 }

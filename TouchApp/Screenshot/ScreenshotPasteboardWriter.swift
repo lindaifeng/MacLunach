@@ -43,6 +43,28 @@ final class ScreenshotPasteboardWriter: ScreenshotClipboardWriting {
         )
     }
 
+    /// GIF 必须以原始 public.gif 数据写入，不能经 NSImage/TIFF 转换，否则动画会丢失。
+    func writeGIF(at imageURL: URL, includesFileURL: Bool = true) throws {
+        let data: Data
+        do {
+            data = try Data(contentsOf: imageURL, options: .mappedIfSafe)
+        } catch {
+            throw ScreenshotClipboardError.imageUnreadable(relativePath: imageURL.path)
+        }
+        let item = NSPasteboardItem()
+        item.setData(data, forType: NSPasteboard.PasteboardType("public.gif"))
+        if includesFileURL {
+            item.setString(imageURL.absoluteString, forType: .fileURL)
+        }
+
+        let previousItems = snapshotItems()
+        pasteboard.clearContents()
+        guard pasteboard.writeObjects([item]) else {
+            restore(previousItems)
+            throw ScreenshotClipboardError.pasteboardWriteFailed
+        }
+    }
+
     private func writeImage(
         at imageURL: URL,
         includesFileURL: Bool,

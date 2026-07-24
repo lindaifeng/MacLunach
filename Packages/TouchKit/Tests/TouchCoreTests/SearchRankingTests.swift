@@ -26,3 +26,15 @@ import Testing
         query: "fin"
     ))
 }
+
+@Test func strictSearchTermsRequireContiguousMatches() {
+    let webAction = SearchResult(
+        title: "百度",
+        pinyin: "网页",
+        strictSearchTerms: ["https://www.baidu.com/"],
+        kind: .action
+    )
+
+    #expect(SearchRanking.score(webAction, query: "baidu") > 0)
+    #expect(SearchRanking.score(webAction, query: "do") == 0)
+}

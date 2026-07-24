@@ -1,24 +1,23 @@
 import Foundation
 import ScreenshotFeature
+import TouchCore
+import TouchFeatureAPI
 import XCTest
 @testable import 触达
 
 final class FeatureConfigurationStoreTests: XCTestCase {
-    func testPluginConfigurationsRoundTripInIndependentNamespaces() throws {
+    func testHostOwnedConfigurationsRoundTripInIndependentNamespaces() throws {
         let (defaults, suiteName) = makeDefaults()
         defer { defaults.removePersistentDomain(forName: suiteName) }
         let store = FeatureConfigurationStore(defaults: defaults)
 
         try store.save(FinderFeatureConfiguration(reuseExistingWindow: false))
         try store.save(ScreenshotFeatureConfiguration(copiesToClipboard: false))
-        try store.save(SuperRightFeatureConfiguration(cutsFiles: false, createsFiles: false))
 
         let loaded = store.load()
         XCTAssertFalse(loaded.finder.reuseExistingWindow)
         XCTAssertFalse(loaded.screenshot.copiesToClipboard)
         XCTAssertTrue(loaded.screenshot.showsAnnotationToolbar)
-        XCTAssertFalse(loaded.superRight.cutsFiles)
-        XCTAssertFalse(loaded.superRight.createsFiles)
         XCTAssertNotEqual(
             FeatureConfigurationStore.storageKey(for: FeatureConfigurationStore.finderID),
             FeatureConfigurationStore.storageKey(for: FeatureConfigurationStore.screenshotID)
@@ -39,7 +38,25 @@ final class FeatureConfigurationStoreTests: XCTestCase {
 
         XCTAssertFalse(loaded.finder.reuseExistingWindow)
         XCTAssertEqual(loaded.screenshot, ScreenshotFeatureConfiguration())
-        XCTAssertEqual(loaded.superRight, SuperRightFeatureConfiguration())
+    }
+
+    func testLegacyPluginConfigurationIsHandedOffAsOpaqueSchemaOneData() throws {
+        let (defaults, suiteName) = makeDefaults()
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let pluginID = "me.touch.test-super-right"
+        let legacyData = Data(#"{"createsFiles":false}"#.utf8)
+        let legacyKey = FeatureConfigurationStore.storageKey(for: pluginID)
+        defaults.set(legacyData, forKey: legacyKey)
+        let storage = FeatureStorageFactory(defaults: defaults).makeStorage(pluginID: pluginID)
+
+        try FeatureConfigurationStore(defaults: defaults)
+            .handoffLegacyConfiguration(to: storage)
+
+        XCTAssertEqual(
+            try storage.loadConfiguration(),
+            FeatureConfigurationSnapshot(schemaVersion: 1, data: legacyData)
+        )
+        XCTAssertNil(defaults.data(forKey: legacyKey))
     }
 
     func testLegacyScreenshotConfigurationMigratesToVersionTwoEnvelope() throws {
@@ -151,12 +168,10 @@ final class FeatureConfigurationStoreTests: XCTestCase {
 
         first.setHidden(true, for: FeatureConfigurationStore.screenshotID)
         first.updateScreenshotConfiguration(\.copiesToClipboard, to: false)
-        first.updateSuperRightConfiguration(\.createsFiles, to: false)
 
         let restored = FeatureAreaStore(defaults: defaults, plugins: [])
         XCTAssertTrue(restored.preferences.hidden.contains(FeatureConfigurationStore.screenshotID))
         XCTAssertFalse(restored.configurations.screenshot.copiesToClipboard)
-        XCTAssertFalse(restored.configurations.superRight.createsFiles)
         XCTAssertTrue(restored.configurations.finder.reuseExistingWindow)
     }
 

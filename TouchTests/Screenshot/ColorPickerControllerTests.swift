@@ -6,9 +6,9 @@ import XCTest
 
 @MainActor
 final class ColorPickerControllerTests: XCTestCase {
-    func testRapidMovementCancelsOlderRequestsAndAcceptsOnlyLatestSample() async throws {
+    func testRapidMovementCoalescesToLatestPointWithoutConcurrentCaptures() async throws {
         let capture = ColorSampleCaptureProbe { request in
-            request.desktopPoint.x == 3 ? .milliseconds(5) : .seconds(10)
+            request.desktopPoint.x == 3 ? .milliseconds(5) : .milliseconds(40)
         }
         var acceptedPoints: [CGPoint] = []
         let controller = ColorPickerController(
@@ -20,15 +20,17 @@ final class ColorPickerControllerTests: XCTestCase {
         controller.mouseMoved(on: 1, to: .init(x: 1, y: 10))
         try await waitUntil { await capture.requestCount >= 1 }
         controller.mouseMoved(on: 1, to: .init(x: 2, y: 10))
-        try await waitUntil { await capture.requestCount >= 2 }
         controller.mouseMoved(on: 1, to: .init(x: 3, y: 10))
 
         try await waitUntil { acceptedPoints.count == 1 }
-        try await waitUntil { await capture.cancellationCount >= 2 }
 
         XCTAssertEqual(acceptedPoints, [.init(x: 3, y: 10)])
         let requests = await capture.requests
-        XCTAssertEqual(requests.map(\.desktopPoint.x), [1, 2, 3])
+        let maximumConcurrentRequestCount = await capture.maximumConcurrentRequestCount
+        let cancellationCount = await capture.cancellationCount
+        XCTAssertEqual(requests.map(\.desktopPoint.x), [1, 3])
+        XCTAssertEqual(maximumConcurrentRequestCount, 1)
+        XCTAssertEqual(cancellationCount, 0)
     }
 
     func testMouseMovementSamplingIsThrottled() async throws {
@@ -96,6 +98,8 @@ private actor ColorSampleCaptureProbe: ScreenshotCapturing {
     private let delayProvider: DelayProvider
     private(set) var requests: [ScreenshotColorSampleRequest] = []
     private(set) var cancellationCount = 0
+    private(set) var maximumConcurrentRequestCount = 0
+    private var activeRequestCount = 0
 
     init(delayProvider: @escaping DelayProvider) {
         self.delayProvider = delayProvider
@@ -115,6 +119,9 @@ private actor ColorSampleCaptureProbe: ScreenshotCapturing {
         _ request: ScreenshotColorSampleRequest
     ) async throws -> ScreenshotColorSample {
         requests.append(request)
+        activeRequestCount += 1
+        maximumConcurrentRequestCount = max(maximumConcurrentRequestCount, activeRequestCount)
+        defer { activeRequestCount -= 1 }
         do {
             let delay = delayProvider(request)
             if delay > .zero {

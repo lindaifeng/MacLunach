@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 为“一念”增加 Markdown 预览目录抽屉、加密文本/图片剪贴板历史、macOS 15 系统离线翻译，以及无缩略图的独立 OCR 工作台。
+**Goal:** 为“一念”增加 Markdown 预览目录抽屉、加密文本/图片剪贴板历史、macOS 15 系统离线翻译，以及上方展示选区截图、下方编辑识别文字的独立“文字识别”工作台。
 
 **Architecture:** TouchKit 承载领域模型、加密存储、工作流协议和可替换 Provider；Touch App 承载系统剪贴板、截图/OCR、窗口和主题化 UI。翻译和 OCR 共用 `ScreenTextCapturing`，OCR 经 `TextWorkflowRouter` 只传递已校对文字；剪贴板只读写一念自有 SQLite 和一念专属钥匙串项目。
 
@@ -22,7 +22,7 @@
 | `TouchApp/FeatureArea/ClipboardPasteboardMonitor.swift` | 通用剪贴板监听、图片规范化、回写防重入。 |
 | `TouchApp/FeatureArea/ClipboardPanelController.swift` | 剪贴板窗口和主题化列表。 |
 | `TouchApp/FeatureArea/TranslationPanelController.swift` | 翻译会话、语言状态和窗口。 |
-| `TouchApp/FeatureArea/OCRWorkspacePanelController.swift` | 无缩略图的可编辑 OCR 工作台。 |
+| `TouchApp/FeatureArea/OCRPanelController.swift` | 上方选区截图预览、下方可编辑文字、自动复制反馈与工作台动作。 |
 | `TouchApp/Screenshot/ScreenTextCaptureBroker.swift` | 受控临时截图、OCR、临时文件删除。 |
 | `TouchApp/App/AppDelegate.swift` | 注册插件、分派窗口、启动器恢复、权限页跳转。 |
 | `project.yml` | 三个新增 TouchKit product 到 `Touch` target 的依赖。 |
@@ -372,7 +372,7 @@ git add TouchApp/FeatureArea/MarkdownPreviewPanelController.swift TouchApp/Appea
 git commit -m "feat: add markdown outline drawer"
 ```
 
-Expected: 三主题中抽屉展开/关闭、跳转和活动高亮均通过，编辑模式只有受限说明。
+Expected: 四套主题中抽屉展开/关闭、跳转和活动高亮均通过，编辑模式只有受限说明。
 
 ### Task 5: 强化加密剪贴板仓库和数据恢复
 
@@ -717,13 +717,12 @@ git add TouchApp/FeatureArea/TranslationPanelController.swift TouchApp/FeatureAr
 git commit -m "feat: add on-device translation workspace"
 ```
 
-### Task 10: 构建无缩略图的独立 OCR 工作台
+### Task 10: 构建独立文字识别工作台
 
 **Files:**
-- Create: `TouchApp/FeatureArea/OCRWorkspacePanelController.swift`
-- Create: `TouchApp/FeatureArea/OCRWorkspaceView.swift`
-- Create: `TouchTests/FeatureArea/OCRWorkspaceTests.swift`
-- Create: `TouchUITests/OCRWorkspaceTests.swift`
+- Create: `TouchApp/FeatureArea/OCRPanelController.swift`
+- Modify: `TouchTests/FeatureAreaStoreTests.swift`
+- Modify: `TouchUITests/LauncherSmokeTests.swift`
 - Modify: `TouchApp/App/AppDelegate.swift`
 
 - [ ] **Step 1: 写 OCR→翻译只传文字的失败测试。**
@@ -742,7 +741,7 @@ func testTranslateRoutesEditedTextWithoutStartingAnotherCapture() async throws {
 }
 ```
 
-UI fixture 要断言窗口中不存在 `ocr.thumbnail`、`screenshot.recognition.preview` 和图片视图；存在 `ocr.editor`、`ocr.copy`、`ocr.translate`、`ocr.recapture`。
+UI fixture 要断言存在 `ocr.preview`、`ocr.text-editor`、`ocr.copy`、`ocr.translate` 和 `ocr.capture`，截图预览位于编辑区上方；窗口默认约为 `390 × 252pt`。
 
 - [ ] **Step 2: 验证失败。**
 
@@ -750,9 +749,9 @@ Run: `xcodebuild test -project Touch.xcodeproj -scheme Touch -only-testing:Touch
 
 Expected: OCR workspace 类型、控制器和 identifier 尚未存在而失败。
 
-- [ ] **Step 3: 实现编辑优先的 OCR 窗口。**
+- [ ] **Step 3: 实现上图下文的文字识别窗口。**
 
-`OCRWorkspaceView` 只有标题、主题化状态/错误、`TextEditor`（`ocr.editor`）和复制/翻译/重新截图图标；不得引用 `ScreenshotRecognitionResultPanel`，不得保存缩略图、临时图片或 OCR 历史。翻译动作必须构造：
+`OCRWorkspaceView` 使用上方本次选区截图预览和下方 `TextEditor`（`ocr.text-editor`）的纵向结构，并提供复制、翻译、重新框选和清空图标；不得引用 `ScreenshotRecognitionResultPanel`，不得保存 OCR 历史或永久截图。截图服务临时 artifact 在识别成功、失败和取消后删除，窗口只保留当前内存预览。翻译动作必须构造：
 
 ```swift
 try await router.routeToTranslation(.init(
@@ -762,7 +761,9 @@ try await router.routeToTranslation(.init(
 ))
 ```
 
-重新截图先保留上一次校对文本直到新识别成功；失败显示可恢复错误。关闭窗口只释放 transient capture state，不调用任何持久化仓库。
+重新截图先保留上一次校对文本和预览直到新识别成功；失败显示可恢复错误。清空只清除文字、不清除预览。关闭窗口释放 transient capture state 和内存预览，不调用任何 OCR 历史仓库。
+
+读取文字识别插件设置中的“识别后自动复制”，默认值为开启。开启时识别成功后写入剪贴板并短时显示“拷贝成功”；关闭时不自动写入、不显示自动复制提示。手动复制不受该开关影响，成功后同样显示提示。
 
 - [ ] **Step 4: 从主应用接入 Router 和生命周期。**
 
@@ -775,11 +776,11 @@ Run:
 ```bash
 xcodebuild test -project Touch.xcodeproj -scheme Touch -only-testing:TouchTests/OCRWorkspaceTests
 xcodebuild test -project Touch.xcodeproj -scheme Touch -only-testing:TouchUITests/OCRWorkspaceTests
-git add TouchApp/FeatureArea/OCRWorkspacePanelController.swift TouchApp/FeatureArea/OCRWorkspaceView.swift TouchTests/FeatureArea/OCRWorkspaceTests.swift TouchUITests/OCRWorkspaceTests.swift TouchApp/App/AppDelegate.swift
+git add TouchApp/FeatureArea/OCRPanelController.swift TouchTests/FeatureAreaStoreTests.swift TouchUITests/LauncherSmokeTests.swift TouchApp/App/AppDelegate.swift
 git commit -m "feat: add standalone OCR workspace"
 ```
 
-Expected: 不显示缩略图，编辑/复制/重新截图工作，OCR→翻译只产生一份请求且没有第二次截图。
+Expected: 上方截图预览、下方编辑区、自动/手动复制反馈、重新框选和清空语义均工作；OCR→翻译只产生一份请求且没有第二次截图。
 
 ### Task 11: 注册插件、功能区分派与统一恢复路径
 
@@ -882,11 +883,11 @@ Expected: 译文不改原文，所有错误可恢复，只使用系统离线能�
 - [ ] **Step 4: 验证真实 OCR、Markdown 和剪贴板。**
 
 ```text
-1. 在已授权屏幕录制的机器打开“翻译”和“OCR 工作台”，分别选取含文字区域。
-2. OCR 窗口只显示编辑文字，没有截图缩略图；编辑后翻译不出现第二次选区。
+1. 在已授权屏幕录制的机器打开“翻译”和“文字识别”，分别选取含文字区域。
+2. 文字识别窗口上方显示本次选区截图、下方显示可编辑文字；开启自动复制时剪贴板写入并显示“拷贝成功”，关闭后不自动写入；编辑后翻译不出现第二次选区。
 3. 检查服务临时目录；成功、失败、取消和关闭窗口后均无本次临时图片。
 4. 在 Markdown 阅读/分栏验证目录跳转和滚动高亮；纯编辑模式受限且源文件哈希不变。
-5. 复制文本、PNG、密码、验证码，重启后验证可搜索复制；收藏跨越 100 条仍保留；清空全部后库为空，系统和其他应用钥匙串项目未变化。
+5. 复制文本、PNG、密码、验证码，重启后验证可搜索复制；条目日期显示为 `2026年7月23日` 这类中文年月日；收藏跨越 100 条仍保留；清空全部后库为空，系统和其他应用钥匙串项目未变化。
 ```
 
 Expected: 每项实际完成或明确记录受阻状态；自动化不能替代真实权限、XPC、UI 验证。
@@ -912,8 +913,8 @@ Expected: 文档只报告实际运行过的验证和未验证项。
 - Markdown H1–H6、抽屉、跳转、滚动高亮、阅读/分栏可用、编辑受限、仅预览 DOM：Task 3–4。
 - 文本/图片剪贴板、搜索、复制、收藏、清空、100 条、密码/验证码、回写防重入、专属钥匙串与加密：Task 5–6。
 - macOS 15 Apple Translation、自动原文语言、手动目标语言、语言包、macOS 14 受限、无网络回退、取消和 Provider 边界：Task 7、9、11。
-- 截图优先翻译/OCR、临时文件删除、无文字/权限/超时恢复、OCR 无缩略图、编辑/复制/翻译/重新截图、无第二次截图：Task 8–10。
-- 三主题、图标 tooltip/VoiceOver/焦点、标题栏拖动限定、编辑快捷键、启动器恢复、统一权限页：Task 4、6、9–11。
+- 截图优先翻译/OCR、临时文件删除、无文字/权限/超时恢复、文字识别上图下文、自动/手动复制、编辑/翻译/重新框选、无第二次截图：Task 8–10、19。
+- 四套主题、图标 tooltip/VoiceOver/焦点、标题栏拖动限定、编辑快捷键、启动器恢复、统一权限页：Task 4、6、9–11、19。
 - 自动化与真实 macOS 验收、日志不泄露敏感内容：Task 12。
 
 ### 占位符扫描
@@ -926,3 +927,68 @@ Expected: 文档只报告实际运行过的验证和未验证项。
 - 截图文字捕获统一使用 `ScreenTextCapturing.captureText()`、`cancelCapture()` 和 `ScreenTextCaptureResult`。
 - 翻译替换边界统一使用 `TranslationProvider`，系统实现为 `AppleOnDeviceTranslationProvider`。
 - Markdown 目录生产路径统一使用 `RenderedMarkdownHeading(level:title:anchor:)`，不从 Markdown 源文件补算锚点。
+
+## 2026-07-22 方案 A 视觉改版增补计划
+
+### Task 13：新增石墨灰主题
+
+- 扩展 `TouchTheme` 产品顺序与持久化兼容。
+- 在主题注册表中注册完整语义令牌，设置页增加主题名称、说明和深色外观映射。
+- 补充主题循环、注册完整性和关键令牌测试。
+
+### Task 14：剪贴板单列大卡片
+
+- 将窗口默认尺寸调整为适合单列浏览的紧凑尺寸。
+- 文本历史使用多行摘要卡片；图片历史使用 180–240pt 等比预览。
+- 卡片动作改为图标与悬浮提示，悬停时显示，收藏状态始终可辨认。
+- 保留搜索、一键复制、收藏、单项删除和清空非收藏历史，不改变加密仓库、100 条上限和专属钥匙串边界。
+
+### Task 15：翻译与 OCR 紧凑结果工作台
+
+- 保留现有 `captureTextForWorkspace()` 局部选区和临时文件清理链路。
+- 翻译在选区 OCR 成功后自动发起系统翻译，采用左右双栏并补充语言交换、重新翻译和两侧复制。
+- OCR 采用上方选区截图预览、下方可编辑文字的纵向结构，提供重新框选、复制、翻译和清空；预览只驻留当前窗口内存。
+- 取消首次框选时不显示结果窗口并恢复启动器；重新框选取消时恢复已有结果窗口。
+
+### Task 16：验证
+
+- 运行 TouchKit 测试、TouchTests、签名 Debug 构建与 `git diff --check`。
+- 真实启动应用，验证四套主题切换、剪贴板文本/图片卡片、翻译局部框选后自动翻译、OCR 局部框选与 OCR→翻译不二次截图。
+- 分别记录自动化通过项和依赖屏幕录制权限、语言包的真实系统验证结果。
+
+### Task 17：功能区全主题化与交互精修
+
+- 剪贴板、翻译和 OCR 根视图同时使用系统材质层与 `PanelThemeBackground`，覆盖标题栏安全区、内容区、滚动区和编辑器；深色主题显式采用深色控件语义，避免石墨灰窗口中出现系统浅色底。
+- 剪贴板卡片主体改为单击复制，移除单独复制按钮；收藏和删除按钮保持独立命中区域。复制成功后显示居中的主题化勾选浮层，并在短时动画后自动消失。
+- 工作台截图选区启用专用“松手即提交”模式，只影响翻译/OCR 的临时识别流程，不改变普通截图、标注、钉图和录制工作流。
+- 翻译通过 `LanguageAvailability` 区分已安装、支持但待下载和不支持；待下载时先显示中文提示和“下载语言包”按钮，用户确认后才调用 `TranslationSession` 准备或翻译并触发系统下载。
+- 精修两个文字工作台的语言栏、状态栏、文本卡片、空状态、进度和错误层级，并补充相应可访问性标识。
+
+### Task 18：本轮回归验证
+
+- 补充专用选区松手自动完成测试，确保普通截图仍需显式完成。
+- 更新翻译/OCR fixture UI 测试，断言主题表面、中文语言包提示入口，以及文字识别上方预览、下方编辑区的布局约束。
+- 运行受影响的 TouchKit、TouchTests、TouchUITests、稳定 Apple Development 签名构建与 `git diff --check`；真实语言包下载和真实屏幕框选单独报告。
+
+## 2026-07-23 文字识别精修增补计划
+
+### Task 19：按参考图精修文字识别结果窗口
+
+- 将产品显示名称统一为“文字识别”，窗口默认尺寸设为约 `390 × 252pt`，保留原生红、黄、绿窗口按钮和仅标题栏可拖动规则。
+- 上方按比例展示本次框选截图，下方使用可编辑文字区；预览不进入截图历史，关闭窗口后释放。
+- `ScreenTextCaptureResult` 增加仅供当前工作台使用的内存预览数据；专用截图不进入普通截图历史，临时 artifact 在成功、失败和取消后清理。
+- 新增“识别后自动复制”设置，默认开启并持久化。开启时自动复制成功后居中显示约 1.4 秒“拷贝成功”浮层；关闭时不自动写入剪贴板或显示自动提示；手动拷贝始终可用并复用同一反馈。
+- 清空文字时保留截图预览；重新框选成功后同时替换预览和文字；OCR→翻译传递当前校对文字，不触发第二次截图。
+- 默认玻璃、黑夜、白天、石墨灰四套主题均使用统一语义背景、图标、间距和交互状态，不暴露系统默认输入框或按钮外观。
+
+### Task 20：统一剪贴板中文日期
+
+- 剪贴板日期格式固定为 `yyyy年M月d日`，使用中文地区、公历与当前时区，例如 `2026年7月23日`。
+- UI fixture 断言日期不包含时分秒或英文月份，并保留原有搜索、复制、收藏、删除与清空行为。
+
+### Task 21：增补回归验证
+
+- 运行 `swift test --package-path Packages/TouchKit`，覆盖 OCR 配置默认值、持久化与工作流模型。
+- 运行定向 `TouchTests`，覆盖自动复制开关、手动复制、内存预览、临时 artifact 清理及窗口尺寸。
+- 运行定向 `TouchUITests`，覆盖 `390 × 252pt`、上图下文、复制提示和中文日期；若被系统认证流程阻断，按环境阻断报告，不写成通过。
+- 运行稳定 Apple Development 签名构建与 `git diff --check`；真实屏幕录制权限、OCR/XPC 和剪贴板系统行为继续单独报告。

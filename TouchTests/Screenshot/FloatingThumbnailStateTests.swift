@@ -9,19 +9,20 @@ final class FloatingThumbnailStateTests: XCTestCase {
         XCTAssertTrue(policy.copiesToClipboard)
         XCTAssertTrue(policy.showsThumbnail)
         XCTAssertFalse(policy.beginsAnnotation)
+        XCTAssertFalse(policy.savesToConfiguredLocation)
     }
 
     func testConfiguredPostCaptureActionsAreMutuallyExclusive() {
         var configuration = ScreenshotFeatureConfiguration(afterCaptureAction: .saveOnly)
         XCTAssertEqual(
             ScreenshotPostCapturePolicy(configuration: configuration),
-            .init(copiesToClipboard: false, showsThumbnail: false, beginsAnnotation: false)
+            .init(copiesToClipboard: false, showsThumbnail: false, beginsAnnotation: false, savesToConfiguredLocation: true)
         )
 
         configuration.afterCaptureAction = .copyAndSave
         XCTAssertEqual(
             ScreenshotPostCapturePolicy(configuration: configuration),
-            .init(copiesToClipboard: true, showsThumbnail: false, beginsAnnotation: false)
+            .init(copiesToClipboard: true, showsThumbnail: false, beginsAnnotation: false, savesToConfiguredLocation: true)
         )
 
         configuration.afterCaptureAction = .annotate

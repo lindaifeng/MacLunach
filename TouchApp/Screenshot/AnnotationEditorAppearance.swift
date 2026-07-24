@@ -31,20 +31,7 @@ struct AnnotationEditorAppearance {
         reduceTransparency: Bool,
         increasedContrast: Bool
     ) -> Self {
-        let base = ThemePalette.palette(for: theme)
-        let tintColor: Color
-        let themeName: String
-        switch theme {
-        case .crystal:
-            tintColor = Color(red: 0.36, green: 0.48, blue: 0.94)
-            themeName = "晶透毛玻璃"
-        case .obsidian:
-            tintColor = Color(red: 0.08, green: 0.16, blue: 0.34)
-            themeName = "曜石深色玻璃"
-        case .amber:
-            tintColor = Color(red: 0.70, green: 0.36, blue: 0.20)
-            themeName = "暖色烟熏玻璃"
-        }
+        let definition = ThemeRegistry.shared.definition(for: theme)
 
         let isDark = colorScheme == .dark
         let isOpaque = reduceTransparency || increasedContrast
@@ -52,20 +39,16 @@ struct AnnotationEditorAppearance {
         let underPage = Color(nsColor: .underPageBackgroundColor)
         let chromeOpacity = isOpaque ? 1.0 : (isDark ? 0.78 : 0.72)
         let inspectorOpacity = isOpaque ? 1.0 : (isDark ? 0.88 : 0.82)
-        let tintOpacity: Double = switch (theme, isDark, isOpaque) {
-        case (.crystal, true, _): 0.16
-        case (.crystal, false, _): 0.08
-        case (.obsidian, true, _): 0.34
-        case (.obsidian, false, _): 0.12
-        case (.amber, true, _): 0.20
-        case (.amber, false, _): 0.10
-        }
+        let tintOpacity = isOpaque ? 0 : min(
+            definition.panel.reflection.opacity * (isDark ? 1.8 : 1),
+            0.18
+        )
 
         return .init(
             theme: theme,
-            themeName: themeName,
-            accent: base.accent,
-            tintOverlay: tintColor.opacity(tintOpacity),
+            themeName: definition.displayName,
+            accent: definition.accent.color,
+            tintOverlay: definition.auxiliaryAccent.color.opacity(tintOpacity),
             chromeFill: surface.opacity(chromeOpacity),
             inspectorFill: surface.opacity(inspectorOpacity),
             canvasFill: underPage.opacity(isOpaque ? 1 : (isDark ? 0.82 : 0.76)),

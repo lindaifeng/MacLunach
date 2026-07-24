@@ -63,18 +63,19 @@
 
 ### 阶段四：超级右键
 
-**状态：待阶段依赖满足后开始。**
+**状态：规划完成，待阶段三验收后开始实现。**
 
-详细计划将在阶段三通过验收后创建为 `docs/superpowers/plans/2026-07-12-touch-phase-4-super-right.md`。
+详细计划见 `docs/superpowers/plans/2026-07-12-touch-phase-4-super-right.md`。
 
 交付：
 
+- FeatureManifest v2、通用设置宿主和插件作用域存储。
 - Finder Sync Extension 上下文菜单。
 - `FileActionService` XPC 服务。
-- 路径复制、终端/编辑器打开、新建文件、剪切移动、复制到、压缩和哈希。
-- 冲突处理、恢复区、撤销入口和动作自定义。
+- 复制路径、打开终端、新建文件、新建文件夹和剪切五个首版功能。
+- 功能开关与排序、内置及自定义文件格式、剪切冲突处理。
 
-验收门槛：Finder 菜单构建 P95 小于 80ms；移动、跨卷复制和冲突策略通过集成测试；服务失败不影响其他插件。
+验收门槛：Finder 菜单构建 P95 小于 80ms；剪切移动、跨卷和冲突策略通过集成测试；服务失败不影响其他插件。
 
 ### 阶段五：系统集成与更新
 
@@ -133,6 +134,7 @@ MacLunach/
 ├── Scripts/                         部署版本、签名和性能检查
 ├── Resources/                      本地化、主题和应用资源
 ├── docs/superpowers/specs/          已确认设计规格
+│   └── 2026-07-16-feature-plugin-architecture.md  功能区插件与市场演进边界
 ├── docs/superpowers/plans/          实施路线图和阶段计划
 └── project.yml                      XcodeGen 工程定义
 ```
@@ -142,6 +144,9 @@ MacLunach/
 - [ ] 所有 target、package、extension 和 XPC 服务统一 `macOS 14.0`。
 - [ ] 所有新功能必须先定义协议和失败语义，再接入 UI。
 - [ ] 插件不得读取其他插件的配置目录或数据库。
+- [ ] 宿主不得按插件 ID 硬编码设置页面或持有插件私有配置类型。
+- [ ] 每个插件必须声明 Feature API 版本、配置版本、能力和执行隔离方式。
+- [ ] 第三方扩展不得向主应用或 Finder 扩展注入原生代码。
 - [ ] 主线程不得执行文件枚举、SQLite 写入、OCR、图片编码或文件移动。
 - [ ] 每个行为变更先写失败测试，再写最小实现。
 - [ ] 每个任务完成后运行目标测试并提交单一主题 commit。

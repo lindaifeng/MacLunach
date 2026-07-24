@@ -350,6 +350,16 @@ public struct AnnotationRenderer: Sendable {
                 color: cgColor(annotation.style.color),
                 in: context
             )
+        case .callout:
+            guard points.count >= 2 else { return }
+            drawCallout(
+                annotation.text?.value ?? "",
+                points: points,
+                fontStyle: layer.font,
+                fallbackFontSize: (annotation.text?.fontSize ?? 16) * lineScale,
+                color: cgColor(annotation.style.color),
+                in: context
+            )
         case .note:
             guard let rect = AnnotationGeometry.boundingRect(points), let text = annotation.text else { return }
             drawNote(
@@ -747,6 +757,65 @@ public struct AnnotationRenderer: Sendable {
             y: center.y - bounds.height / 2 - bounds.minY
         )
         CTLineDraw(line, context)
+    }
+
+    /// 点—线—面的批注：首点为定位点，第二点为连线端点，后两点定义文本框。
+    private func drawCallout(
+        _ value: String,
+        points: [CGPoint],
+        fontStyle: AnnotationFontStyle?,
+        fallbackFontSize: Double,
+        color: CGColor,
+        in context: CGContext
+    ) {
+        let anchor = points[0]
+        let connector = points[1]
+        context.setStrokeColor(color)
+        context.beginPath()
+        context.move(to: anchor)
+        context.addLine(to: connector)
+        context.strokePath()
+        let dotRadius = CGFloat(max(5, fallbackFontSize * 0.25))
+        context.setFillColor(color)
+        context.fillEllipse(in: CGRect(
+            x: anchor.x - dotRadius,
+            y: anchor.y - dotRadius,
+            width: dotRadius * 2,
+            height: dotRadius * 2
+        ))
+
+        guard points.count >= 4,
+              let rect = AnnotationGeometry.boundingRect(Array(points[2...3])),
+              rect.width > 4,
+              rect.height > 4 else { return }
+        let radius = min(5, min(rect.width, rect.height) / 2)
+        context.addPath(CGPath(
+            roundedRect: rect,
+            cornerWidth: radius,
+            cornerHeight: radius,
+            transform: nil
+        ))
+        context.setFillColor(color)
+        context.fillPath()
+        guard !value.isEmpty else { return }
+
+        let inset = rect.insetBy(dx: 6, dy: 4)
+        guard inset.width > 0, inset.height > 0 else { return }
+        let font = makeFont(style: fontStyle, fallbackSize: fallbackFontSize, defaultBold: false)
+        let attributes: [NSAttributedString.Key: Any] = [
+            NSAttributedString.Key(kCTFontAttributeName as String): font,
+            NSAttributedString.Key(kCTForegroundColorAttributeName as String): CGColor(gray: 1, alpha: 1)
+        ]
+        let framesetter = CTFramesetterCreateWithAttributedString(
+            NSAttributedString(string: value, attributes: attributes)
+        )
+        let frame = CTFramesetterCreateFrame(
+            framesetter,
+            CFRange(location: 0, length: 0),
+            CGPath(rect: inset, transform: nil),
+            nil
+        )
+        CTFrameDraw(frame, context)
     }
 
     private func drawNote(

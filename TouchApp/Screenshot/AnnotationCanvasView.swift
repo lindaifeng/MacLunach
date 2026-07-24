@@ -268,6 +268,28 @@ struct AnnotationCanvasView: View {
             if annotation.kind == .arrow, points.count >= 2 {
                 drawArrowHead(from: points[points.count - 2], to: points[points.count - 1], color: color, lineWidth: lineWidth, context: &context)
             }
+        case .callout:
+            guard points.count >= 2 else { break }
+            var connector = Path()
+            connector.move(to: points[0])
+            connector.addLine(to: points[1])
+            context.stroke(connector, with: .color(color), lineWidth: lineWidth)
+            context.fill(
+                Path(ellipseIn: CGRect(x: points[0].x - 5, y: points[0].y - 5, width: 10, height: 10)),
+                with: .color(color)
+            )
+            if points.count >= 4, let rect = bounds(for: Array(points[2...3])) {
+                context.fill(Path(roundedRect: rect, cornerRadius: 8), with: .color(color))
+                if let value = annotation.text?.value, !value.isEmpty {
+                    context.draw(
+                        Text(value)
+                            .font(.system(size: max(8, (annotation.text?.fontSize ?? 16) * scale)))
+                            .foregroundStyle(.white),
+                        at: CGPoint(x: rect.minX + 10, y: rect.minY + 8),
+                        anchor: .topLeading
+                    )
+                }
+            }
         case .text, .sticker, .watermark:
             let value = annotation.text?.value
                 ?? annotation.sticker?.value
