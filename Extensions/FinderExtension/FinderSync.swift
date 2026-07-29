@@ -1,4 +1,5 @@
 import AppKit
+import FileActionServiceProtocol
 import FinderSync
 import OSLog
 import SuperRightFeature
@@ -10,15 +11,15 @@ final class FinderSync: FIFinderSync, @unchecked Sendable {
     )
 
     private let snapshotStore = SuperRightConfigurationSnapshotStore()
+    private let moveClipboardStore = MoveClipboardStore()
+    private let moveConflictRequestStore = MoveConflictRequestStore()
     private let actionDispatcher = FinderActionDispatcher()
 
     override init() {
         super.init()
         let monitoredURLs = SuperRightFeaturePlugin.monitoredDirectoryURLs
         FIFinderSyncController.default().directoryURLs = monitoredURLs
-        let paths = monitoredURLs.map(\.path).joined(separator: ", ")
-        Self.logger.notice("FinderSync 已初始化，监控目录：\(paths, privacy: .public)")
-        NSLog("[SuperRight] FinderSync 已初始化，监控目录：%@", paths)
+        Self.logger.notice("FinderSync 已初始化")
     }
 
     override func menu(for menuKind: FIMenuKind) -> NSMenu? {
@@ -32,14 +33,13 @@ final class FinderSync: FIFinderSync, @unchecked Sendable {
         let controller = FIFinderSyncController.default()
         let targetedURL = controller.targetedURL()
         let selectedURLs = controller.selectedItemURLs() ?? []
-        let target = targetedURL?.path ?? "nil"
-        let selected = selectedURLs.map(\.path).joined(separator: ", ")
-        Self.logger.notice(
-            "收到 Finder 菜单请求，kind=\(menuKind.rawValue), target=\(target, privacy: .public), selected=\(selected, privacy: .public)"
-        )
+        Self.logger.notice("收到 Finder 菜单请求")
 
         let configuration = loadConfiguration()
-        let descriptors = FinderMenuBuilder(configuration: configuration).build(
+        let descriptors = FinderMenuBuilder(
+            configuration: configuration,
+            pendingMove: loadPendingMove()
+        ).build(
             for: .init(targetedURL: targetedURL, selectedURLs: selectedURLs)
         )
         guard !descriptors.isEmpty else { return nil }
@@ -55,7 +55,7 @@ final class FinderSync: FIFinderSync, @unchecked Sendable {
         do {
             return try snapshotStore.load() ?? .init()
         } catch {
-            Self.logger.error("读取超级右键配置失败，使用默认配置：\(error.localizedDescription, privacy: .public)")
+            Self.logger.error("读取超级右键配置失败，使用默认配置")
             return .init()
         }
     }
@@ -68,6 +68,8 @@ final class FinderSync: FIFinderSync, @unchecked Sendable {
             #selector(createFolder(_:))
         case .cut:
             #selector(cut(_:))
+        case .pasteMove:
+            #selector(pasteMove(_:))
         case .copyPath:
             #selector(copyPath(_:))
         case .openTerminal:
@@ -80,6 +82,9 @@ final class FinderSync: FIFinderSync, @unchecked Sendable {
             action: action,
             keyEquivalent: ""
         )
+        // Finder 会跨进程复制扩展提供的菜单项。显式绑定当前 Finder Sync 实例，
+        // 否则 Finder 会过滤没有可执行目标的扩展菜单项。
+        item.target = self
         item.isEnabled = descriptor.isEnabled
         item.image = NSImage(systemSymbolName: descriptor.symbolName, accessibilityDescription: descriptor.title)
 
@@ -108,7 +113,7 @@ final class FinderSync: FIFinderSync, @unchecked Sendable {
         guard let format = loadConfiguration().fileFormats.first(where: {
             $0.isEnabled && $0.displayName == title
         }), let directory = creationDirectory(for: context) else {
-            Self.logger.error("新建文件失败：无法根据菜单项恢复格式或目标目录，菜单项=\(title, privacy: .public)")
+            Self.logger.error("新建文件失败：无法恢复格式或目标目录")
             NSSound.beep()
             return
         }
@@ -118,11 +123,11 @@ final class FinderSync: FIFinderSync, @unchecked Sendable {
             let result = await actionDispatcher.createFile(in: directory, format: format)
             await MainActor.run {
                 switch result {
-                case let .success(createdURL):
-                    Self.logger.info("已新建文件：\(createdURL.path, privacy: .public)")
-                case let .failure(error):
+                case .success:
+                    Self.logger.info("已新建文件")
+                case .failure:
                     NSSound.beep()
-                    Self.logger.error("执行“\(title, privacy: .public)”失败：\(error.localizedDescription, privacy: .public)")
+                    Self.logger.error("新建文件动作失败")
                 }
             }
         }
@@ -147,11 +152,11 @@ final class FinderSync: FIFinderSync, @unchecked Sendable {
             let result = await actionDispatcher.createFolder(in: directory)
             await MainActor.run {
                 switch result {
-                case let .success(createdURL):
-                    Self.logger.info("已新建文件夹：\(createdURL.path, privacy: .public)")
-                case let .failure(error):
+                case .success:
+                    Self.logger.info("已新建文件夹")
+                case .failure:
                     NSSound.beep()
-                    Self.logger.error("执行“新建文件夹”失败：\(error.localizedDescription, privacy: .public)")
+                    Self.logger.error("新建文件夹动作失败")
                 }
             }
         }
@@ -201,20 +206,96 @@ final class FinderSync: FIFinderSync, @unchecked Sendable {
             )
             await MainActor.run {
                 switch result {
-                case let .success(bundleIdentifier):
-                    Self.logger.info("已请求终端打开目录：\(directory.path, privacy: .public)，应用=\(bundleIdentifier, privacy: .public)")
-                case let .failure(error):
+                case .success:
+                    Self.logger.info("已请求终端打开目录")
+                case .failure:
                     NSSound.beep()
-                    Self.logger.error("执行“在终端中打开”失败：\(error.localizedDescription, privacy: .public)")
+                    Self.logger.error("在终端中打开动作失败")
                 }
             }
         }
     }
 
     @IBAction nonisolated func cut(_ sender: Any?) {
-        Task { @MainActor in
+        let context = Self.captureFinderContext()
+        Task { @MainActor [weak self] in
+            self?.performCut(context: context)
+        }
+    }
+
+    private func performCut(context: FinderMenuContext) {
+        let urls = context.selectedURLs.filter(\.isFileURL)
+        guard !urls.isEmpty else {
+            Self.logger.error("剪切失败：Finder 没有提供选中的本地项目")
             NSSound.beep()
-            Self.logger.warning("剪切入口已配置，但安全移动服务尚未接通")
+            return
+        }
+        do {
+            try moveClipboardStore.save(try MoveClipboardSnapshot.capture(urls: urls))
+            Self.logger.info("已暂存 \(urls.count) 个待移动项目")
+        } catch {
+            NSSound.beep()
+            Self.logger.error("剪切状态保存失败")
+        }
+    }
+
+    @IBAction nonisolated func pasteMove(_ sender: Any?) {
+        let context = Self.captureFinderContext()
+        Task { @MainActor [weak self] in
+            self?.performPasteMove(context: context)
+        }
+    }
+
+    private func performPasteMove(context: FinderMenuContext) {
+        guard let destination = pasteDestination(for: context) else {
+            Self.logger.error("粘贴失败：目标不是文件夹")
+            NSSound.beep()
+            return
+        }
+        let snapshot: MoveClipboardSnapshot
+        do {
+            guard let loaded = try moveClipboardStore.loadValid() else {
+                NSSound.beep()
+                return
+            }
+            snapshot = loaded
+        } catch {
+            try? moveClipboardStore.clear()
+            NSSound.beep()
+            Self.logger.error("粘贴失败：剪切状态已失效")
+            return
+        }
+
+        Task { [weak self] in
+            guard let self else { return }
+            let result = await actionDispatcher.move(
+                sources: snapshot.items.map(\.url),
+                destination: destination,
+                conflictPolicy: .prompt
+            )
+            await MainActor.run {
+                switch result {
+                case let .success(move) where !move.conflicts.isEmpty:
+                    let request = MoveConflictRequest(
+                        snapshot: snapshot,
+                        destination: destination,
+                        conflicts: move.conflicts
+                    )
+                    do {
+                        try moveConflictRequestStore.save(request)
+                        FileActionServiceRelay.requestHostAttention()
+                        Self.logger.notice("移动存在同名冲突，已交给主应用请求用户选择")
+                    } catch {
+                        NSSound.beep()
+                        Self.logger.error("无法保存移动冲突请求")
+                    }
+                case let .success(move):
+                    finishMove(snapshot: snapshot, result: move)
+                case .failure:
+                    NSSound.beep()
+                    Self.logger.error("粘贴移动动作失败")
+                }
+            }
         }
     }
 
@@ -223,6 +304,35 @@ final class FinderSync: FIFinderSync, @unchecked Sendable {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(paths, forType: .string)
+    }
+
+    private func loadPendingMove() -> MoveClipboardSnapshot? {
+        do {
+            return try moveClipboardStore.loadValid()
+        } catch {
+            try? moveClipboardStore.clear()
+            Self.logger.warning("已清除失效的剪切状态")
+            return nil
+        }
+    }
+
+    private func finishMove(snapshot: MoveClipboardSnapshot, result: FileActionServiceMoveResult) {
+        let remaining = Set(result.skippedSourceURLs.map(\.standardizedFileURL))
+            .union(result.failedItems.map(\.sourceURL).map(\.standardizedFileURL))
+        guard !remaining.isEmpty else {
+            try? moveClipboardStore.clear()
+            return
+        }
+        let items = snapshot.items.filter { remaining.contains($0.url.standardizedFileURL) }
+        guard !items.isEmpty else {
+            try? moveClipboardStore.clear()
+            return
+        }
+        try? moveClipboardStore.save(.init(
+            items: items,
+            createdAt: snapshot.createdAt,
+            expiresAt: snapshot.expiresAt
+        ))
     }
 
     nonisolated private static func captureFinderContext() -> FinderMenuContext {
@@ -239,6 +349,28 @@ final class FinderSync: FIFinderSync, @unchecked Sendable {
         }
         guard context.selectedURLs.count == 1 else { return nil }
         return directoryURL(for: context.selectedURLs[0])
+    }
+
+    private func pasteDestination(for context: FinderMenuContext) -> URL? {
+        if context.selectedURLs.isEmpty {
+            guard let targetedURL = context.targetedURL else { return nil }
+            var isDirectory = ObjCBool(false)
+            guard FileManager.default.fileExists(atPath: targetedURL.path, isDirectory: &isDirectory),
+                  isDirectory.boolValue else {
+                return nil
+            }
+            return targetedURL.standardizedFileURL
+        }
+        guard context.selectedURLs.count == 1,
+              let selectedURL = context.selectedURLs.first else {
+            return nil
+        }
+        var isDirectory = ObjCBool(false)
+        guard FileManager.default.fileExists(atPath: selectedURL.path, isDirectory: &isDirectory),
+              isDirectory.boolValue else {
+            return nil
+        }
+        return selectedURL.standardizedFileURL
     }
 
     private func workingDirectory(for context: FinderMenuContext) -> URL? {

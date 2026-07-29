@@ -8,6 +8,8 @@ struct FeatureCardView: View {
     let plugin: any FeaturePlugin
     let shortcut: TouchFeatureAPI.KeyboardShortcut
     let state: FeatureState
+    let panelPresence: FeaturePanelPresence?
+    let panelStatusText: String?
     let theme: ThemeDefinition
     let action: () -> Void
     let edit: () -> Void
@@ -24,7 +26,7 @@ struct FeatureCardView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(plugin.manifest.name)
                         .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(Color.white)
+                        .foregroundStyle(theme.text.primary.color)
                     if let statusLabel {
                         Label(statusLabel.text, systemImage: statusLabel.symbol)
                             .font(.system(size: 10, weight: .medium))
@@ -34,7 +36,7 @@ struct FeatureCardView: View {
                 Spacer(minLength: 6)
                 Text(shortcut.key.uppercased())
                     .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(Color.white.opacity(0.82))
+                    .foregroundStyle(theme.shortcut.text.color)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 5)
                     .background(
@@ -65,7 +67,7 @@ struct FeatureCardView: View {
         .offset(y: isHovered ? theme.motion.hoverOffset : 0)
         .animation(reduceMotion ? nil : .easeOut(duration: theme.motion.duration), value: isHovered)
         .onHover { isHovered = $0 }
-        .accessibilityLabel("\(plugin.manifest.name)，键位 \(shortcut.key.uppercased())，右键可修改")
+        .accessibilityLabel(accessibilityDescription)
         .accessibilityIdentifier("feature.\(plugin.manifest.id)")
     }
 
@@ -82,7 +84,16 @@ struct FeatureCardView: View {
         case .unloaded:
             return ("正在载入", "ellipsis", .secondary)
         case .available:
-            return nil
+            switch panelPresence {
+            case .retained:
+                return (panelStatusText ?? "后台待命", "rectangle.on.rectangle", theme.text.secondary.color)
+            case .running:
+                return (panelStatusText ?? "进行中", "timer", theme.accent.color)
+            case .attentionRequired:
+                return (panelStatusText ?? "待确认", "bell.badge.fill", theme.accent.color)
+            case nil:
+                return nil
+            }
         case .running:
             return ("执行中", "hourglass", theme.accent.color)
         case .restricted:
@@ -92,6 +103,14 @@ struct FeatureCardView: View {
         case .disabled:
             return ("已停用", "pause.circle.fill", .secondary)
         }
+    }
+
+    private var accessibilityDescription: String {
+        var description = "\(plugin.manifest.name)，键位 \(shortcut.key.uppercased())"
+        if let statusLabel {
+            description += "，\(statusLabel.text)"
+        }
+        return description + "，右键可修改"
     }
 }
 
@@ -117,18 +136,18 @@ struct CustomActionCardView: View {
                 VStack(alignment: .leading, spacing: 3) {
                     Text(action.displayTitle)
                         .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(Color.white)
+                        .foregroundStyle(theme.text.primary.color)
                         .lineLimit(1)
                     Text(action.kind.title)
                         .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(Color.white.opacity(0.62))
+                        .foregroundStyle(theme.text.secondary.color)
                 }
 
                 Spacer(minLength: 6)
 
                 Text(key.uppercased())
                     .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(Color.white.opacity(0.82))
+                    .foregroundStyle(theme.shortcut.text.color)
                     .padding(.horizontal, 8)
                     .padding(.vertical, 5)
                     .background(theme.shortcut.fill.color, in: shortcutShape)

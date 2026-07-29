@@ -1,10 +1,13 @@
+import FileActionServiceCore
 import FileActionServiceProtocol
 import Foundation
 
 /// 在未沙盒化的 XPC 服务中执行文件系统和外部应用动作。
 /// FinderExtension 只负责读取 Finder 上下文和展示菜单，避免直接写入用户目录时
 /// 被扩展沙盒拒绝。
-private struct FileActionServiceExecutor: Sendable {
+private final class FileActionServiceExecutor: @unchecked Sendable {
+    private let moveExecutor = FileActionServiceMoveExecutor()
+    private let operationStore: FileActionServiceOperationStore
     private static let defaultTerminalBundleIdentifier = "com.apple.Terminal"
     private static let terminalBundleIdentifiers = [
         "com.apple.Terminal",
@@ -16,19 +19,61 @@ private struct FileActionServiceExecutor: Sendable {
         "net.kovidgoyal.kitty"
     ]
 
+    init(operationStore: FileActionServiceOperationStore = .init()) {
+        self.operationStore = operationStore
+    }
+
     func perform(
-        _ action: FileActionServiceAction
+        _ request: FileActionServiceRequest
     ) -> Result<FileActionServiceActionResult, FileActionServiceFailure> {
+        let action = request.action
+        switch action.name {
+        case "operationStatus":
+            guard let operationRequestID = action.operationRequestID else {
+                return .failure(.malformedRequest("状态查询缺少请求 ID"))
+            }
+            return .success(.init(operationState: operationStore.state(for: operationRequestID)))
+        case "cancelOperation":
+            guard let operationRequestID = action.operationRequestID else {
+                return .failure(.malformedRequest("取消请求缺少请求 ID"))
+            }
+            return .success(.init(
+                operationState: operationStore.requestCancellation(for: operationRequestID)
+            ))
+        default:
+            break
+        }
+
+        switch operationStore.begin(requestID: request.id) {
+        case .execute:
+            break
+        case let .existing(state):
+            if let terminalResult = state.terminalResult {
+                return .success(.init(terminalResult: terminalResult))
+            }
+            if let failure = state.failure {
+                return .failure(failure)
+            }
+            return .success(.init(operationState: state))
+        }
+
+        let result: Result<FileActionServiceActionResult, FileActionServiceFailure>
         switch action.name {
         case "createFile":
-            return createFile(action)
+            result = createFile(action)
         case "createFolder":
-            return createFolder(action)
+            result = createFolder(action)
         case "openTerminal":
-            return openTerminal(action)
+            result = openTerminal(action)
+        case "move":
+            result = moveExecutor.perform(action) { [operationStore] in
+                operationStore.isCancellationRequested(for: request.id)
+            }
         default:
-            return .failure(.unsupportedAction(action.name))
+            result = .failure(.unsupportedAction(action.name))
         }
+        operationStore.complete(requestID: request.id, result: result)
+        return result
     }
 
     private func createFile(
@@ -89,11 +134,12 @@ private struct FileActionServiceExecutor: Sendable {
         }
 
         let preferred = action.preferredBundleIdentifier?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let bundleIdentifiers = ([preferred] + Self.terminalBundleIdentifiers)
-            .filter { !$0.isEmpty }
-            .reduce(into: [String]()) { result, value in
-                if !result.contains(value) { result.append(value) }
-            }
+        let bundleIdentifiers: [String]
+        if Self.terminalBundleIdentifiers.contains(preferred) {
+            bundleIdentifiers = [preferred] + Self.terminalBundleIdentifiers.filter { $0 != preferred }
+        } else {
+            bundleIdentifiers = Self.terminalBundleIdentifiers
+        }
 
         for bundleIdentifier in bundleIdentifiers {
             let process = Process()
@@ -134,9 +180,34 @@ final class FileActionServiceEndpoint: NSObject, FileActionServiceXPCProtocol {
     private let processor: FileActionServiceRequestProcessor
 
     override init() {
-        let executor = FileActionServiceExecutor()
-        processor = FileActionServiceRequestProcessor(actionHandler: executor.perform)
+        let executor = FileActionServiceExecutor(
+            operationStore: .init(storageURL: Self.operationStoreURL())
+        )
+        processor = FileActionServiceRequestProcessor(requestHandler: executor.perform)
         super.init()
+    }
+
+    private static func operationStoreURL() -> URL? {
+        do {
+            let applicationSupport = try FileManager.default.url(
+                for: .applicationSupportDirectory,
+                in: .userDomainMask,
+                appropriateFor: nil,
+                create: true
+            )
+            let directory = applicationSupport
+                .appendingPathComponent("一念", isDirectory: true)
+                .appendingPathComponent("FileActionService", isDirectory: true)
+            try FileManager.default.createDirectory(
+                at: directory,
+                withIntermediateDirectories: true,
+                attributes: [.posixPermissions: 0o700]
+            )
+            return directory.appendingPathComponent("operation-states.json", isDirectory: false)
+        } catch {
+            NSLog("FileActionService 操作状态持久化不可用：%@", String(describing: error))
+            return nil
+        }
     }
 
     func perform(requestData: Data, reply: @escaping (Data) -> Void) {

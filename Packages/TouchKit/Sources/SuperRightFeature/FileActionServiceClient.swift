@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import Foundation
 import FileActionServiceProtocol
 
@@ -76,6 +77,28 @@ public actor FileActionServiceClient {
     ) async throws -> FileActionServiceActionResult {
         let request = FileActionServiceRequest(id: requestID, action: action)
         return try await performAction(request, timeout: timeout)
+    }
+
+    public func operationState(
+        for requestID: UUID,
+        timeout: Duration = .seconds(1)
+    ) async throws -> FileActionServiceOperationState {
+        let result = try await perform(action: .operationStatus(requestID: requestID), timeout: timeout)
+        guard let state = result.operationState else {
+            throw FileActionServiceClientError.unexpectedPayload
+        }
+        return state
+    }
+
+    public func cancelOperation(
+        requestID: UUID,
+        timeout: Duration = .seconds(1)
+    ) async throws -> FileActionServiceOperationState {
+        let result = try await perform(action: .cancelOperation(requestID: requestID), timeout: timeout)
+        guard let state = result.operationState else {
+            throw FileActionServiceClientError.unexpectedPayload
+        }
+        return state
     }
 
     public func createFile(
@@ -329,19 +352,24 @@ public actor FileActionServiceClient {
 
 public struct FileActionServiceRelayRequest: Codable, Equatable, Sendable {
     public let id: UUID
+    public let responseChallenge: UUID
     public let action: FileActionServiceAction
     public let createdAt: Date
     public let expiresAt: Date
 
-    private enum CodingKeys: String, CodingKey { case id, action, createdAt, expiresAt }
+    private enum CodingKeys: String, CodingKey {
+        case id, responseChallenge, action, createdAt, expiresAt
+    }
 
     public init(
         id: UUID = UUID(),
+        responseChallenge: UUID = UUID(),
         action: FileActionServiceAction,
         createdAt: Date = Date(),
         expiresAt: Date? = nil
     ) {
         self.id = id
+        self.responseChallenge = responseChallenge
         self.action = action
         self.createdAt = createdAt
         self.expiresAt = expiresAt ?? createdAt.addingTimeInterval(12)
@@ -352,11 +380,24 @@ public struct FileActionServiceRelayRequest: Codable, Equatable, Sendable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(UUID.self, forKey: .id)
+        responseChallenge = try container.decode(UUID.self, forKey: .responseChallenge)
         action = try container.decode(FileActionServiceAction.self, forKey: .action)
         createdAt = try container.decodeIfPresent(Date.self, forKey: .createdAt) ?? .distantPast
         expiresAt = try container.decodeIfPresent(Date.self, forKey: .expiresAt)
             ?? createdAt.addingTimeInterval(12)
     }
+}
+
+private struct FileActionServiceRelayResponse: Codable, Sendable {
+    let responseChallenge: UUID
+    let response: FileActionServiceResponse
+}
+
+public struct FileActionServicePendingRelayRequest: Sendable {
+    public let request: FileActionServiceRelayRequest
+    fileprivate let fileURL: URL
+    fileprivate let deviceID: UInt64
+    fileprivate let inode: UInt64
 }
 
 /// Finder 扩展无法直接 bootstrap 主应用内嵌的 XPC Service。
@@ -389,7 +430,11 @@ public enum FileActionServiceRelay {
         let request = FileActionServiceRelayRequest(action: action)
         try enqueue(request)
         notifyAndLaunchHost()
-        let response = try await waitForResponse(requestID: request.id, timeout: timeout)
+        let response = try await waitForResponse(
+            requestID: request.id,
+            responseChallenge: request.responseChallenge,
+            timeout: timeout
+        )
 
         guard response.requestID == request.id else {
             throw FileActionServiceClientError.responseMismatch(
@@ -413,9 +458,18 @@ public enum FileActionServiceRelay {
         }
     }
 
-    public static func pendingRequests() -> [FileActionServiceRelayRequest] {
+    /// 仅唤起主应用处理共享状态（例如 Finder 发现移动冲突后请求主应用展示决策）。
+    public static func requestHostAttention() {
+        notifyAndLaunchHost()
+    }
+
+    public static func pendingRequests() -> [FileActionServicePendingRelayRequest] {
+        pendingRequests(in: requestDirectory)
+    }
+
+    static func pendingRequests(in directory: URL) -> [FileActionServicePendingRelayRequest] {
         guard let urls = try? FileManager.default.contentsOfDirectory(
-            at: requestDirectory,
+            at: directory,
             includingPropertiesForKeys: nil,
             options: [.skipsHiddenFiles]
         ) else {
@@ -425,14 +479,30 @@ public enum FileActionServiceRelay {
             .filter { $0.pathExtension == "json" }
             .sorted { $0.lastPathComponent < $1.lastPathComponent }
             .compactMap { url in
-                guard let data = try? Data(contentsOf: url) else {
-                    quarantineRequest(at: url, reason: "无法读取请求文件")
-                    return nil
-                }
                 do {
-                    return try JSONDecoder().decode(FileActionServiceRelayRequest.self, from: data)
+                    let artifact = try readRelayArtifact(at: url)
+                    let request = try JSONDecoder().decode(
+                        FileActionServiceRelayRequest.self,
+                        from: artifact.data
+                    )
+                    guard url.lastPathComponent == "\(request.id.uuidString).json" else {
+                        quarantineRequest(at: url, reason: "文件名与请求 ID 不一致")
+                        return nil
+                    }
+                    guard request.expiresAt > request.createdAt,
+                          request.expiresAt.timeIntervalSince(request.createdAt) <= 30,
+                          request.createdAt <= Date().addingTimeInterval(5) else {
+                        quarantineRequest(at: url, reason: "请求时间窗口不合法")
+                        return nil
+                    }
+                    return .init(
+                        request: request,
+                        fileURL: url,
+                        deviceID: artifact.deviceID,
+                        inode: artifact.inode
+                    )
                 } catch {
-                    quarantineRequest(at: url, reason: "请求 JSON 解码失败：\(error.localizedDescription)")
+                    quarantineRequest(at: url, reason: "请求文件不可信或无法解码：\(error.localizedDescription)")
                     return nil
                 }
             }
@@ -440,23 +510,30 @@ public enum FileActionServiceRelay {
 
     public static func writeResponse(
         _ response: FileActionServiceResponse,
-        for requestID: UUID
+        for request: FileActionServiceRelayRequest
     ) throws {
         try ensureDirectories()
-        let data = try JSONEncoder().encode(response)
-        try data.write(to: responseURL(for: requestID), options: .atomic)
+        let envelope = FileActionServiceRelayResponse(
+            responseChallenge: request.responseChallenge,
+            response: response
+        )
+        let data = try JSONEncoder().encode(envelope)
+        let url = responseURL(for: request.id)
+        try data.write(to: url, options: .atomic)
+        try setOwnerOnlyPermissions(at: url)
     }
 
-    public static func removeRequest(id: UUID) {
-        try? FileManager.default.removeItem(at: requestURL(for: id))
+    public static func removeRequest(_ pending: FileActionServicePendingRelayRequest) {
+        try? FileManager.default.removeItem(at: pending.fileURL)
     }
 
     public static func isCancelled(id: UUID) -> Bool {
         FileManager.default.fileExists(atPath: cancellationURL(for: id).path)
     }
 
-    public static func requestIsPresent(id: UUID) -> Bool {
-        FileManager.default.fileExists(atPath: requestURL(for: id).path)
+    public static func requestIsPresent(_ pending: FileActionServicePendingRelayRequest) -> Bool {
+        guard let artifact = try? readRelayArtifact(at: pending.fileURL) else { return false }
+        return artifact.deviceID == pending.deviceID && artifact.inode == pending.inode
     }
 
     public static func removeResponse(id: UUID) {
@@ -469,16 +546,19 @@ public enum FileActionServiceRelay {
         removeResponse(id: request.id)
         removeCancellation(id: request.id)
         let data = try JSONEncoder().encode(request)
-        try data.write(to: requestURL(for: request.id), options: .atomic)
+        let url = requestURL(for: request.id)
+        try data.write(to: url, options: .atomic)
+        try setOwnerOnlyPermissions(at: url)
     }
 
     private static func waitForResponse(
         requestID: UUID,
+        responseChallenge: UUID,
         timeout: Duration
     ) async throws -> FileActionServiceResponse {
         var receivedResponse = false
         defer {
-            removeRequest(id: requestID)
+            try? FileManager.default.removeItem(at: requestURL(for: requestID))
             if !receivedResponse {
                 markCancelled(id: requestID)
             } else {
@@ -491,11 +571,15 @@ public enum FileActionServiceRelay {
 
         while clock.now < deadline {
             try Task.checkCancellation()
-            if let data = try? Data(contentsOf: url),
-               let response = try? JSONDecoder().decode(FileActionServiceResponse.self, from: data) {
+            if let artifact = try? readRelayArtifact(at: url),
+               let envelope = try? JSONDecoder().decode(
+                FileActionServiceRelayResponse.self,
+                from: artifact.data
+               ),
+               envelope.responseChallenge == responseChallenge {
                 receivedResponse = true
                 removeResponse(id: requestID)
-                return response
+                return envelope.response
             }
             try await Task.sleep(for: .milliseconds(50))
         }
@@ -535,12 +619,18 @@ public enum FileActionServiceRelay {
             at: cancellationDirectory,
             withIntermediateDirectories: true
         )
+        try setOwnerOnlyPermissions(at: rootDirectory, isDirectory: true)
+        try setOwnerOnlyPermissions(at: requestDirectory, isDirectory: true)
+        try setOwnerOnlyPermissions(at: responseDirectory, isDirectory: true)
+        try setOwnerOnlyPermissions(at: cancellationDirectory, isDirectory: true)
     }
 
     private static func markCancelled(id: UUID) {
         do {
             try ensureDirectories()
-            try Data(Date().description.utf8).write(to: cancellationURL(for: id), options: .atomic)
+            let url = cancellationURL(for: id)
+            try Data(Date().description.utf8).write(to: url, options: .atomic)
+            try setOwnerOnlyPermissions(at: url)
         } catch {
             NSLog("无法写入 Finder 中继取消标记 %@：%@", id.uuidString, error.localizedDescription)
         }
@@ -553,6 +643,46 @@ public enum FileActionServiceRelay {
     private static func quarantineRequest(at url: URL, reason: String) {
         NSLog("丢弃损坏的 Finder 中继请求 %@：%@", url.lastPathComponent, reason)
         try? FileManager.default.removeItem(at: url)
+    }
+
+    private struct RelayArtifact {
+        let data: Data
+        let deviceID: UInt64
+        let inode: UInt64
+    }
+
+    private static func readRelayArtifact(at url: URL) throws -> RelayArtifact {
+        let descriptor = open(url.path, O_RDONLY | O_NOFOLLOW)
+        guard descriptor >= 0 else { throw CocoaError(.fileReadNoPermission) }
+
+        var status = stat()
+        guard fstat(descriptor, &status) == 0 else {
+            close(descriptor)
+            throw CocoaError(.fileReadUnknown)
+        }
+        guard (status.st_mode & S_IFMT) == S_IFREG,
+              status.st_uid == geteuid(),
+              status.st_nlink == 1,
+              status.st_size >= 0,
+              status.st_size <= 1_048_576 else {
+            close(descriptor)
+            throw CocoaError(.fileReadNoPermission)
+        }
+
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        let data = try handle.readToEnd() ?? Data()
+        return .init(
+            data: data,
+            deviceID: UInt64(status.st_dev),
+            inode: UInt64(status.st_ino)
+        )
+    }
+
+    private static func setOwnerOnlyPermissions(at url: URL, isDirectory: Bool = false) throws {
+        let permissions: mode_t = isDirectory ? 0o700 : 0o600
+        guard chmod(url.path, permissions) == 0 else {
+            throw CocoaError(.fileWriteNoPermission)
+        }
     }
 
     private static func cleanupStaleArtifacts(maxAge: TimeInterval = 3_600) {
@@ -584,9 +714,51 @@ public enum FileActionServiceRelay {
     }
 }
 
+struct FileActionServiceRelayResultCache: Sendable {
+    private struct Entry: Sendable {
+        let action: FileActionServiceAction
+        let response: FileActionServiceResponse
+        let completedAt: Date
+    }
+
+    private var entries: [UUID: Entry] = [:]
+
+    mutating func store(
+        _ response: FileActionServiceResponse,
+        for request: FileActionServiceRelayRequest,
+        at date: Date = .now
+    ) {
+        entries[request.id] = .init(
+            action: request.action,
+            response: response,
+            completedAt: date
+        )
+    }
+
+    func response(for request: FileActionServiceRelayRequest) -> FileActionServiceResponse? {
+        guard let entry = entries[request.id], entry.action == request.action else { return nil }
+        return entry.response
+    }
+
+    func containsRequestID(_ id: UUID) -> Bool {
+        entries[id] != nil
+    }
+
+    mutating func prune(now: Date = .now, maxAge: TimeInterval = 600, maximumCount: Int = 256) {
+        let cutoff = now.addingTimeInterval(-maxAge)
+        entries = entries.filter { $0.value.completedAt >= cutoff }
+        guard entries.count > maximumCount else { return }
+        let overflow = entries
+            .sorted { $0.value.completedAt < $1.value.completedAt }
+            .prefix(entries.count - maximumCount)
+            .map(\.key)
+        overflow.forEach { entries.removeValue(forKey: $0) }
+    }
+}
+
 public actor FileActionServiceRelayHost {
     private let client: FileActionServiceClient
-    private var processedRequestIDs: [UUID: Date] = [:]
+    private var completedResponses = FileActionServiceRelayResultCache()
 
     public init(client: FileActionServiceClient = FileActionServiceClient()) {
         self.client = client
@@ -596,14 +768,26 @@ public actor FileActionServiceRelayHost {
         while true {
             let requests = FileActionServiceRelay.pendingRequests()
             guard !requests.isEmpty else { return }
-            pruneProcessedRequestIDs()
+            completedResponses.prune()
 
-            for request in requests {
-                guard processedRequestIDs[request.id] == nil else {
-                    FileActionServiceRelay.removeRequest(id: request.id)
+            for pending in requests {
+                let request = pending.request
+                if let response = completedResponses.response(for: request) {
+                    try? FileActionServiceRelay.writeResponse(response, for: request)
+                    FileActionServiceRelay.removeRequest(pending)
+                    FileActionServiceRelay.removeCancellation(id: request.id)
                     continue
                 }
-                processedRequestIDs[request.id] = Date()
+                if completedResponses.containsRequestID(request.id) {
+                    let response = FileActionServiceResponse(
+                        requestID: request.id,
+                        payload: .failure(.malformedRequest("请求 ID 已被其他文件动作使用。"))
+                    )
+                    try? FileActionServiceRelay.writeResponse(response, for: request)
+                    FileActionServiceRelay.removeRequest(pending)
+                    FileActionServiceRelay.removeCancellation(id: request.id)
+                    continue
+                }
 
                 if request.isExpired() || FileActionServiceRelay.isCancelled(id: request.id) {
                     let response = FileActionServiceResponse(
@@ -612,20 +796,31 @@ public actor FileActionServiceRelayHost {
                             request.isExpired() ? "中继请求已过期，未执行文件操作。" : "中继请求已取消，未执行文件操作。"
                         ))
                     )
-                    try? FileActionServiceRelay.writeResponse(response, for: request.id)
-                    FileActionServiceRelay.removeRequest(id: request.id)
+                    completedResponses.store(response, for: request)
+                    try? FileActionServiceRelay.writeResponse(response, for: request)
+                    FileActionServiceRelay.removeRequest(pending)
                     FileActionServiceRelay.removeCancellation(id: request.id)
                     continue
                 }
 
-                guard FileActionServiceRelay.requestIsPresent(id: request.id),
+                guard FileActionServiceRelay.requestIsPresent(pending),
                       !FileActionServiceRelay.isCancelled(id: request.id) else {
-                    FileActionServiceRelay.removeRequest(id: request.id)
+                    FileActionServiceRelay.removeRequest(pending)
                     continue
                 }
 
                 let response: FileActionServiceResponse
                 do {
+                    let cancellationMonitor = Task { [client] in
+                        while !Task.isCancelled {
+                            if FileActionServiceRelay.isCancelled(id: request.id) {
+                                _ = try? await client.cancelOperation(requestID: request.id)
+                                return
+                            }
+                            try? await Task.sleep(for: .milliseconds(50))
+                        }
+                    }
+                    defer { cancellationMonitor.cancel() }
                     let result = try await client.perform(
                         action: request.action,
                         requestID: request.id,
@@ -660,13 +855,15 @@ public actor FileActionServiceRelayHost {
                     )
                 }
 
+                completedResponses.store(response, for: request)
+
                 do {
-                    try FileActionServiceRelay.writeResponse(response, for: request.id)
-                    FileActionServiceRelay.removeRequest(id: request.id)
+                    try FileActionServiceRelay.writeResponse(response, for: request)
+                    FileActionServiceRelay.removeRequest(pending)
                     FileActionServiceRelay.removeCancellation(id: request.id)
                 } catch {
                     // 请求已经进入终态，避免应用重启后无界重试旧动作。
-                    FileActionServiceRelay.removeRequest(id: request.id)
+                    FileActionServiceRelay.removeRequest(pending)
                     FileActionServiceRelay.removeCancellation(id: request.id)
                     return
                 }
@@ -674,17 +871,6 @@ public actor FileActionServiceRelayHost {
         }
     }
 
-    private func pruneProcessedRequestIDs() {
-        let cutoff = Date().addingTimeInterval(-600)
-        processedRequestIDs = processedRequestIDs.filter { $0.value >= cutoff }
-        if processedRequestIDs.count > 256 {
-            let overflow = processedRequestIDs
-                .sorted { $0.value < $1.value }
-                .prefix(processedRequestIDs.count - 256)
-                .map(\.key)
-            overflow.forEach { processedRequestIDs.removeValue(forKey: $0) }
-        }
-    }
 }
 
 public final class LiveFileActionServiceConnection: FileActionServiceConnection, @unchecked Sendable {

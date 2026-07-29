@@ -346,8 +346,7 @@ private struct DailyTaskSettingsView: View {
                 HStack(spacing: 8) {
                     TextField("写下要完成的事", text: $draftTitle).textFieldStyle(.plain).padding(.horizontal, 11).padding(.vertical, 9)
                         .background(Color.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-                    DatePicker("开始时间", selection: $draftStartTime, displayedComponents: .hourAndMinute)
-                        .labelsHidden().datePickerStyle(.compact).accessibilityIdentifier("daily-tasks.start-time")
+                    draftStartTimeSelector
                     Button(action: addTask) { Image(systemName: "plus").font(.system(size: 12, weight: .bold)).foregroundStyle(.white).frame(width: 31, height: 31).background(Color.accentColor, in: Circle()) }
                         .buttonStyle(.plain).disabled(draftTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
@@ -378,6 +377,85 @@ private struct DailyTaskSettingsView: View {
         let dayTasks = tasks(for: selectedDate)
         guard !dayTasks.isEmpty else { return "今天还没有安排" }
         return "已完成 \(dayTasks.filter(\.isCompleted).count) / \(dayTasks.count) 项"
+    }
+
+    private var draftStartTimeSelector: some View {
+        let components = Calendar.current.dateComponents([.hour, .minute], from: draftStartTime)
+        let selectedHour = components.hour ?? 0
+        let selectedMinute = components.minute ?? 0
+
+        return HStack(spacing: 2) {
+            Menu {
+                ForEach(0..<24, id: \.self) { hour in
+                    Button { setDraftStartTime(hour: hour) } label: {
+                        timeMenuLabel(value: hour, selected: hour == selectedHour)
+                    }
+                }
+            } label: {
+                timeSegment(String(format: "%02d", selectedHour))
+            }
+            .menuStyle(.borderlessButton)
+            .accessibilityLabel("开始时间：小时")
+
+            Text(":")
+                .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                .foregroundStyle(.secondary)
+
+            Menu {
+                ForEach(0..<60, id: \.self) { minute in
+                    Button { setDraftStartTime(minute: minute) } label: {
+                        timeMenuLabel(value: minute, selected: minute == selectedMinute)
+                    }
+                }
+            } label: {
+                timeSegment(String(format: "%02d", selectedMinute))
+            }
+            .menuStyle(.borderlessButton)
+            .accessibilityLabel("开始时间：分钟")
+        }
+        .padding(.horizontal, 7)
+        .frame(height: 31)
+        .background(Color.primary.opacity(0.055), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 9, style: .continuous)
+                .stroke(Color.primary.opacity(0.09), lineWidth: 1)
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("daily-tasks.start-time")
+    }
+
+    private func timeSegment(_ value: String) -> some View {
+        HStack(spacing: 3) {
+            Text(value)
+                .font(.system(size: 12, weight: .semibold, design: .monospaced))
+            Image(systemName: "chevron.down")
+                .font(.system(size: 8, weight: .bold))
+                .foregroundStyle(.secondary)
+        }
+        .foregroundStyle(Color.primary)
+        .padding(.horizontal, 2)
+        .contentShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+    }
+
+    private func timeMenuLabel(value: Int, selected: Bool) -> some View {
+        Group {
+            if selected {
+                Label(String(format: "%02d", value), systemImage: "checkmark")
+            } else {
+                Text(String(format: "%02d", value))
+            }
+        }
+    }
+
+    private func setDraftStartTime(hour: Int? = nil, minute: Int? = nil) {
+        var components = Calendar.current.dateComponents(
+            [.calendar, .timeZone, .year, .month, .day, .hour, .minute, .second],
+            from: draftStartTime
+        )
+        components.hour = hour ?? components.hour ?? 0
+        components.minute = minute ?? components.minute ?? 0
+        guard let updatedTime = Calendar.current.date(from: components) else { return }
+        draftStartTime = updatedTime
     }
 
     private func dateStepButton(symbol: String, offset: Int) -> some View {

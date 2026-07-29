@@ -78,4 +78,26 @@ final class FinderActionDispatcher: Sendable {
             return .failure(.interrupted)
         }
     }
+
+    func move(
+        sources: [URL],
+        destination: URL,
+        conflictPolicy: FileActionServiceMoveConflictPolicy
+    ) async -> Result<FileActionServiceMoveResult, FileActionServiceClientError> {
+        do {
+            let result = try await FileActionServiceRelay.perform(action: .move(
+                sources: sources,
+                destination: destination,
+                conflictPolicy: conflictPolicy
+            ))
+            guard let move = result.move else {
+                throw FileActionServiceClientError.unexpectedPayload
+            }
+            return .success(move)
+        } catch let error as FileActionServiceClientError {
+            return .failure(error)
+        } catch {
+            return .failure(.interrupted)
+        }
+    }
 }

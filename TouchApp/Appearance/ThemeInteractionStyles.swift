@@ -41,6 +41,7 @@ struct ThemeIconButton: View {
     let tooltip: String
     let accessibilityLabel: String
     let theme: ThemeDefinition
+    var tint: Color? = nil
     var isSelected = false
     let action: () -> Void
 
@@ -50,15 +51,15 @@ struct ThemeIconButton: View {
         Button(action: action) {
             Image(systemName: systemName)
                 .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(isSelected ? theme.accent.color : theme.text.secondary.color)
+                .foregroundStyle(controlTint)
                 .frame(width: 34, height: 34)
                 .background(
-                    isSelected ? theme.accent.color.opacity(0.14) : theme.icon.container.color,
+                    controlTint.opacity(isSelected ? 0.18 : 0.10),
                     in: Circle()
                 )
                 .overlay {
                     Circle().stroke(
-                        isSelected ? theme.accent.color.opacity(0.32) : theme.card.border.color,
+                        controlTint.opacity(isSelected ? 0.42 : 0.22),
                         lineWidth: 1
                     )
                 }
@@ -67,6 +68,10 @@ struct ThemeIconButton: View {
         .help(tooltip)
         .accessibilityLabel(accessibilityLabel)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+
+    private var controlTint: Color {
+        tint ?? theme.interactiveAccent.color
     }
 }
 
@@ -150,8 +155,8 @@ struct TextWorkspaceToolbarButton: View {
                     RoundedRectangle(cornerRadius: size * 0.32, style: .continuous)
                         .stroke(
                             isSelected
-                                ? theme.accent.color.opacity(0.28)
-                                : (isHovering ? theme.panel.highlight.color.opacity(0.14) : .clear),
+                                ? theme.interactiveAccent.color.opacity(0.40)
+                                : (isHovering ? theme.interactiveAccent.color.opacity(0.26) : .clear),
                             lineWidth: 1
                         )
                 }
@@ -187,10 +192,10 @@ struct TextWorkspaceToolbarButton: View {
 
     private var backgroundColor: Color {
         if isSelected {
-            return theme.accent.color.opacity(0.14)
+            return theme.interactiveAccent.color.opacity(0.18)
         }
         if isHovering {
-            return theme.card.hoverFill.color.opacity(0.78)
+            return theme.interactiveAccent.color.opacity(0.11)
         }
         // 参考速译工具栏：默认态只显示图标；悬停和选中时再出现承载面，
         // 避免多个工具按钮在紧凑窗口里形成一排深色方块。
@@ -199,9 +204,9 @@ struct TextWorkspaceToolbarButton: View {
 
     private var foregroundColor: Color {
         if isSelected {
-            return theme.accent.color
+            return theme.interactiveAccent.color
         }
-        return usesPrimaryForeground ? theme.text.primary.color : theme.text.secondary.color
+        return usesPrimaryForeground ? theme.text.primary.color : theme.interactiveAccent.color
     }
 }
 

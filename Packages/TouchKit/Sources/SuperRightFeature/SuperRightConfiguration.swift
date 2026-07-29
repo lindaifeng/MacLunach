@@ -96,6 +96,7 @@ public enum FinderMenuCommand: Equatable, Sendable {
     case newFile(format: NewFileFormatDefinition, directory: URL)
     case newFolder(directory: URL)
     case cut(urls: [URL])
+    case pasteMove(snapshot: MoveClipboardSnapshot, destination: URL)
     case copyPath(urls: [URL])
     case openTerminal(directory: URL, bundleIdentifier: String)
 }
@@ -124,9 +125,14 @@ public struct FinderMenuItemDescriptor: Equatable, Sendable {
 
 public struct FinderMenuBuilder: Sendable {
     private let configuration: SuperRightFeatureConfiguration
+    private let pendingMove: MoveClipboardSnapshot?
 
-    public init(configuration: SuperRightFeatureConfiguration) {
+    public init(
+        configuration: SuperRightFeatureConfiguration,
+        pendingMove: MoveClipboardSnapshot? = nil
+    ) {
         self.configuration = configuration
+        self.pendingMove = pendingMove
     }
 
     public func build(for context: FinderMenuContext) -> [FinderMenuItemDescriptor] {
@@ -143,6 +149,10 @@ public struct FinderMenuBuilder: Sendable {
         }
         let copyURLs = selectedURLs.isEmpty ? targetedURL.map { [$0] } ?? [] : selectedURLs
         let terminalDirectory = workingDirectory(
+            targetedURL: targetedURL,
+            selectedURLs: selectedURLs
+        )
+        let pasteDestination = pasteDestination(
             targetedURL: targetedURL,
             selectedURLs: selectedURLs
         )
@@ -193,9 +203,29 @@ public struct FinderMenuBuilder: Sendable {
                     )
                 )
             case .cut:
-                // 安全剪切需要待移动状态、目标粘贴和冲突处理完整闭环。
-                // 服务接通前不向 Finder 暴露一个只会蜂鸣的无效入口。
-                continue
+                if !selectedURLs.isEmpty {
+                    items.append(
+                        .init(
+                            title: "剪切",
+                            symbolName: "scissors",
+                            command: .cut(urls: selectedURLs)
+                        )
+                    )
+                }
+                if let pendingMove,
+                   let pasteDestination,
+                   canPaste(pendingMove, into: pasteDestination) {
+                    items.append(
+                        .init(
+                            title: "粘贴到此处",
+                            symbolName: "clipboard",
+                            command: .pasteMove(
+                                snapshot: pendingMove,
+                                destination: pasteDestination
+                            )
+                        )
+                    )
+                }
             case .copyPath:
                 guard !copyURLs.isEmpty else { continue }
                 items.append(
@@ -239,6 +269,30 @@ public struct FinderMenuBuilder: Sendable {
 
     private func directoryURL(for url: URL) -> URL {
         isDirectory(url) ? url : url.deletingLastPathComponent()
+    }
+
+    private func pasteDestination(
+        targetedURL: URL?,
+        selectedURLs: [URL]
+    ) -> URL? {
+        if selectedURLs.isEmpty {
+            guard let targetedURL, isDirectory(targetedURL) else { return nil }
+            return targetedURL.standardizedFileURL
+        }
+        guard selectedURLs.count == 1,
+              let selectedURL = selectedURLs.first,
+              isDirectory(selectedURL) else {
+            return nil
+        }
+        return selectedURL.standardizedFileURL
+    }
+
+    private func canPaste(_ snapshot: MoveClipboardSnapshot, into destination: URL) -> Bool {
+        snapshot.items.allSatisfy { item in
+            let source = item.url.standardizedFileURL
+            guard item.isDirectory else { return source != destination }
+            return destination != source && !destination.path.hasPrefix(source.path + "/")
+        }
     }
 
     private func isDirectory(_ url: URL) -> Bool {

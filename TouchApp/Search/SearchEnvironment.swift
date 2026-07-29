@@ -143,6 +143,9 @@ final class SearchEnvironment: ObservableObject {
     private var indexingTask: Task<Void, Never>?
     private var didPrepareIndex = false
     private var securityScopedRoots: [URL] = []
+    private var indexingProcessedItemCount = 0
+    private var indexingCompletedRoots = 0
+    private var indexingTotalRoots = 0
 
     init(
         applicationCatalog: ApplicationCatalog,
@@ -224,16 +227,14 @@ final class SearchEnvironment: ObservableObject {
 
         let count = (try? await fileIndexStore.recordCount()) ?? 0
         if count > 0 {
-            diagnostics.update(status: .indexing)
-            diagnostics.updateIndexingProgress(0, rootName: roots.first?.lastPathComponent)
+            beginIndexingActivity(status: .indexing, totalRoots: roots.count, rootName: roots.first?.lastPathComponent)
             refreshDiagnostics(fileCount: count, status: .indexing, updateTimestamp: false)
             startMonitoring()
             // FSEvents starts before reconciliation so changes occurring during the
             // background pass are still delivered. Application search is independent.
             indexingTask = Task { [weak self] in await self?.performReconciliation() }
         } else {
-            diagnostics.update(status: .indexing)
-            diagnostics.updateIndexingProgress(0, rootName: roots.first?.lastPathComponent)
+            beginIndexingActivity(status: .indexing, totalRoots: roots.count, rootName: roots.first?.lastPathComponent)
             indexingTask = Task { [weak self] in await self?.performInitialIndexing() }
         }
     }
@@ -255,8 +256,8 @@ final class SearchEnvironment: ObservableObject {
         refreshFileAccessState()
         rootPersistence?.saveRoots(roots)
         refreshFileAccessState()
-        diagnostics.update(roots: roots, status: .indexing)
-        diagnostics.updateIndexingProgress(0, rootName: normalized.lastPathComponent)
+        diagnostics.update(roots: roots)
+        beginIndexingActivity(status: .indexing, totalRoots: 1, rootName: normalized.lastPathComponent)
         eventMonitor?.stop()
         do {
             for removedRoot in previousRoots where !updatedPaths.contains(Self.canonicalPath(for: removedRoot)) {
@@ -314,7 +315,7 @@ final class SearchEnvironment: ObservableObject {
     func rebuildIndex() async {
         _ = await cancelIndexing()
         eventMonitor?.stop()
-        diagnostics.update(status: .rebuilding)
+        beginIndexingActivity(status: .rebuilding, totalRoots: roots.count, rootName: roots.first?.lastPathComponent)
 
         do {
             if let databaseURL {
@@ -419,8 +420,7 @@ final class SearchEnvironment: ObservableObject {
 
     private func startReconciliation() {
         guard fileIndexStore != nil, !roots.isEmpty else { return }
-        diagnostics.update(status: .indexing)
-        diagnostics.updateIndexingProgress(0, rootName: roots.first?.lastPathComponent)
+        beginIndexingActivity(status: .indexing, totalRoots: roots.count, rootName: roots.first?.lastPathComponent)
         indexingTask = Task { [weak self] in await self?.performReconciliation() }
     }
 
@@ -461,16 +461,23 @@ final class SearchEnvironment: ObservableObject {
 
     private func scan(root: URL, replacingExisting: Bool, status: SearchDiagnostics.Status) async throws {
         guard let fileIndexStore else { throw FileIndexStoreError.openFailed }
+        if !diagnostics.isActivelyIndexing {
+            beginIndexingActivity(status: status, totalRoots: 1, rootName: root.lastPathComponent)
+        }
         if replacingExisting { try await fileIndexStore.delete(root: Self.canonicalPath(for: root)) }
         for try await batch in FileIndexScanner.batches(root: root, exclusionRules: exclusionRules) {
             try Task.checkCancellation()
             try await fileIndexStore.upsert(batch)
+            recordIndexingActivity(batch.count, rootName: root.lastPathComponent)
             refreshDiagnostics(fileCount: try await fileIndexStore.recordCount(), status: status)
         }
     }
 
     private func scan(subtree: URL, belongingTo root: URL, status: SearchDiagnostics.Status) async throws {
         guard let fileIndexStore else { throw FileIndexStoreError.openFailed }
+        if !diagnostics.isActivelyIndexing {
+            beginIndexingActivity(status: status, totalRoots: 1, rootName: root.lastPathComponent)
+        }
         try await fileIndexStore.delete(subtree: Self.canonicalPath(for: subtree))
         for try await batch in FileIndexScanner.batches(
             root: subtree,
@@ -480,6 +487,7 @@ final class SearchEnvironment: ObservableObject {
         ) {
             try Task.checkCancellation()
             try await fileIndexStore.upsert(batch)
+            recordIndexingActivity(batch.count, rootName: root.lastPathComponent)
             refreshDiagnostics(fileCount: try await fileIndexStore.recordCount(), status: status)
         }
     }
@@ -556,12 +564,40 @@ final class SearchEnvironment: ObservableObject {
         totalRoots: Int,
         currentRoot: URL
     ) {
-        let progress = totalRoots > 0
-            ? Double(completedRoots) / Double(totalRoots)
-            : 1
-        diagnostics.updateIndexingProgress(
-            progress,
+        indexingCompletedRoots = completedRoots
+        indexingTotalRoots = totalRoots
+        diagnostics.updateIndexingActivity(
+            processedItemCount: indexingProcessedItemCount,
+            completedRoots: completedRoots,
+            totalRoots: totalRoots,
             rootName: currentRoot.lastPathComponent
+        )
+    }
+
+    private func beginIndexingActivity(
+        status: SearchDiagnostics.Status,
+        totalRoots: Int,
+        rootName: String?
+    ) {
+        indexingProcessedItemCount = 0
+        indexingCompletedRoots = 0
+        indexingTotalRoots = max(0, totalRoots)
+        diagnostics.update(status: status)
+        diagnostics.updateIndexingActivity(
+            processedItemCount: 0,
+            completedRoots: 0,
+            totalRoots: indexingTotalRoots,
+            rootName: rootName
+        )
+    }
+
+    private func recordIndexingActivity(_ itemCount: Int, rootName: String?) {
+        indexingProcessedItemCount += itemCount
+        diagnostics.updateIndexingActivity(
+            processedItemCount: indexingProcessedItemCount,
+            completedRoots: indexingCompletedRoots,
+            totalRoots: indexingTotalRoots,
+            rootName: rootName
         )
     }
 

@@ -52,6 +52,9 @@ struct SearchBarView: View {
                     SearchIndexProgressIndicator(
                         progress: diagnostics.indexingProgress ?? 0,
                         rootName: diagnostics.indexingRootName,
+                        processedItemCount: diagnostics.indexingProcessedItemCount,
+                        completedRoots: diagnostics.indexingCompletedRoots,
+                        totalRoots: diagnostics.indexingTotalRoots,
                         theme: theme
                     )
                     .transition(.opacity.combined(with: .scale(scale: 0.9)))
@@ -134,7 +137,16 @@ private struct SearchIndexProgressIndicator: View {
 
     let progress: Double
     let rootName: String?
+    let processedItemCount: Int?
+    let completedRoots: Int?
+    let totalRoots: Int?
     let theme: ThemeDefinition
+
+    private var activityText: String {
+        let countText = "\((processedItemCount ?? 0).formatted()) 项"
+        guard let completedRoots, let totalRoots, totalRoots > 0 else { return countText }
+        return "\(min(completedRoots + 1, totalRoots))/\(totalRoots) · \(countText)"
+    }
 
     var body: some View {
         HStack(spacing: 7) {
@@ -163,16 +175,16 @@ private struct SearchIndexProgressIndicator: View {
             }
             .frame(width: 18, height: 18)
 
-            Text("\(Int((min(max(progress, 0), 1) * 100).rounded()))%")
+            Text(activityText)
                 .font(.system(size: 10.5, weight: .semibold, design: .rounded))
                 .monospacedDigit()
                 .foregroundStyle(theme.text.secondary.color)
-                .frame(minWidth: 29, alignment: .trailing)
+                .frame(minWidth: 62, alignment: .trailing)
         }
         .help(rootName.map { "正在检索“\($0)”" } ?? "正在检索文件")
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("文件检索进度")
-        .accessibilityValue("\(Int((min(max(progress, 0), 1) * 100).rounded()))%")
+        .accessibilityValue(activityText)
         .accessibilityIdentifier("search.index-progress")
         .onAppear {
             guard !reduceMotion else { return }

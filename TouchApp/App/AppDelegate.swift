@@ -13,10 +13,32 @@ import TouchCore
 import TouchFeatureAPI
 import TranslationFeature
 
+struct FeaturePanelSessionState: Equatable {
+    private(set) var openFeatureIDs: [String] = []
+
+    var frontmostFeatureID: String? { openFeatureIDs.last }
+
+    mutating func open(_ featureID: String) {
+        openFeatureIDs.removeAll { $0 == featureID }
+        openFeatureIDs.append(featureID)
+    }
+
+    mutating func promote(_ featureID: String) {
+        guard openFeatureIDs.contains(featureID) else { return }
+        open(featureID)
+    }
+
+    mutating func close(_ featureID: String) {
+        openFeatureIDs.removeAll { $0 == featureID }
+    }
+
+}
+
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var launcherPanelController: LauncherPanelController?
     private var settingsWindowController: SettingsWindowController?
+    private var moveConflictWindowController: MoveConflictWindowController?
     private var pomodoroPanelController: PomodoroPanelController?
     private var holidayCalendarPanelController: HolidayCalendarPanelController?
     private var markdownPreviewPanelController: MarkdownPreviewPanelController?
@@ -24,6 +46,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var dailyTaskPanelController: DailyTaskPanelController?
     private var clipboardPanelController: ClipboardPanelController?
     private var translationPanelController: TranslationPanelController?
+    private var pendingTranslationRequest: TextTranslationRequest?
     private var ocrPanelController: OCRPanelController?
     private var screenshotAnnotationFixtureController: AnnotationEditorController?
     private let themeStore = ThemeStore()
@@ -38,6 +61,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let fileActionRelayHost = FileActionServiceRelayHost()
     private var statusItem: NSStatusItem?
     private var fileActionRelayDrainTask: Task<Void, Never>?
+    private var moveConflictMonitorTimer: Timer?
     private let isScreenshotSelectionFixture: Bool
     private let isScreenshotThumbnailFixture: Bool
     private let isScreenshotAnnotationFixture: Bool
@@ -45,6 +69,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let screenshotMeasurementOutputURL: URL?
     private var dailyTaskRepository: DailyTaskRepository!
     private var ocrRepository: OCRConfigurationRepository!
+    private var featurePanelSession = FeaturePanelSessionState()
+    private var suppressLauncherForNextApplicationActivation = false
+    private var priorExternalApplicationPID: Int32?
+    private var windowCloseSettlementTask: Task<Void, Never>?
+    private var pomodoroCardStatusTimer: Timer?
 
     override init() {
         let selectionOutputArgument = CommandLine.arguments.first {
@@ -69,6 +98,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         screenshotMeasurementOutputURL = Self.argumentURL(prefix: "--measure-screenshot=")
         super.init()
 
+        let translationRequestHandler: ScreenshotCoordinator.TranslationRequestHandler = { [weak self] request in
+            self?.presentTranslationRequest(request)
+        }
         let environment: ScreenshotEnvironment
         if isScreenshotSelectionFixture,
            let selectionOutputArgument,
@@ -88,7 +120,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                             "--screenshot-selection-auto-complete"
                         )
                     )
-                }
+                },
+                translationRequestHandler: translationRequestHandler
             )
         } else if isScreenshotThumbnailFixture {
             let rootURL = Self.argumentURL(prefix: "--screenshot-thumbnail-root=")
@@ -117,7 +150,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     recorder: recorder
                 ),
                 floatingThumbnailPresenter: FloatingThumbnailController(pathsProvider: { paths }),
-                configurationProvider: { configuration }
+                configurationProvider: { configuration },
+                translationRequestHandler: translationRequestHandler
             )
         } else {
             let measurementConfigurationProvider: ScreenshotCoordinator.ConfigurationProvider?
@@ -133,6 +167,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             environment = ScreenshotEnvironment(
                 themeStore: themeStore,
                 configurationProvider: measurementConfigurationProvider,
+                translationRequestHandler: translationRequestHandler,
                 registerShortcuts: { [weak self] in self?.registerScreenshotShortcuts() },
                 unregisterShortcuts: { [weak self] in self?.unregisterScreenshotShortcuts() }
             )
@@ -189,6 +224,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let launchedForFileActionRelay = FileActionServiceRelay.hasPendingRequests
+        let launchedForMoveConflict = (try? MoveConflictRequestStore().loadValid()) != nil
         let usesClipboardFixture = CommandLine.arguments.contains("--show-clipboard-fixture")
         NSApp.setActivationPolicy(.regular)
         installTextEditingMenu()
@@ -207,29 +243,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             themeStore: themeStore
         )
         launcherPanelController = launcher
-        pomodoroPanelController = PomodoroPanelController(themeStore: themeStore) { [weak self] in
-            self?.launcherPanelController?.show()
-        }
+        pomodoroPanelController = PomodoroPanelController(
+            themeStore: themeStore,
+            onCompletion: { [weak self] in
+                self?.presentPomodoroCompletion()
+            },
+            onClose: { [weak self] in
+                self?.closeFeaturePanelSession(PomodoroFeaturePlugin.id)
+            }
+        )
         holidayCalendarPanelController = HolidayCalendarPanelController(themeStore: themeStore) { [weak self] in
-            self?.launcherPanelController?.show()
+            self?.closeFeaturePanelSession(HolidayCalendarFeaturePlugin.id)
         }
         markdownPreviewPanelController = MarkdownPreviewPanelController(themeStore: themeStore) { [weak self] in
-            self?.launcherPanelController?.show()
+            self?.closeFeaturePanelSession(MarkdownPreviewFeaturePlugin.id)
         }
         parserToolsPanelController = ParserToolsPanelController(themeStore: themeStore) { [weak self] in
-            self?.launcherPanelController?.show()
+            self?.closeFeaturePanelSession(ParserToolsFeaturePlugin.id)
         }
         clipboardPanelController = ClipboardPanelController(
             themeStore: themeStore,
             usesFixtureData: usesClipboardFixture
         ) { [weak self] in
-            self?.launcherPanelController?.show()
+            self?.closeFeaturePanelSession(ClipboardFeaturePlugin.id)
         }
         translationPanelController = TranslationPanelController(
             screenshotCoordinator: screenshotEnvironment.coordinator,
-            themeStore: themeStore
-        ) { [weak self] in
-            self?.launcherPanelController?.show()
+            themeStore: themeStore,
+            onPresented: { [weak self] in
+                self?.beginFeaturePanelPresentation(TranslationFeaturePlugin.id)
+            },
+            onClose: { [weak self] in
+                self?.closeFeaturePanelSession(TranslationFeaturePlugin.id)
+            }
+        )
+        if let pendingTranslationRequest {
+            self.pendingTranslationRequest = nil
+            presentTranslationRequest(pendingTranslationRequest)
         }
         ocrPanelController = OCRPanelController(
             screenshotCoordinator: screenshotEnvironment.coordinator,
@@ -242,29 +292,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return OCRPanelController.writeToSystemPasteboard(text)
             },
             onTranslate: { [weak self] request in
-                self?.translationPanelController?.show(request: request)
+                self?.presentTranslationRequest(request)
+            },
+            onPresented: { [weak self] in
+                self?.beginFeaturePanelPresentation(OCRFeaturePlugin.id)
+            },
+            onClose: { [weak self] in
+                self?.closeFeaturePanelSession(OCRFeaturePlugin.id)
             }
-        ) { [weak self] in
-            self?.launcherPanelController?.show()
-        }
+        )
         dailyTaskPanelController = DailyTaskPanelController(
             repository: dailyTaskRepository,
             themeStore: themeStore,
             onStartFocus: { [weak self] request in
-                self?.pomodoroPanelController?.show(request: request)
+                self?.presentPomodoro(request: request)
             }
         ) { [weak self] in
-            self?.launcherPanelController?.show()
+            self?.closeFeaturePanelSession(DailyTaskFeaturePlugin.id)
         }
         screenshotEnvironment.coordinator.attachLauncher(launcher)
+        startPomodoroCardStatusUpdates()
         settingsWindowController = SettingsWindowController(
             searchEnvironment: searchEnvironment,
             featureStore: featureStore,
             screenshotEnvironment: screenshotEnvironment,
             themeStore: themeStore
         ) { [weak self] in
-            self?.restoreLauncherAfterSettingsClose()
+            self?.settleAfterTouchWindowClosed()
         }
+        moveConflictWindowController = MoveConflictWindowController(
+            themeStore: themeStore,
+            onResolve: { [weak self] request, resolution in
+                self?.resolveMoveConflict(request, resolution: resolution)
+            },
+            onCancel: { _ in
+                try? MoveConflictResolutionService.cancel()
+            }
+        )
         NotificationCenter.default.addObserver(
             self,
             selector: #selector(handleOpenSettings(_:)),
@@ -305,6 +369,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self,
             selector: #selector(handleFeatureGlobalShortcutsDidChange),
             name: .featureGlobalShortcutsDidChange,
+            object: nil
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleWindowDidBecomeKey(_:)),
+            name: NSWindow.didBecomeKeyNotification,
             object: nil
         )
 
@@ -368,10 +438,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         } else if usesClipboardFixture {
             Task { @MainActor [weak self] in
+                self?.beginFeaturePanelPresentation(ClipboardFeaturePlugin.id)
                 self?.clipboardPanelController?.show()
             }
         } else if CommandLine.arguments.contains("--show-translation-fixture") {
             Task { @MainActor [weak self] in
+                self?.beginFeaturePanelPresentation(TranslationFeaturePlugin.id)
                 self?.translationPanelController?.showFixture(
                     sourceText: "原文内容",
                     translatedText: "Original content"
@@ -379,12 +451,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         } else if CommandLine.arguments.contains("--show-translation-language-pack-fixture") {
             Task { @MainActor [weak self] in
+                self?.beginFeaturePanelPresentation(TranslationFeaturePlugin.id)
                 self?.translationPanelController?.showLanguagePackFixture(
                     sourceText: "原文内容"
                 )
             }
         } else if CommandLine.arguments.contains("--show-translation-long-fixture") {
             Task { @MainActor [weak self] in
+                self?.beginFeaturePanelPresentation(TranslationFeaturePlugin.id)
                 self?.translationPanelController?.showFixture(
                     sourceText: "这是一段用于验证长文本自适应布局的截图识别内容。原文和译文会先随内容自然增高，只有窗口达到合理高度上限且文字真正超出显示区域时，右侧才出现滚动条；短文本保持紧凑干净，不显示空滑块。",
                     translatedText: "This long translation fixture verifies adaptive content sizing. The source and translation areas expand with their text first, and scrollbars appear only after the window reaches its height limit."
@@ -400,6 +474,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     repeating: "Extra-long translated content remains scrollable after the adaptive window reaches its height limit.",
                     count: 18
                 ).joined(separator: "\n")
+                self?.beginFeaturePanelPresentation(TranslationFeaturePlugin.id)
                 self?.translationPanelController?.showFixture(
                     sourceText: sourceText,
                     translatedText: translatedText
@@ -414,6 +489,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     "你仍然可以直接编辑、复制或翻译识别结果。",
                     "重新截图后，窗口会根据新内容重新调整高度。"
                 ].joined(separator: "\n")
+                self?.beginFeaturePanelPresentation(OCRFeaturePlugin.id)
                 self?.ocrPanelController?.show(
                     result: .init(
                         text: text,
@@ -428,6 +504,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     repeating: "超长识别内容用于验证窗口达到 486pt 上限后继续滚动查看。",
                     count: 24
                 ).joined(separator: "\n")
+                self?.beginFeaturePanelPresentation(OCRFeaturePlugin.id)
                 self?.ocrPanelController?.show(
                     result: .init(
                         text: text,
@@ -438,6 +515,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         } else if CommandLine.arguments.contains("--show-ocr-fixture") {
             Task { @MainActor [weak self] in
+                self?.beginFeaturePanelPresentation(OCRFeaturePlugin.id)
                 self?.ocrPanelController?.show(
                     result: .init(
                         text: "pple Root CA\nier=8YLX494879",
@@ -450,33 +528,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             Task { @MainActor [weak self] in
                 self?.showSettings()
             }
+        } else if CommandLine.arguments.contains("--show-pomodoro-completed-fixture") {
+            Task { @MainActor [weak self] in
+                self?.beginFeaturePanelPresentation(PomodoroFeaturePlugin.id)
+                self?.pomodoroPanelController?.showCompletedFixture()
+            }
+        } else if CommandLine.arguments.contains("--show-pomodoro-background-completion-fixture") {
+            Task { @MainActor [weak self] in
+                self?.beginFeaturePanelPresentation(PomodoroFeaturePlugin.id)
+                self?.pomodoroPanelController?.showCompletionCountdownFixture()
+            }
         } else if CommandLine.arguments.contains("--show-pomodoro-and-launcher") {
             Task { @MainActor [weak self] in
+                self?.beginFeaturePanelPresentation(PomodoroFeaturePlugin.id)
                 self?.pomodoroPanelController?.show()
                 self?.launcherPanelController?.show()
             }
+        } else if CommandLine.arguments.contains("--show-pomodoro-and-daily-tasks") {
+            Task { @MainActor [weak self] in
+                self?.beginFeaturePanelPresentation(DailyTaskFeaturePlugin.id)
+                self?.dailyTaskPanelController?.show()
+                self?.beginFeaturePanelPresentation(PomodoroFeaturePlugin.id)
+                self?.pomodoroPanelController?.show()
+            }
         } else if CommandLine.arguments.contains("--show-pomodoro") {
             Task { @MainActor [weak self] in
-                self?.pomodoroPanelController?.show()
+                self?.presentPomodoro()
             }
         } else if CommandLine.arguments.contains("--show-holiday-calendar") {
             Task { @MainActor [weak self] in
-                self?.holidayCalendarPanelController?.show()
+                self?.presentFeaturePanel(HolidayCalendarFeaturePlugin.id)
             }
         } else if CommandLine.arguments.contains("--show-markdown") {
             Task { @MainActor [weak self] in
-                self?.markdownPreviewPanelController?.show()
+                self?.presentFeaturePanel(MarkdownPreviewFeaturePlugin.id)
             }
         } else if CommandLine.arguments.contains("--show-daily-tasks") {
             Task { @MainActor [weak self] in
-                self?.dailyTaskPanelController?.show()
+                self?.presentFeaturePanel(DailyTaskFeaturePlugin.id)
             }
+        } else if launchedForMoveConflict {
+            presentPendingMoveConflictIfNeeded()
         } else if launchedForFileActionRelay {
             // Finder 动作的后台唤起不抢焦点，也不弹出启动器。
             NSApp.hide(nil)
         } else {
             Task { @MainActor [weak self] in
-                self?.launcherPanelController?.show()
+                self?.showLauncherForExplicitUserRequest()
             }
         }
         guard !isScreenshotSelectionFixture,
@@ -610,6 +708,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NotificationCenter.default.removeObserver(self)
         DistributedNotificationCenter.default().removeObserver(self)
         fileActionRelayDrainTask?.cancel()
+        moveConflictMonitorTimer?.invalidate()
+        pomodoroCardStatusTimer?.invalidate()
     }
 
     func applicationShouldHandleReopen(
@@ -620,11 +720,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             drainFileActionRelay()
             return false
         }
-        // 双击应用或通过 `open` 再次唤起时，启动器始终是首要界面。
-        // 设置窗口可能仍在后台可见，不能让它拦截应用的再次唤起。
         settingsWindowController?.window?.orderOut(nil)
-        launcherPanelController?.show()
+        showLauncherForExplicitUserRequest()
         return false
+    }
+
+    func applicationWillResignActive(_ notification: Notification) {
+        recordPriorExternalApplicationIfNeeded()
+        hideOpenFeaturePanelsForApplicationDeactivation()
+    }
+
+    func applicationDidBecomeActive(_ notification: Notification) {
+        pomodoroPanelController?.synchronizeClock()
+        if suppressLauncherForNextApplicationActivation {
+            suppressLauncherForNextApplicationActivation = false
+            return
+        }
+        guard launcherPanelController?.isVisible != true,
+              settingsWindowController?.window?.isVisible != true,
+              !hasVisibleFeaturePanel else { return }
+        showLauncherForExplicitUserRequest()
     }
 
     private func startFileActionRelay() {
@@ -634,11 +749,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             name: FileActionServiceRelay.notificationName,
             object: nil
         )
+        moveConflictMonitorTimer = Timer.scheduledTimer(
+            timeInterval: 0.75,
+            target: self,
+            selector: #selector(handleMoveConflictMonitorTick),
+            userInfo: nil,
+            repeats: true
+        )
         drainFileActionRelay()
     }
 
     @objc private func handleFileActionRelayRequest() {
         drainFileActionRelay()
+        presentPendingMoveConflictIfNeeded()
+    }
+
+    @objc private func handleMoveConflictMonitorTick() {
+        presentPendingMoveConflictIfNeeded()
     }
 
     private func drainFileActionRelay() {
@@ -653,8 +780,267 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func presentPendingMoveConflictIfNeeded() {
+        do {
+            guard let request = try MoveConflictRequestStore().loadValid() else { return }
+            guard moveConflictWindowController?.isPresentingConflict(id: request.id) != true else {
+                return
+            }
+            moveConflictWindowController?.show(request)
+        } catch {
+            try? MoveConflictRequestStore().clear()
+        }
+    }
+
+    private func resolveMoveConflict(
+        _ request: MoveConflictRequest,
+        resolution: MoveConflictResolution
+    ) {
+        Task { @MainActor [weak self] in
+            do {
+                _ = try await MoveConflictResolutionService.resolve(request, resolution: resolution)
+                self?.moveConflictWindowController?.dismiss()
+            } catch MoveConflictResolutionError.clipboardStateChanged {
+                self?.moveConflictWindowController?.show(
+                    request,
+                    errorMessage: "剪切状态已变更，请回到 Finder 重新执行剪切。"
+                )
+            } catch {
+                self?.moveConflictWindowController?.show(
+                    request,
+                    errorMessage: "暂时无法完成移动，请检查文件权限后重试。"
+                )
+            }
+        }
+    }
+
     func applicationShouldRestoreApplicationState(_ app: NSApplication) -> Bool {
         false
+    }
+
+    private func presentTranslationRequest(_ request: TextTranslationRequest) {
+        guard let translationPanelController else {
+            pendingTranslationRequest = request
+            return
+        }
+        translationPanelController.show(request: request)
+    }
+
+    private func presentPomodoro(request: FocusSessionRequest? = nil) {
+        beginFeaturePanelPresentation(PomodoroFeaturePlugin.id)
+        pomodoroPanelController?.show(request: request)
+    }
+
+    private func presentPomodoroCompletion() {
+        beginFeaturePanelPresentation(PomodoroFeaturePlugin.id)
+        updateFeaturePanelStatus(for: PomodoroFeaturePlugin.id)
+        NSApp.requestUserAttention(.criticalRequest)
+        suppressLauncherForNextApplicationActivation = !NSApp.isActive
+        _ = restoreFeaturePanel(
+            PomodoroFeaturePlugin.id,
+            restoresMiniaturizedWindow: true
+        )
+    }
+
+    private func presentFeaturePanel(_ featureID: String) {
+        if featureID == TranslationFeaturePlugin.id {
+            guard let translationPanelController else { return }
+            launcherPanelController?.hide()
+            translationPanelController.show()
+            return
+        }
+        if featureID == OCRFeaturePlugin.id {
+            guard let ocrPanelController else { return }
+            launcherPanelController?.hide()
+            ocrPanelController.show()
+            return
+        }
+
+        beginFeaturePanelPresentation(featureID)
+        switch featureID {
+        case DailyTaskFeaturePlugin.id:
+            dailyTaskPanelController?.show()
+        case PomodoroFeaturePlugin.id:
+            pomodoroPanelController?.show()
+        case HolidayCalendarFeaturePlugin.id:
+            holidayCalendarPanelController?.show()
+        case MarkdownPreviewFeaturePlugin.id:
+            markdownPreviewPanelController?.show()
+        case ParserToolsFeaturePlugin.id:
+            parserToolsPanelController?.show()
+        case ClipboardFeaturePlugin.id:
+            clipboardPanelController?.show()
+        default:
+            featurePanelSession.close(featureID)
+        }
+    }
+
+    private func beginFeaturePanelPresentation(_ featureID: String) {
+        featurePanelSession.open(featureID)
+        updateFeaturePanelStatus(for: featureID)
+        launcherPanelController?.hide()
+    }
+
+    private func closeFeaturePanelSession(_ featureID: String) {
+        featurePanelSession.close(featureID)
+        featureStore.setPanelPresence(nil, for: featureID)
+        featureStore.setPanelStatusText(nil, for: featureID)
+        settleAfterTouchWindowClosed()
+    }
+
+    private func featurePanelController(
+        for featureID: String
+    ) -> (any FeaturePanelSessionController)? {
+        switch featureID {
+        case DailyTaskFeaturePlugin.id: dailyTaskPanelController
+        case PomodoroFeaturePlugin.id: pomodoroPanelController
+        case HolidayCalendarFeaturePlugin.id: holidayCalendarPanelController
+        case MarkdownPreviewFeaturePlugin.id: markdownPreviewPanelController
+        case ParserToolsFeaturePlugin.id: parserToolsPanelController
+        case ClipboardFeaturePlugin.id: clipboardPanelController
+        case TranslationFeaturePlugin.id: translationPanelController
+        case OCRFeaturePlugin.id: ocrPanelController
+        default: nil
+        }
+    }
+
+    private func featureID(for window: NSWindow?) -> String? {
+        guard let window else { return nil }
+        return featurePanelSession.openFeatureIDs.first { featureID in
+            featurePanelController(for: featureID)?.sessionWindow === window
+        }
+    }
+
+    @discardableResult
+    private func restoreFeaturePanel(
+        _ featureID: String,
+        activateApplication: Bool = true,
+        restoresMiniaturizedWindow: Bool = false
+    ) -> Bool {
+        guard featurePanelSession.openFeatureIDs.contains(featureID),
+              let controller = featurePanelController(for: featureID) else { return false }
+        launcherPanelController?.hide()
+        if restoresMiniaturizedWindow, controller.sessionWindow.isMiniaturized {
+            controller.sessionWindow.deminiaturize(nil)
+        }
+        // 后台恢复时先提供一个真实可见窗口，再请求应用激活；否则 macOS
+        // 可能保留 Running Background 状态，导致到时提醒无法弹到前台。
+        controller.sessionWindow.orderFrontRegardless()
+        if activateApplication, !NSApp.isActive {
+            activateApplicationForFeaturePanel()
+        }
+        controller.sessionWindow.makeKeyAndOrderFront(nil)
+        return true
+    }
+
+    private func hideOpenFeaturePanelsForApplicationDeactivation() {
+        if let featureID = featureID(for: NSApp.keyWindow) {
+            featurePanelSession.promote(featureID)
+        }
+        for featureID in featurePanelSession.openFeatureIDs {
+            guard let controller = featurePanelController(for: featureID),
+                  !controller.remainsVisibleWhenApplicationIsInactive else { continue }
+            controller.sessionWindow.orderOut(nil)
+        }
+    }
+
+    private var hasVisibleFeaturePanel: Bool {
+        featurePanelSession.openFeatureIDs.contains { featureID in
+            featurePanelController(for: featureID)?.sessionWindow.isVisible == true
+        }
+    }
+
+    private func showLauncherForExplicitUserRequest() {
+        recordPriorExternalApplicationIfNeeded()
+        // 从后台返回一念时，普通窗口只保留状态，不应抢在启动器前面恢复。
+        hideOpenFeaturePanelsForApplicationDeactivation()
+        refreshFeaturePanelPresence()
+        launcherPanelController?.show()
+    }
+
+    private func refreshFeaturePanelPresence() {
+        for featureID in featurePanelSession.openFeatureIDs {
+            updateFeaturePanelStatus(for: featureID)
+        }
+    }
+
+    private func updateFeaturePanelStatus(for featureID: String) {
+        let presence = panelPresence(for: featureID)
+        featureStore.setPanelPresence(presence, for: featureID)
+        guard featureID == PomodoroFeaturePlugin.id else {
+            featureStore.setPanelStatusText(nil, for: featureID)
+            return
+        }
+        switch presence {
+        case .running:
+            featureStore.setPanelStatusText(
+                pomodoroPanelController?.launcherCardStatusText ?? "进行中",
+                for: featureID
+            )
+        case .attentionRequired:
+            featureStore.setPanelStatusText("时间到 · 待确认", for: featureID)
+        case .retained:
+            featureStore.setPanelStatusText("后台待命", for: featureID)
+        }
+    }
+
+    private func startPomodoroCardStatusUpdates() {
+        pomodoroCardStatusTimer?.invalidate()
+        let timer = Timer(
+            timeInterval: 1,
+            target: self,
+            selector: #selector(handlePomodoroCardStatusTick),
+            userInfo: nil,
+            repeats: true
+        )
+        pomodoroCardStatusTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    @objc private func handlePomodoroCardStatusTick() {
+        guard featurePanelSession.openFeatureIDs.contains(PomodoroFeaturePlugin.id) else { return }
+        updateFeaturePanelStatus(for: PomodoroFeaturePlugin.id)
+    }
+
+    private func panelPresence(for featureID: String) -> FeaturePanelPresence {
+        guard featureID == PomodoroFeaturePlugin.id else { return .retained }
+        if pomodoroPanelController?.needsAttention == true { return .attentionRequired }
+        if pomodoroPanelController?.isRunningSession == true { return .running }
+        return .retained
+    }
+
+    private func recordPriorExternalApplicationIfNeeded() {
+        guard let application = NSWorkspace.shared.frontmostApplication,
+              application.processIdentifier != ProcessInfo.processInfo.processIdentifier else { return }
+        priorExternalApplicationPID = application.processIdentifier
+    }
+
+    private func settleAfterTouchWindowClosed() {
+        windowCloseSettlementTask?.cancel()
+        windowCloseSettlementTask = Task { @MainActor [weak self] in
+            // windowWillClose 发生时正在关闭的窗口仍可能短暂可见；下一轮事件循环
+            // 再判断，避免误以为还有可见功能窗口。
+            await Task.yield()
+            guard let self, !Task.isCancelled else { return }
+            self.windowCloseSettlementTask = nil
+            guard self.launcherPanelController?.isVisible != true,
+                  self.settingsWindowController?.window?.isVisible != true,
+                  !self.hasVisibleFeaturePanel else { return }
+            if let keyWindow = NSApp.keyWindow, keyWindow.isVisible {
+                return
+            }
+            self.hideTouchAndRestorePriorApplication()
+        }
+    }
+
+    private func hideTouchAndRestorePriorApplication() {
+        let priorApplication = priorExternalApplicationPID.flatMap(NSRunningApplication.init(processIdentifier:))
+        priorExternalApplicationPID = nil
+        if let priorApplication, !priorApplication.isTerminated {
+            _ = priorApplication.activate(options: [])
+        } else {
+            NSApp.hide(nil)
+        }
     }
 
     func applicationShouldSaveApplicationState(_ app: NSApplication) -> Bool {
@@ -675,39 +1061,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func handlePresentFeaturePanel(_ notification: Notification) {
         guard let featureID = notification.object as? String else { return }
-        switch featureID {
-        case DailyTaskFeaturePlugin.id:
-            launcherPanelController?.hide()
-            dailyTaskPanelController?.show()
-        case PomodoroFeaturePlugin.id:
-            launcherPanelController?.hide()
-            pomodoroPanelController?.show()
-        case HolidayCalendarFeaturePlugin.id:
-            launcherPanelController?.hide()
-            holidayCalendarPanelController?.show()
-        case MarkdownPreviewFeaturePlugin.id:
-            launcherPanelController?.hide()
-            markdownPreviewPanelController?.show()
-        case ParserToolsFeaturePlugin.id:
-            launcherPanelController?.hide()
-            parserToolsPanelController?.show()
-        case ClipboardFeaturePlugin.id:
-            launcherPanelController?.hide()
-            clipboardPanelController?.show()
-        case TranslationFeaturePlugin.id:
-            launcherPanelController?.hide()
-            translationPanelController?.show()
-        case OCRFeaturePlugin.id:
-            launcherPanelController?.hide()
-            ocrPanelController?.show()
-        default:
-            break
-        }
+        presentFeaturePanel(featureID)
+    }
+
+    @objc private func handleWindowDidBecomeKey(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow,
+              let featureID = featureID(for: window) else { return }
+        featurePanelSession.promote(featureID)
     }
 
     @objc private func handleStartFocusSession(_ notification: Notification) {
         guard let request = notification.object as? FocusSessionRequest else { return }
-        pomodoroPanelController?.show(request: request)
+        presentPomodoro(request: request)
     }
 
     @objc private func handleRebuildSearchIndex() {
@@ -752,10 +1117,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let controller = GlobalHotKeyController(identifier: UInt32(100 + offset))
             do {
                 try controller.start(shortcut: shortcut) { [weak self] in
-                    guard let self else { return }
-                    Task { @MainActor in
-                        await self.featureStore.perform(featureID)
-                    }
+                    self?.performGlobalFeatureShortcut(featureID)
                 }
                 featureHotKeyControllers[featureID] = controller
             } catch {
@@ -772,13 +1134,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// Carbon 全局快捷键在应用处于后台时也会送达，但截图选区和功能面板需要
+    /// 前台的事件循环才能立刻接收键鼠事件。先激活本应用，再统一派发功能，
+    /// 不经过启动器面板，避免用户需要额外点击一次“一念”。
+    private func performGlobalFeatureShortcut(_ featureID: String) {
+        // 启动器拥有自己的单键交互；显示期间必须忽略所有功能全局快捷键，
+        // 防止 Option + 键与卡片键位产生重复或意外执行。
+        guard launcherPanelController?.isVisible != true else { return }
+        recordPriorExternalApplicationIfNeeded()
+        if featureID == FeatureConfigurationStore.screenshotID {
+            performGlobalScreenshotShortcut(.captureDefaultMode)
+            return
+        }
+        if !NSApp.isActive {
+            suppressLauncherForNextApplicationActivation = true
+            activateApplicationForFeaturePanel()
+        }
+        Task { @MainActor [weak self] in
+            await self?.featureStore.perform(featureID)
+        }
+    }
+
+    private func performGlobalScreenshotShortcut(_ action: ScreenshotPluginAction) {
+        guard launcherPanelController?.isVisible != true else { return }
+        recordPriorExternalApplicationIfNeeded()
+        if !NSApp.isActive {
+            suppressLauncherForNextApplicationActivation = true
+            activateApplicationForFeaturePanel()
+        }
+        performScreenshot(action)
+    }
+
     private func registerScreenshotShortcuts() {
         unregisterScreenshotShortcuts()
         if let shortcut = featureStore.configurations.screenshot.modeShortcuts[.allDisplays],
            !shortcut.modifiers.isEmpty {
             do {
                 try allDisplaysScreenshotHotKeyController.start(shortcut: shortcut) { [weak self] in
-                    self?.performScreenshot(.captureAllDisplays)
+                    self?.performGlobalScreenshotShortcut(.captureAllDisplays)
                 }
             } catch {
                 NSLog("Unable to register all-displays screenshot shortcut: %@", error.localizedDescription)
@@ -789,7 +1182,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
            !shortcut.modifiers.isEmpty {
             do {
                 try colorPickerHotKeyController.start(shortcut: shortcut) { [weak self] in
-                    self?.performScreenshot(.pickColor)
+                    self?.performGlobalScreenshotShortcut(.pickColor)
                 }
             } catch {
                 NSLog("Unable to register color-picker shortcut: %@", error.localizedDescription)
@@ -810,6 +1203,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 let result = try await screenshotEnvironment.coordinator.route(action)
                 if case .requiresSetup = result {
                     showSettings(section: .permissions)
+                } else {
+                    settleAfterTouchWindowClosed()
                 }
             } catch ScreenshotCoordinatorError.busy {
                 NSSound.beep()
@@ -823,6 +1218,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 alert.addButton(withTitle: "取消")
                 if alert.runModal() == .alertFirstButtonReturn {
                     showSettings(section: .permissions)
+                } else {
+                    settleAfterTouchWindowClosed()
                 }
             }
         }
@@ -838,19 +1235,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func handleLauncherHotKey() {
-        let settingsWasVisible = settingsWindowController?.window?.isVisible == true
-        if settingsWasVisible {
-            settingsWindowController?.window?.orderOut(nil)
-        }
-
-        if settingsWasVisible {
-            launcherPanelController?.show()
+        if launcherPanelController?.isVisible == true {
+            launcherPanelController?.hide()
+            settleAfterTouchWindowClosed()
         } else {
-            launcherPanelController?.toggle()
+            settingsWindowController?.window?.orderOut(nil)
+            showLauncherForExplicitUserRequest()
         }
-    }
-
-    private func restoreLauncherAfterSettingsClose() {
-        launcherPanelController?.show()
     }
 }

@@ -13,9 +13,9 @@ private final class NotificationPermissionState: ObservableObject {
     @Published private(set) var authorizationStatus: UNAuthorizationStatus = .notDetermined
 
     func refresh() {
-        // macOS 15.3 的 getNotificationSettings 回调会在系统队列触发
-        // Swift 并发隔离断言。进入权限页时保留当前状态，避免该系统回调
-        // 直接导致宿主应用退出；用户主动请求后由 request() 更新状态。
+        // macOS 15.3 的 getNotificationSettings 回调会在系统私有队列触发
+        // Swift 并发隔离断言。权限页不得在出现或从系统设置返回时调用它；
+        // 用户在本应用主动请求通知后，再由 requestAuthorization 的结果更新状态。
     }
 
     func update(granted: Bool) {
@@ -30,10 +30,12 @@ struct GeneralSettingsView: View {
     @EnvironmentObject private var featureStore: FeatureAreaStore
     @State private var isFinderExtensionEnabled = false
     @State private var calendarAuthorizationStatus = EKEventStore.authorizationStatus(for: .event)
+    @State private var calendarPermissionMessage: String?
     @State private var launcherShortcut = LauncherShortcutPreferences.load()
     @State private var launcherShortcutError: String?
     @State private var launchAtLoginEnabled = SMAppService.mainApp.status == .enabled
     @State private var launchAtLoginMessage: String?
+    @State private var isAccessibilityTrusted = AXIsProcessTrusted()
     @StateObject private var notificationPermissionState = NotificationPermissionState()
     @State private var isRebuildingIndex = false
     @State private var searchIndexMessage: String?
@@ -67,12 +69,12 @@ struct GeneralSettingsView: View {
             }
         }
         .onAppear {
-            if section == .general {
+            if section == .general || section == .permissions {
                 refreshLaunchAtLoginState()
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            if section == .general {
+            if section == .general || section == .permissions {
                 refreshLaunchAtLoginState()
             }
         }
@@ -92,38 +94,21 @@ struct GeneralSettingsView: View {
 
     private var generalContent: some View {
         SettingsCard(theme: theme) {
-            VStack(spacing: 13) {
-                VStack(alignment: .leading, spacing: 6) {
-                    SettingsToggleRow(
-                        "开启自启",
-                        detail: "登录 macOS 后自动在后台运行一念",
-                        isOn: launchAtLoginBinding,
-                        theme: theme
-                    )
-                    .accessibilityIdentifier("settings.launch-at-login")
-                    if let launchAtLoginMessage {
-                        Text(launchAtLoginMessage)
-                            .font(.system(size: 11))
-                            .foregroundStyle(theme.text.permission.color)
-                    }
+            ShortcutRecorderView(
+                title: "启动器呼出快捷键",
+                detail: "使用一个修饰键与一个主键全局呼出",
+                requiresExactlyOneModifier: true,
+                shortcut: launcherShortcut,
+                errorMessage: launcherShortcutError,
+                theme: theme
+            ) { shortcut in
+                launcherShortcutError = featureStore.validateLauncherShortcut(shortcut)
+                if launcherShortcutError == nil {
+                    launcherShortcut = shortcut
+                    LauncherShortcutPreferences.save(shortcut)
                 }
-                SettingsDivider(theme: theme)
-                ShortcutRecorderView(
-                    title: "启动器呼出快捷键",
-                    detail: "使用一个修饰键与一个主键全局呼出",
-                    requiresExactlyOneModifier: true,
-                    shortcut: launcherShortcut,
-                    errorMessage: launcherShortcutError,
-                    theme: theme
-                ) { shortcut in
-                    launcherShortcutError = featureStore.validateLauncherShortcut(shortcut)
-                    if launcherShortcutError == nil {
-                        launcherShortcut = shortcut
-                        LauncherShortcutPreferences.save(shortcut)
-                    }
-                }
-                .accessibilityIdentifier("settings.launcher-shortcut")
             }
+            .accessibilityIdentifier("settings.launcher-shortcut")
         }
     }
 
@@ -152,7 +137,9 @@ struct GeneralSettingsView: View {
 
     private func refreshLaunchAtLoginState(preservingMessage: Bool = false) {
         let status = SMAppService.mainApp.status
-        launchAtLoginEnabled = status == .enabled || status == .requiresApproval
+        // `.requiresApproval` only means the registration request is pending in
+        // System Settings. It must not be presented as an enabled login item.
+        launchAtLoginEnabled = status == .enabled
         guard !preservingMessage else { return }
         switch status {
         case .requiresApproval:
@@ -196,11 +183,12 @@ struct GeneralSettingsView: View {
                                 .accessibilityIdentifier("settings.theme.opacity.value")
                         }
 
-                        Slider(
+                        ThemedSlider(
                             value: themeColorOpacityBinding,
-                            in: ThemeStore.themeColorOpacityRange
+                            in: ThemeStore.themeColorOpacityRange,
+                            step: 0.01,
+                            theme: theme
                         )
-                        .tint(theme.accent.color)
                         .accessibilityLabel("主题色不透明度")
                         .accessibilityValue(themeColorOpacityPercentage)
                         .accessibilityIdentifier("settings.theme.opacity")
@@ -282,10 +270,13 @@ struct GeneralSettingsView: View {
     private var permissionsContent: some View {
         VStack(spacing: 13) {
             screenRecordingPermissionCard
+            accessibilityPermissionCard
             calendarPermissionCard
             notificationPermissionCard
             fileAccessPermissionCard
+            fullDiskAccessPermissionCard
             finderExtensionPermissionCard
+            launchAtLoginPermissionCard
         }
         .onAppear(perform: refreshPermissions)
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
@@ -371,34 +362,204 @@ struct GeneralSettingsView: View {
         }
     }
 
-    private var calendarPermissionCard: some View {
-        let authorized = calendarAuthorizationStatus == .fullAccess
-        return SettingsCard(theme: theme) {
+    private var accessibilityPermissionCard: some View {
+        SettingsCard(theme: theme) {
             HStack(spacing: 11) {
-                Image(systemName: authorized ? "checkmark.shield.fill" : "calendar.badge.exclamationmark")
+                Image(systemName: isAccessibilityTrusted ? "checkmark.shield.fill" : "accessibility")
                     .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(authorized ? .green : theme.text.permission.color)
+                    .foregroundStyle(isAccessibilityTrusted ? .green : theme.text.permission.color)
                     .frame(width: 34, height: 34)
                     .background(theme.icon.container.color, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("日历")
+                    Text("辅助功能")
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(theme.text.primary.color)
-                    Text(authorized ? "每日任务可只读显示系统日程" : "授权后可在每日任务中查看系统日程")
+                    Text(isAccessibilityTrusted ? "全局快捷键等辅助功能已可使用" : "授权后可可靠响应全局快捷键与系统级交互")
                         .font(.system(size: 11))
                         .foregroundStyle(theme.text.secondary.color)
                 }
                 Spacer(minLength: 12)
-                Text(authorized ? "已授权" : "未授权")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(authorized ? .green : theme.text.permission.color)
-                if !authorized {
-                    SettingsActionButton("授权", symbol: "calendar", theme: theme, compact: true) {
-                        requestCalendarAccess()
+                permissionStatusBadge(isAccessibilityTrusted ? "已授权" : "需要启用", isAvailable: isAccessibilityTrusted)
+                if !isAccessibilityTrusted {
+                    SettingsActionButton("系统设置", symbol: "accessibility", theme: theme, compact: true) {
+                        openSystemSettings("x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")
                     }
                 }
             }
+            .accessibilityIdentifier("settings.permissions.accessibility")
+        }
+    }
+
+    private var fullDiskAccessPermissionCard: some View {
+        SettingsCard(theme: theme) {
+            HStack(spacing: 11) {
+                Image(systemName: "externaldrive.badge.questionmark")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(theme.text.permission.color)
+                    .frame(width: 34, height: 34)
+                    .background(theme.icon.container.color, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("完全磁盘访问")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(theme.text.primary.color)
+                    Text("macOS 未提供可靠的授权查询，请在系统设置中确认状态")
+                        .font(.system(size: 11))
+                        .foregroundStyle(theme.text.secondary.color)
+                }
+                Spacer(minLength: 12)
+                permissionStatusBadge("需确认", isAvailable: false)
+                SettingsActionButton("系统设置", symbol: "externaldrive", theme: theme, compact: true) {
+                    openSystemSettings("x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")
+                }
+            }
+            .accessibilityIdentifier("settings.permissions.full-disk-access")
+        }
+    }
+
+    private var launchAtLoginPermissionCard: some View {
+        SettingsCard(theme: theme) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 11) {
+                    Image(systemName: launchAtLoginEnabled ? "checkmark.shield.fill" : "power")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(launchAtLoginEnabled ? .green : theme.text.permission.color)
+                        .frame(width: 34, height: 34)
+                        .background(theme.icon.container.color, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("登录项")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(theme.text.primary.color)
+                        Text("登录 macOS 后自动在后台运行一念")
+                            .font(.system(size: 11))
+                            .foregroundStyle(theme.text.secondary.color)
+                    }
+                    Spacer(minLength: 12)
+                    permissionStatusBadge(launchAtLoginStatusTitle, isAvailable: launchAtLoginEnabled)
+                    if SMAppService.mainApp.status == .requiresApproval {
+                        SettingsActionButton("系统设置", symbol: "gearshape", theme: theme, compact: true) {
+                            openSystemSettings("x-apple.systempreferences:com.apple.LoginItems-Settings.extension")
+                        }
+                    }
+                }
+                SettingsToggleRow(
+                    "启用登录项",
+                    detail: launchAtLoginStatusDetail,
+                    isOn: launchAtLoginBinding,
+                    theme: theme
+                )
+                .disabled(SMAppService.mainApp.status == .requiresApproval)
+                .accessibilityIdentifier("settings.permissions.launch-at-login")
+                if let launchAtLoginMessage {
+                    Text(launchAtLoginMessage)
+                        .font(.system(size: 11))
+                        .foregroundStyle(theme.text.permission.color)
+                }
+            }
+            .accessibilityIdentifier("settings.permissions.launch-at-login.card")
+        }
+    }
+
+    private var launchAtLoginStatusTitle: String {
+        switch SMAppService.mainApp.status {
+        case .enabled: "已启用"
+        case .requiresApproval: "需要批准"
+        case .notRegistered: "未启用"
+        case .notFound: "位置不支持"
+        @unknown default: "通信异常"
+        }
+    }
+
+    private var launchAtLoginStatusDetail: String {
+        switch SMAppService.mainApp.status {
+        case .enabled: "登录项已启用，可随时在此关闭"
+        case .requiresApproval: "请在“系统设置 → 通用 → 登录项”中允许一念"
+        case .notFound: "请将一念移到“应用程序”后重试"
+        case .notRegistered: "启用后会在登录 macOS 时后台启动"
+        @unknown default: "暂时无法读取系统自启状态，请重新检测"
+        }
+    }
+
+    private func permissionStatusBadge(_ title: String, isAvailable: Bool) -> some View {
+        Text(title)
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(isAvailable ? .green : theme.text.permission.color)
+            .padding(.horizontal, 9)
+            .padding(.vertical, 5)
+            .background(
+                (isAvailable ? Color.green : theme.text.permission.color).opacity(0.10),
+                in: Capsule()
+            )
+    }
+
+    private var calendarPermissionCard: some View {
+        let authorized = calendarAuthorizationStatus == .fullAccess
+        return SettingsCard(theme: theme) {
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 11) {
+                    Image(systemName: authorized ? "checkmark.shield.fill" : "calendar.badge.exclamationmark")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(authorized ? .green : theme.text.permission.color)
+                        .frame(width: 34, height: 34)
+                        .background(theme.icon.container.color, in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("日历")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(theme.text.primary.color)
+                        Text(calendarPermissionDetail)
+                            .font(.system(size: 11))
+                            .foregroundStyle(theme.text.secondary.color)
+                    }
+                    Spacer(minLength: 12)
+                    permissionStatusBadge(calendarPermissionTitle, isAvailable: authorized)
+                    if let actionTitle = calendarPermissionActionTitle {
+                        SettingsActionButton(
+                            actionTitle,
+                            symbol: actionTitle == "授权" ? "calendar" : "gearshape",
+                            theme: theme,
+                            compact: true
+                        ) {
+                            requestCalendarAccess()
+                        }
+                    }
+                }
+                if let calendarPermissionMessage {
+                    Text(calendarPermissionMessage)
+                        .font(.system(size: 11))
+                        .foregroundStyle(theme.text.permission.color)
+                }
+            }
             .accessibilityIdentifier("settings.permissions.calendar")
+        }
+    }
+
+    private var calendarPermissionTitle: String {
+        switch calendarAuthorizationStatus {
+        case .fullAccess: "已授权"
+        case .writeOnly: "仅写入"
+        case .notDetermined: "未请求"
+        case .denied: "被拒绝"
+        case .restricted: "受限制"
+        @unknown default: "通信异常"
+        }
+    }
+
+    private var calendarPermissionDetail: String {
+        switch calendarAuthorizationStatus {
+        case .fullAccess: "每日任务可只读显示系统日程"
+        case .writeOnly: "当前仅有写入权限，无法读取日程；请在系统设置中允许完整访问"
+        case .notDetermined: "授权后可在每日任务中查看系统日程"
+        case .denied: "日历权限已被拒绝，可在系统设置中恢复"
+        case .restricted: "日历权限受系统策略限制，当前无法启用"
+        @unknown default: "日历权限状态暂时无法确认，请重新检测"
+        }
+    }
+
+    private var calendarPermissionActionTitle: String? {
+        switch calendarAuthorizationStatus {
+        case .notDetermined: "授权"
+        case .writeOnly, .denied: "系统设置"
+        case .fullAccess, .restricted: nil
+        @unknown default: "系统设置"
         }
     }
 
@@ -453,9 +614,11 @@ struct GeneralSettingsView: View {
 
     private func refreshPermissions() {
         screenshotEnvironment.refreshPermissionState()
+        isAccessibilityTrusted = AXIsProcessTrusted()
         isFinderExtensionEnabled = FIFinderSyncController.isExtensionEnabled
         calendarAuthorizationStatus = EKEventStore.authorizationStatus(for: .event)
         notificationPermissionState.refresh()
+        refreshLaunchAtLoginState()
         Task { await featureStore.retry(FeatureConfigurationStore.screenshotID) }
     }
 
@@ -541,11 +704,29 @@ struct GeneralSettingsView: View {
         }
     }
 
+    private func openSystemSettings(_ destination: String) {
+        guard let url = URL(string: destination) else { return }
+        NSWorkspace.shared.open(url)
+    }
+
     private func requestCalendarAccess() {
+        guard calendarAuthorizationStatus == .notDetermined else {
+            openSystemSettings("x-apple.systempreferences:com.apple.preference.security?Privacy_Calendars")
+            return
+        }
         Task {
-            let store = EKEventStore()
-            _ = try? await store.requestFullAccessToEvents()
-            await MainActor.run { refreshPermissions() }
+            do {
+                _ = try await EKEventStore().requestFullAccessToEvents()
+                await MainActor.run {
+                    calendarPermissionMessage = nil
+                    refreshPermissions()
+                }
+            } catch {
+                await MainActor.run {
+                    calendarPermissionMessage = "请求日历权限失败：\(error.localizedDescription)"
+                    refreshPermissions()
+                }
+            }
         }
     }
 

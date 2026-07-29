@@ -63,46 +63,6 @@ struct ThemedVerticalScrollBar: View {
     }
 }
 
-final class ThemedScrollIndicatorView: NSView {
-    override func viewDidMoveToWindow() {
-        super.viewDidMoveToWindow()
-        configureScrollViews()
-    }
-
-    func configureScrollViews() {
-        let apply = { [weak self] in
-            guard let self, let root = self.window?.contentView else { return }
-            var pending = [root]
-            while let view = pending.popLast() {
-                if let scrollView = view as? NSScrollView {
-                    scrollView.scrollerStyle = .overlay
-                    scrollView.hasVerticalScroller = false
-                    scrollView.hasHorizontalScroller = false
-                    scrollView.verticalScroller?.isHidden = true
-                    scrollView.horizontalScroller?.isHidden = true
-                    scrollView.verticalScroller?.alphaValue = 0
-                    scrollView.horizontalScroller?.alphaValue = 0
-                }
-                pending.append(contentsOf: view.subviews)
-            }
-        }
-        DispatchQueue.main.async(execute: apply)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: apply)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: apply)
-    }
-}
-
-struct ThemedScrollIndicatorConfigurator: NSViewRepresentable {
-    func makeNSView(context: Context) -> NSView { ThemedScrollIndicatorView(frame: .zero) }
-
-    func updateNSView(_ nsView: NSView, context: Context) {
-        DispatchQueue.main.async { [weak nsView] in
-            guard let indicatorView = nsView as? ThemedScrollIndicatorView else { return }
-            indicatorView.configureScrollViews()
-        }
-    }
-}
-
 enum LauncherFeatureLayout: String, CaseIterable {
     case cards
     case keyboard
@@ -132,7 +92,7 @@ struct FeatureGridView: View {
 
     var body: some View {
         ZStack {
-            ScrollView(.vertical) {
+            ScrollView(.vertical, showsIndicators: false) {
                 LazyVGrid(
                     columns: Array(repeating: GridItem(.fixed(260), spacing: 16), count: 3),
                     alignment: .center,
@@ -143,6 +103,8 @@ struct FeatureGridView: View {
                             plugin: plugin,
                             shortcut: featureStore.shortcut(for: plugin.manifest.id),
                             state: featureStore.states[plugin.manifest.id] ?? .unloaded,
+                            panelPresence: featureStore.panelPresence(for: plugin.manifest.id),
+                            panelStatusText: featureStore.panelStatusText(for: plugin.manifest.id),
                             theme: theme,
                             action: { Task { await featureStore.perform(plugin.manifest.id) } },
                             edit: {
@@ -190,8 +152,6 @@ struct FeatureGridView: View {
                 }
             }
             .coordinateSpace(name: "launcher-feature-grid-scroll")
-            .scrollIndicators(.hidden)
-            .background(ThemedScrollIndicatorConfigurator())
             .frame(width: 812, height: 336)
             .onPreferenceChange(ThemedScrollContentMetricsPreferenceKey.self) { content in
                 scrollMetrics = ThemedScrollMetrics(
@@ -805,7 +765,7 @@ private struct CustomActionKeyView: View {
 
                     Text(action.displayTitle)
                         .font(.system(size: 11.5, weight: .semibold, design: .rounded))
-                        .foregroundStyle(Color.white.opacity(0.92))
+                        .foregroundStyle(theme.text.primary.color)
                         .multilineTextAlignment(.center)
                         .lineLimit(1)
                         .minimumScaleFactor(0.72)
@@ -815,7 +775,7 @@ private struct CustomActionKeyView: View {
 
                 Text(key.uppercased())
                     .font(.system(size: 11, weight: .bold, design: .rounded))
-                    .foregroundStyle(Color.white.opacity(0.92))
+                    .foregroundStyle(theme.shortcut.text.color)
                     .padding(.horizontal, 5)
                     .padding(.vertical, 3)
                     .background(theme.shortcut.fill.color.opacity(0.92), in: Capsule())
@@ -852,7 +812,7 @@ private struct CustomActionKeyView: View {
         } else {
             Image(systemName: action.kind.symbolName)
                 .font(.system(size: 24, weight: .semibold))
-                .foregroundStyle(Color.white.opacity(0.88))
+                .foregroundStyle(theme.icon.primary.color)
         }
     }
 }
@@ -883,7 +843,7 @@ private struct FeatureKeyView: View {
 
                     Text(plugin.manifest.name)
                         .font(.system(size: 11.5, weight: .semibold, design: .rounded))
-                        .foregroundStyle(Color.white.opacity(0.92))
+                        .foregroundStyle(theme.text.primary.color)
                         .multilineTextAlignment(.center)
                         .lineLimit(1)
                         .minimumScaleFactor(0.72)
@@ -894,7 +854,7 @@ private struct FeatureKeyView: View {
 
                 Text(key.uppercased())
                     .font(.system(size: 11, weight: .bold, design: .rounded))
-                    .foregroundStyle(Color.white.opacity(0.92))
+                    .foregroundStyle(theme.shortcut.text.color)
                     .padding(.horizontal, 5)
                     .padding(.vertical, 3)
                     .background(theme.shortcut.fill.color.opacity(0.92), in: Capsule())

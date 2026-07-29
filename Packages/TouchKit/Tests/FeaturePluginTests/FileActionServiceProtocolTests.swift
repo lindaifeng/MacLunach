@@ -52,3 +52,15 @@ import Testing
 @Test func fileActionXPCInterfaceAllowsOnlyDataEnvelopes() {
     #expect(FileActionServiceXPCInterface.allowedSecureCodingClassNames == ["NSData"])
 }
+
+@Test func moveResultDecodesLegacyPayloadWithoutFailedItems() throws {
+    let source = URL(fileURLWithPath: "/tmp/source.txt")
+    let legacyData = Data("""
+    {"movedItems":[{"sourceURL":"file:///tmp/source.txt","destinationURL":"file:///tmp/destination.txt"}],"skippedSourceURLs":[],"conflicts":[]}
+    """.utf8)
+
+    let result = try JSONDecoder().decode(FileActionServiceMoveResult.self, from: legacyData)
+
+    #expect(result.movedItems.map(\.sourceURL) == [source])
+    #expect(result.failedItems.isEmpty)
+}

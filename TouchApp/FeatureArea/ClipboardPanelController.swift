@@ -3,7 +3,7 @@ import ClipboardFeature
 import SwiftUI
 
 @MainActor
-final class ClipboardPanelController: NSObject, NSWindowDelegate {
+final class ClipboardPanelController: NSObject, NSWindowDelegate, FeaturePanelSessionController {
     private let panel: ClipboardPanel
     private let model: ClipboardWorkspaceModel
     private let onClose: () -> Void
@@ -55,6 +55,7 @@ final class ClipboardPanelController: NSObject, NSWindowDelegate {
     }
 
     var isMonitoring: Bool { model.isMonitoring }
+    var sessionWindow: NSWindow { panel }
 
     func stopMonitoring() {
         model.stopMonitoring()
@@ -72,7 +73,7 @@ final class ClipboardPanelController: NSObject, NSWindowDelegate {
     }
 
     func windowDidResignKey(_ notification: Notification) {
-        dismissFeaturePanelAfterResigningKey(panel, onHidden: onClose)
+        dismissFeaturePanelAfterResigningKey(panel)
     }
 
 }
@@ -474,7 +475,7 @@ private struct ClipboardWorkspaceView: View {
         }
         .ignoresSafeArea(.container, edges: .top)
         .preferredColorScheme(theme.preferredColorScheme)
-        .tint(theme.accent.color)
+        .tint(theme.interactiveAccent.color)
         .animation(reduceMotion ? nil : .easeOut(duration: theme.motion.duration), value: model.copyConfirmation)
     }
 
@@ -482,7 +483,7 @@ private struct ClipboardWorkspaceView: View {
         HStack(spacing: 12) {
             Image(systemName: "clipboard")
                 .font(.system(size: 16, weight: .bold))
-                .foregroundStyle(theme.accent.color)
+                .foregroundStyle(theme.interactiveAccent.color)
                 .frame(width: 32, height: 32)
                 .background(theme.icon.container.color, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             VStack(alignment: .leading, spacing: 2) {
@@ -511,6 +512,7 @@ private struct ClipboardWorkspaceView: View {
                     tooltip: "清空非收藏历史",
                     accessibilityLabel: "清空非收藏历史",
                     theme: theme,
+                    tint: theme.text.failure.color,
                     action: model.clearOrdinaryHistory
                 )
                 .accessibilityIdentifier("clipboard.clear")
@@ -523,7 +525,7 @@ private struct ClipboardWorkspaceView: View {
     private var content: some View {
         VStack(spacing: 12) {
             HStack(spacing: 10) {
-                Image(systemName: "magnifyingglass").foregroundStyle(theme.text.secondary.color)
+                Image(systemName: "magnifyingglass").foregroundStyle(theme.interactiveAccent.color)
                 TextField("搜索剪贴板历史", text: $model.query)
                     .textFieldStyle(.plain)
                     .font(.system(size: 13.5, weight: .medium))
@@ -619,7 +621,7 @@ private struct ClipboardHistoryRow: View {
                     HStack(spacing: 10) {
                         Image(systemName: itemSymbol)
                             .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(theme.icon.secondary.color)
+                            .foregroundStyle(theme.interactiveAccent.color)
                             .frame(width: 28, height: 28)
                             .background(theme.icon.container.color, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
 
@@ -664,7 +666,7 @@ private struct ClipboardHistoryRow: View {
             if isHovered || item.entry.isFavorite {
                 HStack(spacing: 3) {
                     ThemeIconButton(systemName: item.entry.isFavorite ? "star.fill" : "star", tooltip: item.entry.isFavorite ? "取消收藏" : "收藏", accessibilityLabel: item.entry.isFavorite ? "取消收藏" : "收藏", theme: theme, action: onFavorite)
-                    ThemeIconButton(systemName: "trash", tooltip: "删除", accessibilityLabel: "删除历史项", theme: theme, action: onDelete)
+                    ThemeIconButton(systemName: "trash", tooltip: "删除", accessibilityLabel: "删除历史项", theme: theme, tint: theme.text.failure.color, action: onDelete)
                 }
                 .padding(.top, 10)
                 .padding(.trailing, 10)

@@ -12,6 +12,7 @@ enum ScreenshotSelectionCompletionAction: Equatable, Sendable {
     case save
     case pin
     case recognizeText
+    case translate
     case scrollingCapture
     case gifRecording
 }
@@ -634,7 +635,7 @@ final class SelectionOverlayController: ScreenshotSelectionPresenting, Selection
         switch item {
         case .cancel:
             cancel()
-        case .copy, .save, .pin, .recognizeText, .scrollingCapture, .gifRecording:
+        case .copy, .save, .pin, .recognizeText, .translate, .scrollingCapture, .gifRecording:
             if let action = item.selectionCompletionAction {
                 completeSelection(action: action)
             }

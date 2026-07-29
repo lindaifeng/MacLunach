@@ -53,6 +53,12 @@ struct LauncherCustomAction: Codable, Equatable {
     }
 }
 
+enum FeaturePanelPresence: Equatable {
+    case retained
+    case running
+    case attentionRequired
+}
+
 @MainActor
 final class FeatureAreaStore: ObservableObject {
     @Published private(set) var plugins: [any FeaturePlugin]
@@ -62,6 +68,8 @@ final class FeatureAreaStore: ObservableObject {
     @Published private(set) var customKeyActions: [String: LauncherCustomAction]
     @Published private(set) var globalShortcuts: [String: TouchFeatureAPI.KeyboardShortcut]
     @Published private(set) var globalShortcutRegistrationErrors: [String: String] = [:]
+    @Published private(set) var panelPresence: [String: FeaturePanelPresence] = [:]
+    @Published private(set) var panelStatusText: [String: String] = [:]
 
     private let preferencesStore: FeaturePreferencesStore
     private let configurationStore: FeatureConfigurationStore
@@ -74,6 +82,7 @@ final class FeatureAreaStore: ObservableObject {
     private static let legacyCommandGlobalShortcutDefaultsSeededKey = "feature.global-shortcuts.command-defaults-seeded-v1"
     private static let previousCommandGlobalShortcutDefaultsSeededKey = "feature.global-shortcuts.command-defaults-seeded-v2"
     private static let globalShortcutDefaultsSeededKey = "feature.global-shortcuts.option-defaults-seeded-v3"
+    private static let commandGlobalShortcutsNormalizedKey = "feature.global-shortcuts.command-to-option-normalized-v4"
     private static let supportedLauncherKeys = [
         "1", "2", "3", "4", "5", "6", "7", "8", "9", "0", "-", "=",
         "q", "w", "e", "r", "t", "y", "u", "i", "o", "p",
@@ -151,6 +160,31 @@ final class FeatureAreaStore: ObservableObject {
 
     func hasLauncherAssignment(for key: String) -> Bool {
         customAction(forLauncherKey: key) != nil || featureID(forLauncherKey: key) != nil
+    }
+
+    func panelPresence(for featureID: String) -> FeaturePanelPresence? {
+        panelPresence[featureID]
+    }
+
+    func setPanelPresence(_ presence: FeaturePanelPresence?, for featureID: String) {
+        if let presence {
+            panelPresence[featureID] = presence
+        } else {
+            panelPresence.removeValue(forKey: featureID)
+        }
+    }
+
+    func panelStatusText(for featureID: String) -> String? {
+        panelStatusText[featureID]
+    }
+
+    func setPanelStatusText(_ text: String?, for featureID: String) {
+        let normalizedText = text?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let normalizedText, !normalizedText.isEmpty {
+            panelStatusText[featureID] = normalizedText
+        } else {
+            panelStatusText.removeValue(forKey: featureID)
+        }
     }
 
     func searchLauncherActions(query: String) -> [SearchResult] {
@@ -354,6 +388,12 @@ final class FeatureAreaStore: ObservableObject {
         }) {
             return "与“\(conflict.manifest.name)”的快捷键冲突"
         }
+        let previousShortcut = self.shortcut(for: featureID)
+        if let error = synchronizeDefaultGlobalShortcuts(for: [
+            (featureID: featureID, previous: previousShortcut, current: shortcut)
+        ]) {
+            return error
+        }
 
         preferences.shortcuts[featureID] = shortcut
         persist()
@@ -384,6 +424,12 @@ final class FeatureAreaStore: ObservableObject {
         }) {
             let occupiedID = occupiedPlugin.manifest.id
             let occupiedShortcut = shortcut(for: occupiedID)
+            if let error = synchronizeDefaultGlobalShortcuts(for: [
+                (featureID: featureID, previous: sourceShortcut, current: occupiedShortcut),
+                (featureID: occupiedID, previous: occupiedShortcut, current: sourceShortcut)
+            ]) {
+                return error
+            }
             preferences.shortcuts[featureID] = occupiedShortcut
             preferences.shortcuts[occupiedID] = sourceShortcut
             persist()
@@ -412,6 +458,13 @@ final class FeatureAreaStore: ObservableObject {
         })?.manifest.id {
             guard let replacementKey = firstAvailableKey(excluding: normalizedKey) else {
                 return "没有可用于移动原功能的空键位"
+            }
+            let previousShortcut = shortcut(for: occupiedFeatureID)
+            let replacementShortcut = TouchFeatureAPI.KeyboardShortcut(modifiers: [], key: replacementKey)
+            if let error = synchronizeDefaultGlobalShortcuts(for: [
+                (featureID: occupiedFeatureID, previous: previousShortcut, current: replacementShortcut)
+            ]) {
+                return error
             }
             preferences.shortcuts[occupiedFeatureID] = .init(modifiers: [], key: replacementKey)
             persist()
@@ -453,6 +506,52 @@ final class FeatureAreaStore: ObservableObject {
         plugins.sort { $0.manifest.defaultOrder < $1.manifest.defaultOrder }
         persistOrder()
         Task { try? await registry.restoreDefaults(for: featureID) }
+    }
+
+    private func synchronizeDefaultGlobalShortcuts(
+        for changes: [(
+            featureID: String,
+            previous: TouchFeatureAPI.KeyboardShortcut,
+            current: TouchFeatureAPI.KeyboardShortcut
+        )]
+    ) -> String? {
+        let activeGlobalShortcutChanges = changes.filter { change in
+            // “清除快捷键”会从字典中移除该项；这是唯一需要保留的
+            // 显式关闭状态。只要全局快捷键仍处于启用状态，功能区键位
+            // 变化后就必须同步成 Option + 新键位。
+            globalShortcuts[change.featureID] != nil
+        }
+        guard !activeGlobalShortcutChanges.isEmpty else { return nil }
+
+        var updatedShortcuts = globalShortcuts
+        for change in activeGlobalShortcutChanges {
+            updatedShortcuts[change.featureID] = defaultGlobalShortcut(for: change.current)
+        }
+
+        for change in activeGlobalShortcutChanges {
+            let shortcut = defaultGlobalShortcut(for: change.current)
+            if let conflict = configurations.screenshot.modeShortcuts.first(where: {
+                $0.value == shortcut
+            }) {
+                return "与“\(conflict.key.settingsTitle)”快捷键冲突"
+            }
+            if let conflict = updatedShortcuts.first(where: {
+                $0.key != change.featureID && $0.value == shortcut
+            }), let plugin = plugins.first(where: { $0.manifest.id == conflict.key }) {
+                return "与“\(plugin.manifest.name)”的快捷键冲突"
+            }
+        }
+
+        globalShortcuts = updatedShortcuts
+        persistGlobalShortcuts()
+        notificationCenter.post(name: .featureGlobalShortcutsDidChange, object: nil)
+        return nil
+    }
+
+    private func defaultGlobalShortcut(
+        for launcherShortcut: TouchFeatureAPI.KeyboardShortcut
+    ) -> TouchFeatureAPI.KeyboardShortcut {
+        .init(modifiers: [.option], key: launcherShortcut.key)
     }
 
     func perform(_ featureID: String) async {
@@ -697,6 +796,35 @@ final class FeatureAreaStore: ObservableObject {
                 defaults.removeObject(forKey: legacyCommandGlobalShortcutDefaultsSeededKey)
                 defaults.removeObject(forKey: previousCommandGlobalShortcutDefaultsSeededKey)
             }
+        }
+
+        if !defaults.bool(forKey: commandGlobalShortcutsNormalizedKey) {
+            var occupied = Set(shortcuts.values)
+            var didNormalize = false
+            for plugin in plugins {
+                guard let existingShortcut = shortcuts[plugin.manifest.id],
+                      existingShortcut.modifiers.contains(.command) else {
+                    continue
+                }
+
+                let defaultShortcut = TouchFeatureAPI.KeyboardShortcut(
+                    modifiers: [.option],
+                    key: launcherShortcuts[plugin.manifest.id]?.key
+                        ?? plugin.manifest.defaultShortcut.key
+                )
+                occupied.remove(existingShortcut)
+                guard !occupied.contains(defaultShortcut) else {
+                    occupied.insert(existingShortcut)
+                    continue
+                }
+                shortcuts[plugin.manifest.id] = defaultShortcut
+                occupied.insert(defaultShortcut)
+                didNormalize = true
+            }
+            if didNormalize, let data = try? JSONEncoder().encode(shortcuts) {
+                defaults.set(data, forKey: globalShortcutsDefaultsKey)
+            }
+            defaults.set(true, forKey: commandGlobalShortcutsNormalizedKey)
         }
 
         return shortcuts.filter {

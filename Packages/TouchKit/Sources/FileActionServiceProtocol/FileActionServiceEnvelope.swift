@@ -43,10 +43,14 @@ public struct FileActionServiceRequestProcessor: Sendable {
     public typealias ActionHandler = @Sendable (
         FileActionServiceAction
     ) -> Result<FileActionServiceActionResult, FileActionServiceFailure>
+    public typealias RequestHandler = @Sendable (
+        FileActionServiceRequest
+    ) -> Result<FileActionServiceActionResult, FileActionServiceFailure>
 
     private let processID: Int32
     private let now: TimestampProvider
     private let actionHandler: ActionHandler
+    private let requestHandler: RequestHandler?
 
     public init(
         processID: Int32 = ProcessInfo.processInfo.processIdentifier,
@@ -58,6 +62,18 @@ public struct FileActionServiceRequestProcessor: Sendable {
         self.processID = processID
         self.now = now
         self.actionHandler = actionHandler
+        requestHandler = nil
+    }
+
+    public init(
+        processID: Int32 = ProcessInfo.processInfo.processIdentifier,
+        now: @escaping TimestampProvider = Date.init,
+        requestHandler: @escaping RequestHandler
+    ) {
+        self.processID = processID
+        self.now = now
+        actionHandler = { action in .failure(.unsupportedAction(action.name)) }
+        self.requestHandler = requestHandler
     }
 
     public func process(_ requestData: Data) -> Data {
@@ -83,7 +99,7 @@ public struct FileActionServiceRequestProcessor: Sendable {
         } else if request.action == .ping {
             payload = .pong(.init(processID: processID, timestamp: now()))
         } else {
-            switch actionHandler(request.action) {
+            switch (requestHandler?(request) ?? actionHandler(request.action)) {
             case let .success(result):
                 payload = .actionResult(result)
             case let .failure(failure):

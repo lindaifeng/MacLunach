@@ -4,56 +4,86 @@ import SwiftUI
 import TouchFeatureAPI
 
 @MainActor
-private var featurePanelDismissalTasks: [ObjectIdentifier: Task<Void, Never>] = [:]
+private struct FeaturePanelDismissalTask {
+    let token: UUID
+    let task: Task<Void, Never>
+}
+
+@MainActor
+private var featurePanelDismissalTasks: [ObjectIdentifier: FeaturePanelDismissalTask] = [:]
+
+@MainActor
+protocol FeaturePanelSessionController: AnyObject {
+    var sessionWindow: NSWindow { get }
+    var remainsVisibleWhenApplicationIsInactive: Bool { get }
+}
+
+extension FeaturePanelSessionController {
+    var remainsVisibleWhenApplicationIsInactive: Bool { false }
+}
 
 @MainActor
 func cancelFeaturePanelDismissal(_ panel: NSWindow) {
-    featurePanelDismissalTasks[ObjectIdentifier(panel)]?.cancel()
-    featurePanelDismissalTasks[ObjectIdentifier(panel)] = nil
+    featurePanelDismissalTasks.removeValue(forKey: ObjectIdentifier(panel))?.task.cancel()
+}
+
+@MainActor
+func activateApplicationForFeaturePanel() {
+    NSApp.unhide(nil)
+    // Request activation through both running-application and AppKit paths.
+    // Either call alone can leave a timer-completion window background-active.
+    _ = NSRunningApplication.current.activate(options: [])
+    NSApp.activate(ignoringOtherApps: true)
 }
 
 @MainActor
 func dismissFeaturePanelAfterResigningKey(
     _ panel: NSWindow,
-    keepsVisible: Bool = false,
-    onHidden: (() -> Void)? = nil
+    keepsVisible: Bool = false
 ) {
     if keepsVisible {
         cancelFeaturePanelDismissal(panel)
         return
     }
     let panelID = ObjectIdentifier(panel)
-    featurePanelDismissalTasks[panelID]?.cancel()
-    featurePanelDismissalTasks[panelID] = Task { @MainActor [weak panel] in
+    featurePanelDismissalTasks.removeValue(forKey: panelID)?.task.cancel()
+    let token = UUID()
+    let task = Task { @MainActor [weak panel] in
+        defer {
+            if featurePanelDismissalTasks[panelID]?.token == token {
+                featurePanelDismissalTasks[panelID] = nil
+            }
+        }
         // 给输入法候选窗、字段编辑器和系统 sheet 一个恢复 keyWindow 的短暂窗口。
         try? await Task.sleep(for: .milliseconds(120))
+        guard !Task.isCancelled else { return }
         guard let panel, panel.isVisible, !panel.isKeyWindow else { return }
         guard panel.attachedSheet == nil else { return }
         // 输入法候选窗等瞬时系统窗口会让 keyWindow 短暂为空，但用户仍在当前功能窗口内编辑。
-        // 切换到 Finder 或其他外部应用时只收起当前面板，绝不能通过 onHidden
-        // 重新激活一念，否则 Finder 会被无意抢回焦点。
+        // 功能区允许多个窗口同时存在；在一念内部切换窗口只改变层级，不能把旧窗口
+        // 当成“已关闭”。真正切到 Finder 等外部应用时才暂时收起窗口，会话仍然保留。
         guard NSApp.isActive else {
             panel.orderOut(nil)
             return
         }
-        if NSApp.keyWindow == nil { return }
-        if let keyWindow = NSApp.keyWindow,
-           keyWindow === panel || keyWindow.sheetParent === panel {
-            return
-        }
-        panel.orderOut(nil)
-        onHidden?()
     }
+    featurePanelDismissalTasks[panelID] = .init(token: token, task: task)
 }
 
 @MainActor
-final class PomodoroPanelController: NSObject, NSWindowDelegate {
+final class PomodoroPanelController: NSObject, NSWindowDelegate, FeaturePanelSessionController {
     private let panel: PomodoroInputPanel
     private let model = PomodoroPanelModel()
+    private let onCompletion: () -> Void
     private let onClose: () -> Void
     private var restoresPinnedStateAfterFullscreen = false
 
-    init(themeStore: ThemeStore, onClose: @escaping () -> Void) {
+    init(
+        themeStore: ThemeStore,
+        onCompletion: @escaping () -> Void = {},
+        onClose: @escaping () -> Void
+    ) {
+        self.onCompletion = onCompletion
         self.onClose = onClose
         panel = PomodoroInputPanel(
             contentRect: NSRect(x: 0, y: 0, width: 600, height: 720),
@@ -83,16 +113,59 @@ final class PomodoroPanelController: NSObject, NSWindowDelegate {
             )
             .environmentObject(themeStore)
         )
+        model.onCompletion = { [weak self] in self?.onCompletion() }
+        NSWorkspace.shared.notificationCenter.addObserver(
+            self,
+            selector: #selector(workspaceDidWake),
+            name: NSWorkspace.didWakeNotification,
+            object: nil
+        )
         installWindowTopDragRegion(in: panel)
+    }
+
+    var sessionWindow: NSWindow { panel }
+    var remainsVisibleWhenApplicationIsInactive: Bool { model.isPinned || model.isFullscreen }
+    var isRunningSession: Bool { model.isRunning }
+    var needsAttention: Bool { model.state == .completed }
+    var launcherCardStatusText: String {
+        let hours = model.remainingSeconds / 3_600
+        let minutes = (model.remainingSeconds % 3_600) / 60
+        let seconds = model.remainingSeconds % 60
+        return String(format: "%02d:%02d:%02d · 进行中", hours, minutes, seconds)
+    }
+
+    func synchronizeClock() {
+        model.synchronizeRunningSession()
+    }
+
+    @objc private func workspaceDidWake(_ notification: Notification) {
+        synchronizeClock()
     }
 
     func show(request: FocusSessionRequest? = nil) {
         cancelFeaturePanelDismissal(panel)
         if let request { model.prepare(request) }
         panel.center()
-        NSApp.activate()
+        // 必须先让窗口进入可见层级再激活应用。没有可见窗口时，macOS
+        // 可能忽略后台进程发起的激活请求，导致计时完成后仍停留在后台。
+        panel.orderFrontRegardless()
+        activateApplicationForFeaturePanel()
         panel.makeKeyAndOrderFront(nil)
         if request != nil { model.startOrResume() }
+    }
+
+    func showCompletedFixture() {
+        model.configureWork(minutes: 25)
+        show()
+        model.completeCurrentPhase(playSound: false)
+    }
+
+    func showCompletionCountdownFixture(seconds: Int = 3) {
+        model.configureWork(minutes: 1)
+        let remainingSeconds = min(max(seconds, 1), 59)
+        model.scrub(toElapsedProgress: Double(60 - remainingSeconds) / 60)
+        show()
+        model.startOrResume()
     }
 
     func windowWillClose(_ notification: Notification) {
@@ -104,8 +177,7 @@ final class PomodoroPanelController: NSObject, NSWindowDelegate {
     func windowDidResignKey(_ notification: Notification) {
         dismissFeaturePanelAfterResigningKey(
             panel,
-            keepsVisible: model.isPinned || model.isFullscreen,
-            onHidden: onClose
+            keepsVisible: model.isPinned || model.isFullscreen
         )
     }
 
@@ -176,12 +248,14 @@ final class PomodoroPanelModel: ObservableObject {
         case ready
         case running
         case paused
+        case completed
 
         var title: String {
             switch self {
             case .ready: "开始"
             case .running: "专注中"
             case .paused: "已暂停"
+            case .completed: "时间到"
             }
         }
 
@@ -190,6 +264,7 @@ final class PomodoroPanelModel: ObservableObject {
             case .ready: "sparkles"
             case .running: "waveform.path.ecg"
             case .paused: "pause.fill"
+            case .completed: "bell.fill"
             }
         }
     }
@@ -239,6 +314,13 @@ final class PomodoroPanelModel: ObservableObject {
     private var completionSoundTask: Task<Void, Never>?
     private var focusRequest: FocusSessionRequest?
     private var hasCustomizedTargetPomodoros = false
+    private let nowProvider: () -> Date
+    private var countdownDeadline: Date?
+    var onCompletion: (() -> Void)?
+
+    init(nowProvider: @escaping () -> Date = { .now }) {
+        self.nowProvider = nowProvider
+    }
 
     var isRunning: Bool { state == .running }
     var selectedMinutes: Int { preferredWorkSeconds / 60 }
@@ -304,6 +386,10 @@ final class PomodoroPanelModel: ObservableObject {
 
     func startOrResume(stopsCompletionAlert: Bool = true) {
         guard state != .running else { return }
+        if state == .completed {
+            acknowledgeCompletion()
+            return
+        }
         if stopsCompletionAlert {
             stopCompletionAlert()
         }
@@ -311,16 +397,38 @@ final class PomodoroPanelModel: ObservableObject {
             remainingSeconds = totalSeconds
         }
         state = .running
-        timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+        countdownDeadline = nowProvider().addingTimeInterval(TimeInterval(remainingSeconds))
+        let timer = Timer(timeInterval: 1, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.tick() }
         }
+        self.timer = timer
+        RunLoop.main.add(timer, forMode: .common)
     }
 
     func pause() {
         stopCompletionAlert()
         guard state == .running else { return }
+        synchronizeRunningSession()
+        guard state == .running else { return }
         stopTimer()
         state = .paused
+    }
+
+    func synchronizeRunningSession(referenceDate: Date? = nil) {
+        guard state == .running, let countdownDeadline else { return }
+        let previousRemainingSeconds = remainingSeconds
+        let currentDate = referenceDate ?? nowProvider()
+        let updatedRemainingSeconds = max(
+            0,
+            Int(ceil(countdownDeadline.timeIntervalSince(currentDate)))
+        )
+        if phase == .work {
+            sessionFocusSeconds += max(0, previousRemainingSeconds - updatedRemainingSeconds)
+        }
+        remainingSeconds = updatedRemainingSeconds
+        if updatedRemainingSeconds == 0 {
+            completeCurrentPhase()
+        }
     }
 
     func reset() {
@@ -411,12 +519,14 @@ final class PomodoroPanelModel: ObservableObject {
     private func stopTimer() {
         timer?.invalidate()
         timer = nil
+        countdownDeadline = nil
     }
 
-    func completeCurrentPhase(playSound: Bool = true, automaticallyContinue: Bool = true) {
+    func completeCurrentPhase(playSound: Bool = true, automaticallyContinue: Bool = false) {
+        guard state != .completed else { return }
         stopTimer()
         remainingSeconds = 0
-        state = .ready
+        state = .completed
         stopSoundPreview()
         if playSound {
             playCompletionAlert()
@@ -429,36 +539,44 @@ final class PomodoroPanelModel: ObservableObject {
             if plannedPomodoros != nil {
                 taskCompletedPomodoros += 1
             }
+        }
+        onCompletion?()
+
+        if automaticallyContinue {
+            acknowledgeCompletion()
+            startOrResume()
+        }
+    }
+
+    func acknowledgeCompletion() {
+        guard state == .completed else {
+            stopCompletionAlert()
+            return
+        }
+        stopCompletionAlert()
+        if phase == .work {
             if completedPomodoros >= targetPomodoros {
                 phase = .work
                 totalSeconds = preferredWorkSeconds
                 remainingSeconds = preferredWorkSeconds
-                return
+            } else {
+                beginBreak()
             }
-            beginBreak()
         } else {
             phase = .work
             totalSeconds = preferredWorkSeconds
             remainingSeconds = preferredWorkSeconds
         }
+        state = .ready
+    }
 
-        if automaticallyContinue {
-            startOrResume(stopsCompletionAlert: false)
-        }
+    func stopCompletionAlertForUser() {
+        guard state == .completed else { return }
+        stopCompletionAlert()
     }
 
     private func tick() {
-        guard remainingSeconds > 1 else {
-            if phase == .work {
-                sessionFocusSeconds += remainingSeconds
-            }
-            completeCurrentPhase()
-            return
-        }
-        if phase == .work {
-            sessionFocusSeconds += 1
-        }
-        remainingSeconds -= 1
+        synchronizeRunningSession()
     }
 }
 
@@ -602,7 +720,7 @@ private struct PomodoroPanelView: View {
     private var ambientGlow: some View {
         ZStack {
             Circle()
-                .fill(theme.accent.color.opacity(0.09))
+                .fill(theme.interactiveAccent.color.opacity(0.09))
                 .frame(width: 400, height: 400)
                 .blur(radius: 84)
                 .offset(y: -32)
@@ -673,13 +791,15 @@ private struct PomodoroPanelView: View {
         } label: {
             Image(systemName: "chart.bar.xaxis")
                 .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(isShowingStatisticsSummary ? Color.white : theme.text.secondary.color)
+                .foregroundStyle(isShowingStatisticsSummary ? Color.white : theme.interactiveAccent.color)
                 .frame(width: 34, height: 34)
                 .background(
-                    isShowingStatisticsSummary ? theme.accent.color : theme.card.fill.color.opacity(0.76),
+                    isShowingStatisticsSummary
+                        ? theme.interactiveAccent.color
+                        : theme.interactiveAccent.color.opacity(0.10),
                     in: Circle()
                 )
-                .overlay(Circle().stroke(theme.card.border.color.opacity(isShowingStatisticsSummary ? 0 : 0.72), lineWidth: 1))
+                .overlay(Circle().stroke(theme.interactiveAccent.color.opacity(isShowingStatisticsSummary ? 0 : 0.24), lineWidth: 1))
         }
         .buttonStyle(.plain)
         .accessibilityLabel(isShowingStatisticsSummary ? "收起会话统计" : "查看会话统计")
@@ -730,7 +850,7 @@ private struct PomodoroPanelView: View {
         HStack(spacing: 9) {
             Image(systemName: "doc.text")
                 .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(theme.text.secondary.color)
+                .foregroundStyle(theme.interactiveAccent.color)
             Text("当前任务：\(model.title)")
                 .lineLimit(1)
         }
@@ -770,7 +890,7 @@ private struct PomodoroPanelView: View {
         HStack(alignment: .center, spacing: 4) {
             ForEach([10, 22, 34, 18, 42, 26, 14, 30, 12], id: \.self) { height in
                 Capsule()
-                    .fill(theme.accent.color.opacity(0.14))
+                    .fill(theme.interactiveAccent.color.opacity(0.14))
                     .frame(width: 3, height: CGFloat(height))
             }
         }
@@ -780,14 +900,14 @@ private struct PomodoroPanelView: View {
         ZStack {
             Circle()
                 .fill(theme.card.fill.color.opacity(0.72))
-                .shadow(color: theme.accent.color.opacity(0.17), radius: 32, y: 13)
+                .shadow(color: theme.interactiveAccent.color.opacity(0.18), radius: 32, y: 13)
             Circle()
-                .stroke(theme.card.border.color.opacity(0.5), lineWidth: 9)
+                .stroke(theme.interactiveAccent.color.opacity(0.20), lineWidth: 9)
                 .padding(4)
             Circle()
                 .trim(from: elapsedProgress, to: 1)
                 .stroke(
-                    theme.accent.color,
+                    theme.interactiveAccent.color,
                     style: StrokeStyle(lineWidth: 8, lineCap: .round)
                 )
                 .padding(4)
@@ -803,7 +923,7 @@ private struct PomodoroPanelView: View {
             VStack(spacing: 9) {
                 Image(systemName: model.phase.symbol)
                     .font(.system(size: 20, weight: .medium))
-                    .foregroundStyle(theme.accent.color.opacity(0.82))
+                    .foregroundStyle(theme.interactiveAccent.color.opacity(0.92))
                 Text(timeText)
                     .font(.system(size: 55, weight: .ultraLight, design: .rounded))
                     .monospacedDigit()
@@ -831,11 +951,11 @@ private struct PomodoroPanelView: View {
             Button(action: openSystemFocusSettings) {
                 Label("打开系统专注模式", systemImage: "moon.fill")
                     .font(.system(size: 9.5, weight: .semibold, design: .rounded))
-                    .foregroundStyle(theme.accent.color)
+                    .foregroundStyle(theme.interactiveAccent.color)
                     .padding(.horizontal, 12)
                     .frame(height: 29)
                     .background(theme.card.fill.color.opacity(0.86), in: Capsule())
-                    .overlay(Capsule().stroke(theme.accent.color.opacity(0.22), lineWidth: 1))
+                    .overlay(Capsule().stroke(theme.interactiveAccent.color.opacity(0.28), lineWidth: 1))
             }
             .buttonStyle(.plain)
             .help("macOS 不允许应用自动切换勿扰模式，点击前往系统设置")
@@ -870,7 +990,7 @@ private struct PomodoroPanelView: View {
     private var progressIndicator: some View {
         ZStack {
             Circle()
-                .fill(theme.accent.color.opacity(0.2))
+                .fill(theme.interactiveAccent.color.opacity(0.22))
                 .frame(width: 30, height: 30)
                 .blur(radius: 7)
             Circle()
@@ -878,15 +998,15 @@ private struct PomodoroPanelView: View {
                 .frame(width: 18, height: 18)
                 .overlay {
                     Circle()
-                        .stroke(theme.accent.color.opacity(0.38), lineWidth: 1)
+                        .stroke(theme.interactiveAccent.color.opacity(0.42), lineWidth: 1)
                 }
                 .shadow(color: theme.panel.shadow.color.color.opacity(0.32), radius: 3, y: 2)
-                .shadow(color: theme.accent.color.opacity(0.58), radius: 8)
+                .shadow(color: theme.interactiveAccent.color.opacity(0.58), radius: 8)
             Circle()
-                .fill(theme.accent.color)
+                .fill(theme.interactiveAccent.color)
                 .frame(width: 6.5, height: 6.5)
                 .overlay(Circle().stroke(theme.panel.highlight.color.opacity(0.8), lineWidth: 0.75))
-                .shadow(color: theme.accent.color.opacity(0.72), radius: 3)
+                .shadow(color: theme.interactiveAccent.color.opacity(0.72), radius: 3)
         }
         .offset(y: -122)
         .rotationEffect(.degrees(elapsedProgress * 360))
@@ -989,7 +1109,7 @@ private struct PomodoroPanelView: View {
             VStack(alignment: .leading, spacing: 5) {
                 Label(title, systemImage: symbol)
                     .font(.system(size: 10, weight: .medium, design: .rounded))
-                    .foregroundStyle(theme.text.secondary.color)
+                    .foregroundStyle(theme.interactiveAccent.color)
                 HStack(spacing: 7) {
                     Text(value)
                         .font(.system(size: 13, weight: .semibold, design: .rounded))
@@ -998,14 +1118,14 @@ private struct PomodoroPanelView: View {
                     Spacer(minLength: 4)
                     Image(systemName: "chevron.down")
                         .font(.system(size: 8, weight: .bold))
-                        .foregroundStyle(theme.text.weak.color)
+                        .foregroundStyle(theme.interactiveAccent.color.opacity(0.82))
                         .rotationEffect(.degrees(isSelected ? 180 : 0))
                 }
             }
             .padding(.horizontal, 14)
             .frame(maxWidth: .infinity, minHeight: 52, alignment: .leading)
             .contentShape(Rectangle())
-            .background(isSelected ? theme.accent.color.opacity(0.08) : Color.clear, in: RoundedRectangle(cornerRadius: 13))
+            .background(isSelected ? theme.interactiveAccent.color.opacity(0.11) : Color.clear, in: RoundedRectangle(cornerRadius: 13))
         }
         .buttonStyle(.plain)
         .accessibilityLabel("\(title)，\(value)")
@@ -1112,7 +1232,13 @@ private struct PomodoroPanelView: View {
     private var primaryActionButton: some View {
         Button {
             activePicker = nil
-            if model.isRunning {
+            if model.state == .completed {
+                if model.isCompletionAlertPlaying {
+                    model.stopCompletionAlertForUser()
+                } else {
+                    model.acknowledgeCompletion()
+                }
+            } else if model.isRunning {
                 model.pause()
             } else {
                 model.startOrResume()
@@ -1124,16 +1250,19 @@ private struct PomodoroPanelView: View {
                 .frame(maxWidth: .infinity, minHeight: 48)
                 .background(
                     LinearGradient(
-                        colors: [theme.accent.color, theme.auxiliaryAccent.color],
+                        colors: [
+                            theme.interactiveAccent.color,
+                            theme.interactiveAccent.color.opacity(0.76)
+                        ],
                         startPoint: .leading,
                         endPoint: .trailing
                     ),
                     in: Capsule()
                 )
-                .shadow(color: theme.accent.color.opacity(0.23), radius: 11, y: 6)
+                .shadow(color: theme.interactiveAccent.color.opacity(0.26), radius: 11, y: 6)
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(model.state == .ready ? "开始" : primaryActionTitle)
+        .accessibilityLabel(primaryActionTitle)
         .accessibilityIdentifier("pomodoro.primary-action")
     }
 
@@ -1147,10 +1276,10 @@ private struct PomodoroPanelView: View {
         Button(action: action) {
             Label(title, systemImage: symbol)
                 .font(.system(size: 11.5, weight: .semibold, design: .rounded))
-                .foregroundStyle(theme.text.primary.color)
+                .foregroundStyle(theme.interactiveAccent.color)
                 .frame(width: 120, height: 46)
-                .background(theme.card.fill.color.opacity(0.76), in: Capsule())
-                .overlay(Capsule().stroke(theme.card.border.color.opacity(0.7), lineWidth: 1))
+                .background(theme.interactiveAccent.color.opacity(0.10), in: Capsule())
+                .overlay(Capsule().stroke(theme.interactiveAccent.color.opacity(0.24), lineWidth: 1))
         }
         .buttonStyle(.plain)
         .disabled(!isEnabled)
@@ -1213,7 +1342,7 @@ private struct PomodoroPanelView: View {
             targetStatisticContent
             .contentShape(Rectangle())
             .background(
-                isShowingTargetEditor ? theme.accent.color.opacity(0.08) : Color.clear,
+                isShowingTargetEditor ? theme.interactiveAccent.color.opacity(0.10) : Color.clear,
                 in: RoundedRectangle(cornerRadius: 14, style: .continuous)
             )
         }
@@ -1241,7 +1370,7 @@ private struct PomodoroPanelView: View {
                 Text("已完成 \(model.completedPomodoros) 个")
                     .foregroundStyle(theme.text.weak.color)
                 Text("修改")
-                    .foregroundStyle(theme.text.weak.color.opacity(0.88))
+                    .foregroundStyle(theme.interactiveAccent.color.opacity(0.92))
             }
             .font(.system(size: 8.5, weight: .semibold, design: .rounded))
             .lineLimit(1)
@@ -1264,7 +1393,7 @@ private struct PomodoroPanelView: View {
                 }
                 .buttonStyle(.plain)
                 .font(.system(size: 8.5, weight: .semibold, design: .rounded))
-                .foregroundStyle(theme.text.weak.color)
+                .foregroundStyle(theme.interactiveAccent.color)
                 .accessibilityIdentifier("pomodoro.target-editor-done")
             }
 
@@ -1299,7 +1428,7 @@ private struct PomodoroPanelView: View {
         }
         .padding(.horizontal, 10)
         .frame(maxWidth: .infinity, minHeight: 62)
-        .background(theme.accent.color.opacity(0.075), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .background(theme.interactiveAccent.color.opacity(0.09), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("pomodoro.target-editor")
     }
@@ -1314,9 +1443,9 @@ private struct PomodoroPanelView: View {
         Button(action: action) {
             Image(systemName: symbol)
                 .font(.system(size: 10, weight: .bold))
-                .foregroundStyle(theme.text.primary.color)
+                .foregroundStyle(isEnabled ? theme.interactiveAccent.color : theme.text.weak.color)
                 .frame(width: 28, height: 28)
-                .background(theme.accent.color.opacity(isEnabled ? 0.12 : 0.04), in: Circle())
+                .background(theme.interactiveAccent.color.opacity(isEnabled ? 0.14 : 0.04), in: Circle())
         }
         .buttonStyle(.plain)
         .disabled(!isEnabled)
@@ -1379,10 +1508,13 @@ private struct PomodoroPanelView: View {
         Button(action: action) {
             Image(systemName: symbol)
                 .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(isSelected ? Color.white : theme.text.secondary.color)
+                .foregroundStyle(isSelected ? Color.white : theme.interactiveAccent.color)
                 .frame(width: 34, height: 34)
-                .background(isSelected ? theme.accent.color : theme.card.fill.color.opacity(0.76), in: Circle())
-                .overlay(Circle().stroke(theme.card.border.color.opacity(isSelected ? 0 : 0.72), lineWidth: 1))
+                .background(
+                    isSelected ? theme.interactiveAccent.color : theme.interactiveAccent.color.opacity(0.10),
+                    in: Circle()
+                )
+                .overlay(Circle().stroke(theme.interactiveAccent.color.opacity(isSelected ? 0 : 0.24), lineWidth: 1))
         }
         .buttonStyle(.plain)
         .disabled(!isEnabled)
@@ -1406,18 +1538,18 @@ private struct PomodoroPanelView: View {
                 if let detail {
                     Text(detail)
                         .font(.system(size: 9.5, weight: .medium, design: .rounded))
-                        .foregroundStyle(isSelected ? theme.accent.color : theme.text.weak.color)
+                        .foregroundStyle(isSelected ? theme.interactiveAccent.color : theme.text.weak.color)
                 }
                 Image(systemName: "checkmark")
                     .font(.system(size: 8.5, weight: .bold))
                     .opacity(isSelected ? 1 : 0)
             }
-            .foregroundStyle(isSelected ? theme.accent.color : theme.text.primary.color)
+            .foregroundStyle(isSelected ? theme.interactiveAccent.color : theme.text.primary.color)
             .padding(.horizontal, 10)
             .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
             .background(
                 isSelected
-                    ? theme.accent.color.opacity(0.11)
+                    ? theme.interactiveAccent.color.opacity(0.12)
                     : (hoveredPickerOption == id ? theme.card.border.color.opacity(0.25) : Color.clear),
                 in: RoundedRectangle(cornerRadius: 9, style: .continuous)
             )
@@ -1450,12 +1582,12 @@ private struct PomodoroPanelView: View {
                     .opacity(isSelected ? 1 : 0)
             }
             .font(.system(size: 11, weight: .semibold, design: .rounded))
-            .foregroundStyle(isSelected ? theme.accent.color : theme.text.primary.color)
+            .foregroundStyle(isSelected ? theme.interactiveAccent.color : theme.text.primary.color)
             .padding(.horizontal, 10)
             .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
             .background(
                 isSelected
-                    ? theme.accent.color.opacity(0.11)
+                    ? theme.interactiveAccent.color.opacity(0.12)
                     : (hoveredPickerOption == "sound-\(sound.id)" ? theme.card.border.color.opacity(0.25) : Color.clear),
                 in: RoundedRectangle(cornerRadius: 9, style: .continuous)
             )
@@ -1496,7 +1628,7 @@ private struct PomodoroPanelView: View {
                     .font(.system(size: 9, weight: .bold))
                     .frame(width: 22, height: 22)
                     .background(
-                        theme.accent.color.opacity(isSelected ? 0.18 : 0.1),
+                        theme.interactiveAccent.color.opacity(isSelected ? 0.20 : 0.12),
                         in: Circle()
                     )
             }
@@ -1504,11 +1636,11 @@ private struct PomodoroPanelView: View {
             .accessibilityLabel("应用自定义时长")
             .accessibilityIdentifier("pomodoro.apply-custom-minutes")
         }
-        .foregroundStyle(isSelected ? theme.accent.color : theme.text.secondary.color)
+        .foregroundStyle(theme.interactiveAccent.color)
         .padding(.leading, 10)
         .padding(.trailing, 5)
         .frame(maxWidth: .infinity, minHeight: 32)
-        .background(isSelected ? theme.accent.color.opacity(0.11) : Color.clear, in: RoundedRectangle(cornerRadius: 9))
+        .background(isSelected ? theme.interactiveAccent.color.opacity(0.12) : Color.clear, in: RoundedRectangle(cornerRadius: 9))
         .accessibilityElement(children: .contain)
     }
 
@@ -1559,11 +1691,15 @@ private struct PomodoroPanelView: View {
             return model.phase == .work ? "保持专注，只做这一件事" : "休息进行中，放松一下"
         case .paused:
             return "计时已暂停"
+        case .completed:
+            return model.isCompletionAlertPlaying
+                ? "时间到，倒计时已停在零点"
+                : "铃声已结束，确认后进入下一阶段"
         }
     }
 
     private var shieldText: String {
-        "休息结束自动进入下一轮"
+        "阶段结束后由你确认下一轮"
     }
 
     private var primaryActionTitle: String {
@@ -1574,6 +1710,8 @@ private struct PomodoroPanelView: View {
             return "暂停计时"
         case .paused:
             return "继续计时"
+        case .completed:
+            return model.isCompletionAlertPlaying ? "停止闹钟" : "确认完成"
         }
     }
 
@@ -1581,11 +1719,15 @@ private struct PomodoroPanelView: View {
         switch model.state {
         case .ready, .paused: "play.fill"
         case .running: "pause.fill"
+        case .completed: model.isCompletionAlertPlaying ? "stop.fill" : "checkmark"
         }
     }
 
     private var timeText: String {
-        String(format: "%02d:%02d", model.remainingSeconds / 60, model.remainingSeconds % 60)
+        let hours = model.remainingSeconds / 3_600
+        let minutes = (model.remainingSeconds % 3_600) / 60
+        let seconds = model.remainingSeconds % 60
+        return String(format: "%02d:%02d:%02d", hours, minutes, seconds)
     }
 
     private var progress: Double {

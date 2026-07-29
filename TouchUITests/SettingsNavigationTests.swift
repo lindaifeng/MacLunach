@@ -97,7 +97,7 @@ final class SettingsNavigationTests: XCTestCase {
         XCTAssertTrue(app.buttons["settings.permissions.finder-extension.manage"].exists)
     }
 
-    func testClosingSettingsRestoresLauncher() throws {
+    func testClosingSettingsDoesNotRestoreLauncher() throws {
         let app = XCUIApplication()
         app.launchArguments = ["--show-launcher"]
         app.launch()
@@ -108,7 +108,8 @@ final class SettingsNavigationTests: XCTestCase {
 
         app.buttons["settings.close"].click()
 
-        XCTAssertTrue(app.buttons["feature.me.touch.finder"].waitForExistence(timeout: 2))
+        XCTAssertTrue(app.buttons["settings.close"].waitForNonExistence(timeout: 2))
+        XCTAssertFalse(app.buttons["feature.me.touch.finder"].exists)
     }
 
     func testAppearanceUsesCustomThemeChoices() throws {

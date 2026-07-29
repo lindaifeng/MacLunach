@@ -3,7 +3,7 @@ import ParserToolsFeature
 import SwiftUI
 
 @MainActor
-final class ParserToolsPanelController: NSObject, NSWindowDelegate {
+final class ParserToolsPanelController: NSObject, NSWindowDelegate, FeaturePanelSessionController {
     private let panel: ParserToolsPanel
     private let model = ParserToolsModel()
     private let onClose: () -> Void
@@ -38,6 +38,8 @@ final class ParserToolsPanelController: NSObject, NSWindowDelegate {
         installWindowTopDragRegion(in: panel)
     }
 
+    var sessionWindow: NSWindow { panel }
+
     func show() {
         cancelFeaturePanelDismissal(panel)
         panel.center()
@@ -50,7 +52,7 @@ final class ParserToolsPanelController: NSObject, NSWindowDelegate {
     }
 
     func windowDidResignKey(_ notification: Notification) {
-        dismissFeaturePanelAfterResigningKey(panel, onHidden: onClose)
+        dismissFeaturePanelAfterResigningKey(panel)
     }
 }
 
@@ -262,7 +264,7 @@ private struct ParserToolsPanelView: View {
                         .foregroundStyle(Color.white)
                 }
                 .frame(width: 32, height: 32)
-                .shadow(color: theme.accent.color.opacity(0.22), radius: 7, y: 3)
+                .shadow(color: theme.interactiveAccent.color.opacity(0.22), radius: 7, y: 3)
 
                 Text(model.selectedTool.title)
                     .font(.system(size: 14, weight: .bold, design: .rounded))
@@ -270,7 +272,7 @@ private struct ParserToolsPanelView: View {
 
                 Image(systemName: "chevron.down")
                     .font(.system(size: 9, weight: .bold))
-                    .foregroundStyle(theme.text.secondary.color)
+                    .foregroundStyle(theme.interactiveAccent.color)
                     .rotationEffect(.degrees(showsToolMenu ? 180 : 0))
             }
             .contentShape(Rectangle())
@@ -290,8 +292,8 @@ private struct ParserToolsPanelView: View {
                         .font(.system(size: 10.5, weight: .semibold))
                         .foregroundStyle(
                             model.selectedOperation == operation
-                                ? theme.accent.color
-                                : theme.text.secondary.color
+                                ? theme.interactiveAccent.color
+                                : theme.text.primary.color
                         )
                         .padding(.horizontal, 11)
                         .frame(height: 28)
@@ -303,7 +305,7 @@ private struct ParserToolsPanelView: View {
                         )
                         .overlay {
                             if model.selectedOperation == operation {
-                                Capsule().stroke(theme.accent.color.opacity(0.26), lineWidth: 1)
+                                Capsule().stroke(theme.interactiveAccent.color.opacity(0.26), lineWidth: 1)
                             }
                         }
                 }
@@ -327,23 +329,23 @@ private struct ParserToolsPanelView: View {
                     HStack(spacing: 12) {
                         Image(systemName: tool.symbolName)
                             .font(.system(size: 14, weight: .semibold))
-                            .foregroundStyle(tool == model.selectedTool ? theme.accent.color : theme.icon.secondary.color)
+                            .foregroundStyle(theme.interactiveAccent.color)
                             .frame(width: 24)
                         Text(tool.title)
                             .font(.system(size: 12.5, weight: tool == model.selectedTool ? .semibold : .medium))
-                            .foregroundStyle(tool == model.selectedTool ? theme.accent.color : theme.text.primary.color)
+                            .foregroundStyle(tool == model.selectedTool ? theme.interactiveAccent.color : theme.text.primary.color)
                         Spacer()
                         if tool == model.selectedTool {
                             Image(systemName: "checkmark")
                                 .font(.system(size: 10, weight: .bold))
-                                .foregroundStyle(theme.accent.color)
+                                .foregroundStyle(theme.interactiveAccent.color)
                         }
                     }
                     .padding(.horizontal, 12)
                     .frame(width: 268, height: 43)
                     .background(
                         tool == model.selectedTool
-                            ? theme.accent.color.opacity(0.12)
+                            ? theme.interactiveAccent.color.opacity(0.12)
                             : Color.clear,
                         in: RoundedRectangle(cornerRadius: 11, style: .continuous)
                     )
@@ -403,7 +405,7 @@ private struct ParserToolsPanelView: View {
                     HStack(spacing: 10) {
                         Image(systemName: "key.horizontal")
                             .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(theme.accent.color)
+                            .foregroundStyle(theme.interactiveAccent.color)
                         SecureField(jwtSecretPlaceholder, text: $model.secret)
                             .textFieldStyle(.plain)
                             .font(.system(size: 12, design: .monospaced))
@@ -442,7 +444,7 @@ private struct ParserToolsPanelView: View {
             .padding(.horizontal, 18)
             .frame(height: 40)
             .background(
-                model.canRun ? theme.accent.color : theme.accent.color.opacity(0.35),
+                model.canRun ? theme.interactiveAccent.color : theme.text.weak.color.opacity(0.28),
                 in: RoundedRectangle(cornerRadius: 11, style: .continuous)
             )
         }
@@ -566,7 +568,7 @@ private struct ParserToolsPanelView: View {
                 Button(action: item.action) {
                     Label(item.title, systemImage: item.symbol)
                         .font(.system(size: 9.5, weight: .semibold))
-                        .foregroundStyle(item.enabled ? theme.text.secondary.color : theme.text.weak.color.opacity(0.45))
+                        .foregroundStyle(item.enabled ? theme.interactiveAccent.color : theme.text.weak.color.opacity(0.45))
                         .padding(.horizontal, 9)
                         .frame(height: 26)
                         .background(theme.card.fill.color.opacity(item.enabled ? 0.52 : 0.2), in: Capsule())
@@ -710,9 +712,9 @@ private struct ParserTextView: NSViewRepresentable {
     private func applyAppearance(to textView: NSTextView) {
         textView.font = .monospacedSystemFont(ofSize: 12.5, weight: .regular)
         textView.textColor = NSColor(theme.text.primary.color)
-        textView.insertionPointColor = NSColor(theme.accent.color)
+        textView.insertionPointColor = NSColor(theme.interactiveAccent.color)
         textView.selectedTextAttributes = [
-            .backgroundColor: NSColor(theme.accent.color.opacity(0.24)),
+            .backgroundColor: NSColor(theme.interactiveAccent.color.opacity(0.24)),
             .foregroundColor: NSColor(theme.text.primary.color)
         ]
         textView.typingAttributes = baseAttributes
@@ -739,7 +741,7 @@ private struct ParserTextView: NSViewRepresentable {
         storage?.setAttributes(baseAttributes, range: range)
         highlight(#"\"(?:\\.|[^\"\\])*\""#, color: theme.text.success.color, in: textView)
         highlight(#"\"(?:\\.|[^\"\\])*\"(?=\s*:)"#, color: theme.auxiliaryAccent.color, in: textView)
-        highlight(#"(?<![A-Za-z])[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?"#, color: theme.accent.color, in: textView)
+        highlight(#"(?<![A-Za-z])[-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?"#, color: theme.interactiveAccent.color, in: textView)
         highlight(#"\b(?:true|false|null)\b"#, color: theme.text.permission.color, in: textView)
         storage?.endEditing()
     }

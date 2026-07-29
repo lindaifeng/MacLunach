@@ -328,6 +328,42 @@ final class FeatureAreaStoreTests: XCTestCase {
         )
     }
 
+    func testChangingLauncherKeyUpdatesItsDefaultGlobalShortcut() {
+        let plugin = StoreTestPlugin(id: "me.touch.first", shortcutKey: "t")
+        let store = makeStore(plugins: [plugin])
+
+        XCTAssertNil(
+            store.updateShortcut(
+                .init(modifiers: [], key: "s"),
+                for: plugin.manifest.id
+            )
+        )
+
+        XCTAssertEqual(
+            store.globalShortcut(for: plugin.manifest.id),
+            .init(modifiers: [.option], key: "s")
+        )
+    }
+
+    func testChangingLauncherKeyReplacesExistingGlobalShortcut() {
+        let plugin = StoreTestPlugin(id: "me.touch.first", shortcutKey: "t")
+        let store = makeStore(plugins: [plugin])
+        let customizedShortcut = TouchFeatureAPI.KeyboardShortcut(modifiers: [.control], key: "t")
+        XCTAssertNil(store.updateGlobalShortcut(customizedShortcut, for: plugin.manifest.id))
+
+        XCTAssertNil(
+            store.updateShortcut(
+                .init(modifiers: [], key: "s"),
+                for: plugin.manifest.id
+            )
+        )
+
+        XCTAssertEqual(
+            store.globalShortcut(for: plugin.manifest.id),
+            .init(modifiers: [.option], key: "s")
+        )
+    }
+
     func testLegacyCommandDefaultIsMigratedEvenWhenCurrentSeedMarkerExists() throws {
         let suiteName = "FeatureGlobalShortcutLegacyMigrationTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -339,6 +375,28 @@ final class FeatureAreaStoreTests: XCTestCase {
 
         defaults.set(data, forKey: "feature.global-shortcuts.v1")
         defaults.set(true, forKey: "feature.global-shortcuts.command-defaults-seeded-v1")
+        defaults.set(true, forKey: "feature.global-shortcuts.option-defaults-seeded-v3")
+
+        let store = FeatureAreaStore(defaults: defaults, plugins: [plugin])
+
+        XCTAssertEqual(
+            store.globalShortcut(for: plugin.manifest.id),
+            .init(modifiers: [.option], key: "1")
+        )
+    }
+
+    func testExistingCommandGlobalShortcutMigratesToOptionAfterPreviousMigrationCompleted() throws {
+        let suiteName = "FeatureGlobalShortcutOptionResetTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let plugin = StoreTestPlugin(id: "me.touch.first", shortcutKey: "1")
+        let commandShortcut = TouchFeatureAPI.KeyboardShortcut(modifiers: [.command], key: "q")
+
+        defaults.set(
+            try JSONEncoder().encode([plugin.manifest.id: commandShortcut]),
+            forKey: "feature.global-shortcuts.v1"
+        )
         defaults.set(true, forKey: "feature.global-shortcuts.option-defaults-seeded-v3")
 
         let store = FeatureAreaStore(defaults: defaults, plugins: [plugin])
@@ -530,22 +588,88 @@ final class FeatureAreaStoreTests: XCTestCase {
         XCTAssertEqual(finderCountsAfterReenablingScreenshot.enabled, 1)
     }
 
-    func testPomodoroAutomaticallyCyclesFromFocusToBreakAndBackToFocus() {
+    func testFeaturePanelSessionTracksOpenOrderPromotionAndClose() {
+        var session = FeaturePanelSessionState()
+
+        session.open("pomodoro")
+        session.open("daily-task")
+        XCTAssertEqual(session.openFeatureIDs, ["pomodoro", "daily-task"])
+        XCTAssertEqual(session.frontmostFeatureID, "daily-task")
+
+        session.promote("pomodoro")
+        XCTAssertEqual(session.openFeatureIDs, ["daily-task", "pomodoro"])
+        XCTAssertEqual(session.frontmostFeatureID, "pomodoro")
+
+        session.close("pomodoro")
+        XCTAssertEqual(session.openFeatureIDs, ["daily-task"])
+        XCTAssertEqual(session.frontmostFeatureID, "daily-task")
+    }
+
+    func testFeaturePanelSessionRetainsPanelsWithoutImplicitBulkRestoration() {
+        var session = FeaturePanelSessionState()
+        session.open("pomodoro")
+        session.open("daily-task")
+
+        // 窗口回到后台后仅保留会话记录；是否恢复由用户从启动器显式选择。
+        XCTAssertEqual(session.openFeatureIDs, ["pomodoro", "daily-task"])
+        XCTAssertEqual(session.frontmostFeatureID, "daily-task")
+    }
+
+    func testPanelPresenceIsIndependentFromPluginLifecycleState() {
+        let plugin = StoreTestPlugin(id: "me.touch.panel-presence")
+        let store = makeStore(plugins: [plugin])
+
+        store.setPanelPresence(.retained, for: plugin.manifest.id)
+        XCTAssertEqual(store.panelPresence(for: plugin.manifest.id), .retained)
+
+        store.setPanelPresence(.running, for: plugin.manifest.id)
+        XCTAssertEqual(store.panelPresence(for: plugin.manifest.id), .running)
+
+        store.setPanelStatusText("00:18:42 · 进行中", for: plugin.manifest.id)
+        XCTAssertEqual(store.panelStatusText(for: plugin.manifest.id), "00:18:42 · 进行中")
+
+        store.setPanelPresence(nil, for: plugin.manifest.id)
+        store.setPanelStatusText(nil, for: plugin.manifest.id)
+        XCTAssertNil(store.panelPresence(for: plugin.manifest.id))
+        XCTAssertNil(store.panelStatusText(for: plugin.manifest.id))
+    }
+
+    func testPomodoroCompletionHoldsAtZeroUntilAcknowledged() {
         let model = PomodoroPanelModel()
         model.setTargetPomodoros(2)
+        var completionCount = 0
+        model.onCompletion = { completionCount += 1 }
 
-        model.completeCurrentPhase(playSound: false)
-
-        XCTAssertEqual(model.phase, .shortBreak)
-        XCTAssertEqual(model.state, .running)
-        XCTAssertEqual(model.completedPomodoros, 1)
-
-        model.pause()
         model.completeCurrentPhase(playSound: false)
 
         XCTAssertEqual(model.phase, .work)
-        XCTAssertEqual(model.state, .running)
-        model.pause()
+        XCTAssertEqual(model.state, .completed)
+        XCTAssertEqual(model.remainingSeconds, 0)
+        XCTAssertEqual(model.completedPomodoros, 1)
+        XCTAssertEqual(completionCount, 1)
+
+        model.completeCurrentPhase(playSound: false)
+        XCTAssertEqual(model.completedPomodoros, 1)
+        XCTAssertEqual(completionCount, 1)
+
+        model.stopCompletionAlertForUser()
+        XCTAssertEqual(model.state, .completed)
+        XCTAssertEqual(model.remainingSeconds, 0)
+
+        model.acknowledgeCompletion()
+        XCTAssertEqual(model.phase, .shortBreak)
+        XCTAssertEqual(model.state, .ready)
+        XCTAssertEqual(model.remainingSeconds, 5 * 60)
+
+        model.completeCurrentPhase(playSound: false)
+        XCTAssertEqual(model.phase, .shortBreak)
+        XCTAssertEqual(model.state, .completed)
+        XCTAssertEqual(model.remainingSeconds, 0)
+
+        model.acknowledgeCompletion()
+        XCTAssertEqual(model.phase, .work)
+        XCTAssertEqual(model.state, .ready)
+        XCTAssertEqual(model.remainingSeconds, 25 * 60)
     }
 
     func testPomodoroTargetCanBeAdjustedAndStopsAtTheGoal() {
@@ -557,7 +681,12 @@ final class FeatureAreaStoreTests: XCTestCase {
 
         XCTAssertEqual(model.completedPomodoros, 1)
         XCTAssertEqual(model.phase, .work)
+        XCTAssertEqual(model.state, .completed)
+        XCTAssertEqual(model.remainingSeconds, 0)
+
+        model.acknowledgeCompletion()
         XCTAssertEqual(model.state, .ready)
+        XCTAssertEqual(model.remainingSeconds, 25 * 60)
 
         model.setTargetPomodoros(99)
         XCTAssertEqual(model.targetPomodoros, 12)
@@ -578,6 +707,38 @@ final class FeatureAreaStoreTests: XCTestCase {
         XCTAssertEqual(PomodoroPanelModel.completionAlertDuration, .seconds(10))
         XCTAssertEqual(PomodoroPanelModel.completionAlertRepeatInterval, .milliseconds(1_250))
         XCTAssertEqual(PomodoroPanelModel.completionAlertRepeatCount, 8)
+    }
+
+    func testPomodoroUsesWallClockAfterDelayedTimerDelivery() {
+        var now = Date(timeIntervalSince1970: 1_000)
+        let model = PomodoroPanelModel(nowProvider: { now })
+        model.configureWork(minutes: 1)
+        model.scrub(toElapsedProgress: 11.0 / 12.0)
+        var completionCount = 0
+        model.onCompletion = { completionCount += 1 }
+
+        model.startOrResume()
+        now.addTimeInterval(10)
+        model.synchronizeRunningSession()
+
+        XCTAssertEqual(model.state, .completed)
+        XCTAssertEqual(model.remainingSeconds, 0)
+        XCTAssertEqual(model.sessionFocusSeconds, 5)
+        XCTAssertEqual(completionCount, 1)
+    }
+
+    func testPomodoroPauseAccountsForActualElapsedTime() {
+        var now = Date(timeIntervalSince1970: 2_000)
+        let model = PomodoroPanelModel(nowProvider: { now })
+        model.configureWork(minutes: 1)
+
+        model.startOrResume()
+        now.addTimeInterval(17)
+        model.pause()
+
+        XCTAssertEqual(model.state, .paused)
+        XCTAssertEqual(model.remainingSeconds, 43)
+        XCTAssertEqual(model.sessionFocusSeconds, 17)
     }
 
     func testClipboardHistoryMonitoringSurvivesWorkspaceWindowClose() {
@@ -621,37 +782,74 @@ final class FeatureAreaStoreTests: XCTestCase {
         let capture = WorkspaceTextCaptureStub(
             result: .success(.init(text: "Hello", recognizedLanguageCode: "en"))
         )
+        var presentationCount = 0
         let controller = TranslationPanelController(
             screenshotCoordinator: capture,
             themeStore: ThemeStore(),
+            onPresented: { presentationCount += 1 },
             onClose: {}
         )
 
         controller.show()
 
         XCTAssertFalse(controller.isPanelVisible)
+        XCTAssertEqual(presentationCount, 0)
         await waitForPanelToAppear(controller.isPanelVisible)
         XCTAssertEqual(capture.captureCallCount, 1)
         XCTAssertTrue(controller.isPanelVisible)
+        XCTAssertEqual(presentationCount, 1)
+    }
+
+    func testTranslationLanguagePackRequirementPersistsAcrossRepeatedRequests() {
+        let model = TranslationWorkspaceModel()
+        let request = TextTranslationRequest(
+            text: "Hello",
+            source: .screenCapture,
+            recognizedLanguageCode: "en"
+        )
+
+        model.accept(request)
+        model.beginTranslation()
+        let firstSessionRequest = try? XCTUnwrap(model.sessionRequest)
+        XCTAssertNotNil(firstSessionRequest)
+
+        if let firstSessionRequest {
+            model.showLanguagePackPrompt(
+                for: firstSessionRequest,
+                title: "系统语言包未安装",
+                message: "当前语言组合受支持，但本机尚未下载对应的离线语言包。"
+            )
+        }
+
+        model.accept(request)
+        model.beginTranslation()
+
+        XCTAssertNil(model.sessionRequest)
+        XCTAssertNotNil(model.languagePackPrompt)
+        XCTAssertFalse(model.isTranslating)
     }
 
     func testOCRWorkspaceCapturesTextBeforeShowingItsResultWindow() async {
         let capture = WorkspaceTextCaptureStub(
             result: .success(.init(text: "识别结果", recognizedLanguageCode: "zh-Hans"))
         )
+        var presentationCount = 0
         let controller = OCRPanelController(
             screenshotCoordinator: capture,
             themeStore: ThemeStore(),
             onTranslate: { _ in },
+            onPresented: { presentationCount += 1 },
             onClose: {}
         )
 
         controller.show()
 
         XCTAssertFalse(controller.isPanelVisible)
+        XCTAssertEqual(presentationCount, 0)
         await waitForPanelToAppear(controller.isPanelVisible)
         XCTAssertEqual(capture.captureCallCount, 1)
         XCTAssertTrue(controller.isPanelVisible)
+        XCTAssertEqual(presentationCount, 1)
     }
 
     func testOCRWorkspaceAutomaticallyCopiesRecognizedTextAndKeepsPreview() {
@@ -745,7 +943,8 @@ final class FeatureAreaStoreTests: XCTestCase {
         model.completeCurrentPhase(playSound: false)
 
         XCTAssertEqual(model.phase, .work)
-        XCTAssertEqual(model.state, .ready)
+        XCTAssertEqual(model.state, .completed)
+        XCTAssertEqual(model.remainingSeconds, 0)
         XCTAssertEqual(model.completedPomodoros, 1)
         XCTAssertEqual(model.taskCompletedPomodoros, 1)
 

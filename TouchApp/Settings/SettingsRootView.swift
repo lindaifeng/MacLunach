@@ -105,14 +105,24 @@ struct SettingsRootView: View {
                     .frame(width: 196)
                 SettingsDivider(theme: theme)
                     .frame(width: 1)
-                ScrollView {
-                    settingsDetail
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 30)
-                        .padding(.vertical, 26)
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        Color.clear
+                            .frame(height: 0)
+                            .id("settings-detail-top")
+                        settingsDetail
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 30)
+                            .padding(.vertical, 26)
+                    }
+                    .scrollIndicators(.hidden)
+                    .onChange(of: navigation.section) { _, _ in
+                        scrollDetailToTop(using: proxy)
+                    }
+                    .onChange(of: navigation.featureID) { _, _ in
+                        scrollDetailToTop(using: proxy)
+                    }
                 }
-                .id("\(navigation.section.rawValue):\(navigation.featureID ?? "root")")
-                .scrollIndicators(.hidden)
             }
         }
         .ignoresSafeArea(.container, edges: .top)
@@ -201,6 +211,14 @@ struct SettingsRootView: View {
         .buttonStyle(.plain)
         .accessibilityIdentifier(item.accessibilityIdentifier)
         .accessibilityAddTraits(isSelected ? .isSelected : [])
+    }
+
+    private func scrollDetailToTop(using proxy: ScrollViewProxy) {
+        DispatchQueue.main.async {
+            withAnimation(.easeOut(duration: 0.18)) {
+                proxy.scrollTo("settings-detail-top", anchor: .top)
+            }
+        }
     }
 
     @ViewBuilder

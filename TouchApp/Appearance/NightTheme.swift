@@ -70,6 +70,7 @@ enum NightTheme {
         ),
         accent: .init(hex: 0x7C6CFF),
         auxiliaryAccent: .init(hex: 0x579DFF),
+        interactiveAccent: .init(hex: 0x5B97D7),
         motion: .init(duration: 0.17, hoverOffset: -2, pressedScale: 0.98)
     )
 }
@@ -147,6 +148,7 @@ enum GraphiteTheme {
         ),
         accent: .init(hex: 0xF2F2F2),
         auxiliaryAccent: .init(hex: 0xCFCFCF),
+        interactiveAccent: .init(hex: 0x4C91D0),
         motion: .init(duration: 0.16, hoverOffset: -1, pressedScale: 0.985)
     )
 }

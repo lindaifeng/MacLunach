@@ -153,5 +153,9 @@ struct ThemeDefinition: Identifiable, Equatable {
     let tooltip: ThemeTooltipTokens
     let accent: ThemeColorToken
     let auxiliaryAccent: ThemeColorToken
+    /// 可点击控件、进度与高频导航信息使用的交互色。
+    /// 使用低饱和钴钢蓝明确表达可点击状态，既避开禁用态灰白，
+    /// 也避免偏亮浅蓝在深色工作台上产生发白、漂浮的视觉感受。
+    let interactiveAccent: ThemeColorToken
     let motion: ThemeMotionTokens
 }

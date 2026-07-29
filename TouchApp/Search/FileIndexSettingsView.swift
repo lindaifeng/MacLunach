@@ -26,6 +26,10 @@ struct FileIndexSettingsView: View {
                         .accessibilityIdentifier("search.index-status")
                     SettingsDivider(theme: theme)
                     SettingsValueRow("已扫描项目", value: diagnostics.fileCount.formatted(), theme: theme)
+                    if let indexingProcessedItemCount = diagnostics.indexingProcessedItemCount {
+                        SettingsDivider(theme: theme)
+                        SettingsValueRow("本次已处理", value: indexingProcessedItemCount.formatted(), theme: theme)
+                    }
                     SettingsDivider(theme: theme)
                     SettingsValueRow(
                         "数据库大小",

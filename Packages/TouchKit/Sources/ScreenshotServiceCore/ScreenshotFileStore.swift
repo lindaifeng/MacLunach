@@ -45,6 +45,35 @@ public struct ScreenshotImageFormatDescriptor: Equatable, Sendable {
     }
 }
 
+/// 截图服务的文件存储根目录。
+///
+/// 用户 Application Support 不可用时，服务改用临时目录继续处理请求；此时产物不保证持久保留。
+public struct ScreenshotServiceStorageRoot: Equatable, Sendable {
+    public let url: URL
+    public let isEphemeral: Bool
+
+    public init(
+        applicationSupport: Result<URL, any Error>,
+        temporaryDirectory: URL
+    ) {
+        switch applicationSupport {
+        case let .success(applicationSupport):
+            url = Self.screenshotDirectory(in: applicationSupport)
+            isEphemeral = false
+        case .failure:
+            url = Self.screenshotDirectory(in: temporaryDirectory)
+            isEphemeral = true
+        }
+    }
+
+    private static func screenshotDirectory(in parent: URL) -> URL {
+        parent
+            .appendingPathComponent("Touch", isDirectory: true)
+            .appendingPathComponent("Features", isDirectory: true)
+            .appendingPathComponent("me.touch.screenshot", isDirectory: true)
+    }
+}
+
 public protocol ScreenshotImageEncoding: Sendable {
     func encode(_ image: CGImage, options: ScreenshotOutputOptions) throws -> Data
 }

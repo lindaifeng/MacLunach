@@ -8,6 +8,45 @@ import SwiftUI
 import TouchFeatureAPI
 import UniformTypeIdentifiers
 
+/// 将以 point 表示的截图选区扩展到完整的物理像素边界。
+///
+/// ScreenCaptureKit 最终输出的是整数像素。如果选区边缘落在半个像素上，直接使用原始 point
+/// 尺寸会让捕获结果与钉图窗口相差一个像素，Window Server 随后只能对整张图做轻微缩放。
+enum ScreenshotPixelGeometry {
+    static func alignedLocalRect(
+        _ requestedRect: CGRect,
+        displayPointSize: CGSize,
+        displayPixelSize: CGSize,
+        scaleFactor: CGFloat
+    ) -> CGRect? {
+        guard requestedRect.width > 0,
+              requestedRect.height > 0,
+              displayPointSize.width > 0,
+              displayPointSize.height > 0,
+              displayPixelSize.width > 0,
+              displayPixelSize.height > 0,
+              scaleFactor > 0 else { return nil }
+
+        let clipped = requestedRect.standardized.intersection(
+            CGRect(origin: .zero, size: displayPointSize)
+        )
+        guard clipped.width > 0, clipped.height > 0 else { return nil }
+
+        let pixelMinX = max(0, floor(clipped.minX * scaleFactor))
+        let pixelMinY = max(0, floor(clipped.minY * scaleFactor))
+        let pixelMaxX = min(displayPixelSize.width, ceil(clipped.maxX * scaleFactor))
+        let pixelMaxY = min(displayPixelSize.height, ceil(clipped.maxY * scaleFactor))
+        guard pixelMaxX > pixelMinX, pixelMaxY > pixelMinY else { return nil }
+
+        return CGRect(
+            x: pixelMinX / scaleFactor,
+            y: pixelMinY / scaleFactor,
+            width: (pixelMaxX - pixelMinX) / scaleFactor,
+            height: (pixelMaxY - pixelMinY) / scaleFactor
+        )
+    }
+}
+
 @MainActor
 final class ScreenshotEnvironment: ObservableObject {
     @Published private(set) var permissionState: ScreenshotPermissionState
@@ -27,6 +66,7 @@ final class ScreenshotEnvironment: ObservableObject {
         selectionFactory: @escaping ScreenshotCoordinator.SelectionFactory = {
             SelectionOverlayController()
         },
+        translationRequestHandler: @escaping ScreenshotCoordinator.TranslationRequestHandler = { _ in },
         registerShortcuts: @escaping ScreenshotCoordinator.ShortcutAction = {},
         unregisterShortcuts: @escaping ScreenshotCoordinator.ShortcutAction = {}
     ) {
@@ -34,16 +74,22 @@ final class ScreenshotEnvironment: ObservableObject {
         let captureService = captureService ?? XPCScreenCaptureService(client: client)
         let resolvedClipboardWriter = clipboardWriter ?? ScreenshotPasteboardWriter()
         let extensionPasteboardWriter = ScreenshotPasteboardWriter()
+        let resolvedConfigurationProvider = configurationProvider ?? {
+            FeatureConfigurationStore(defaults: defaults).load().screenshot
+        }
         permissionState = authorizer.status
         coordinator = ScreenshotCoordinator(
             authorization: authorizer,
             captureService: captureService,
             clipboardWriter: resolvedClipboardWriter,
+            pinPresenter: ScreenshotPinWindowManager(
+                configurationProvider: { resolvedConfigurationProvider().pin }
+            ),
             annotationPresenter: annotationPresenter
                 ?? BuiltInScreenshotArtifactAnnotationPresenter(
                     client: client,
                     themeStore: themeStore ?? ThemeStore(defaults: defaults)
-                ),
+            ),
             floatingThumbnailPresenter: floatingThumbnailPresenter ?? FloatingThumbnailController(),
             extensionRouter: SystemScreenshotCaptureExtensionRouter(
                 pasteboardWriter: extensionPasteboardWriter,
@@ -53,9 +99,8 @@ final class ScreenshotEnvironment: ObservableObject {
                 }
             ),
             selectionFactory: selectionFactory,
-            configurationProvider: configurationProvider ?? {
-                FeatureConfigurationStore(defaults: defaults).load().screenshot
-            },
+            configurationProvider: resolvedConfigurationProvider,
+            translationRequestHandler: translationRequestHandler,
             invalidateService: { await client.shutdown() },
             registerShortcuts: registerShortcuts,
             unregisterShortcuts: unregisterShortcuts
@@ -125,13 +170,22 @@ private final class CaptureExtensionFrameSampler: @unchecked Sendable {
                 virtualMinX: virtualMinX,
                 virtualMaxY: virtualMaxY
             )
-            let local = CGRect(
+            let requestedLocal = CGRect(
                 x: rect.x - normalizedDisplay.minX,
                 y: rect.y - normalizedDisplay.minY,
                 width: rect.width,
                 height: rect.height
-            ).intersection(CGRect(origin: .zero, size: display.frame.size))
-            guard local.width >= 2, local.height >= 2 else {
+            )
+            let scale = max(1, CGFloat(CGDisplayPixelsWide(displayID)) / max(1, display.frame.width))
+            guard let local = ScreenshotPixelGeometry.alignedLocalRect(
+                requestedLocal,
+                displayPointSize: display.frame.size,
+                displayPixelSize: CGSize(
+                    width: CGFloat(CGDisplayPixelsWide(displayID)),
+                    height: CGFloat(CGDisplayPixelsHigh(displayID))
+                ),
+                scaleFactor: scale
+            ), local.width >= 2, local.height >= 2 else {
                 throw ScreenshotFeatureError.targetUnavailable
             }
             let filter = SCContentFilter(
@@ -140,9 +194,8 @@ private final class CaptureExtensionFrameSampler: @unchecked Sendable {
                 exceptingWindows: []
             )
             configuration.sourceRect = local
-            let scale = max(1, CGFloat(CGDisplayPixelsWide(displayID)) / max(1, display.frame.width))
-            configuration.width = max(1, Int(ceil(local.width * scale)))
-            configuration.height = max(1, Int(ceil(local.height * scale)))
+            configuration.width = max(1, Int((local.width * scale).rounded()))
+            configuration.height = max(1, Int((local.height * scale).rounded()))
             configuration.ignoreShadowsDisplay = true
             return .init(
                 pointFrame: appKitFrame(local: local, displayID: displayID),

@@ -150,8 +150,7 @@ private struct SuperRightSettingsView: View {
                         Spacer()
                         Toggle("", isOn: $configuration.fileFormats[index].isEnabled)
                             .labelsHidden()
-                            .toggleStyle(.switch)
-                            .controlSize(.small)
+                            .toggleStyle(TouchSettingsToggleStyle())
                             .accessibilityLabel("\(format.displayName) 文件格式")
                             .accessibilityIdentifier("settings.super-right.format.\(format.id)")
                     }
@@ -204,8 +203,7 @@ private struct SuperRightSettingsView: View {
 
             Toggle("", isOn: toggleBinding)
                 .labelsHidden()
-                .toggleStyle(.switch)
-                .controlSize(.small)
+                .toggleStyle(TouchSettingsToggleStyle())
                 .disabled(!isAvailable)
                 .accessibilityLabel(action.wrappedValue.id.displayName)
                 .accessibilityIdentifier("settings.super-right.action.\(action.wrappedValue.id.rawValue)")
@@ -294,6 +292,32 @@ private struct SuperRightSettingsView: View {
     private func persist(_ configuration: SuperRightFeatureConfiguration) {
         try? repository.save(configuration)
         try? snapshotStore.save(configuration)
+    }
+}
+
+private struct TouchSettingsToggleStyle: ToggleStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        Button {
+            configuration.isOn.toggle()
+        } label: {
+            ZStack(alignment: configuration.isOn ? .trailing : .leading) {
+                Capsule(style: .continuous)
+                    .fill(
+                        configuration.isOn
+                            ? Color.accentColor
+                            : Color.primary.opacity(0.14)
+                    )
+
+                Circle()
+                    .fill(Color(nsColor: .windowBackgroundColor))
+                    .shadow(color: Color.black.opacity(0.16), radius: 1.5, y: 1)
+                    .padding(2)
+            }
+            .frame(width: 34, height: 20)
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .animation(.easeInOut(duration: 0.16), value: configuration.isOn)
     }
 }
 

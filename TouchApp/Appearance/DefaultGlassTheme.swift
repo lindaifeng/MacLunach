@@ -74,6 +74,7 @@ enum DefaultGlassTheme {
         ),
         accent: .init(hex: 0x748CFF),
         auxiliaryAccent: .init(hex: 0x8EB7EA),
+        interactiveAccent: .init(hex: 0x4A74C9),
         motion: .init(duration: 0.19, hoverOffset: -2, pressedScale: 0.98)
     )
 }

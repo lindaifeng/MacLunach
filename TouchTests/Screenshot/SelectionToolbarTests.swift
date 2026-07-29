@@ -38,13 +38,15 @@ final class SelectionToolbarTests: XCTestCase {
         try XCTUnwrap(representation.representation(using: .png, properties: [:])).write(to: imageURL)
 
         let id = UUID()
+        let backingScale = NSScreen.main?.backingScaleFactor ?? 2
+        let nativeSize = CGSize(width: 800 / backingScale, height: 400 / backingScale)
         let artifact = ScreenshotArtifact(
             id: id,
             createdAt: Date(),
             captureMode: .region,
             relativePath: "Captures/pin.png",
             thumbnailRelativePath: nil,
-            pointSize: .init(width: 400, height: 200),
+            pointSize: .init(width: nativeSize.width, height: nativeSize.height),
             pixelSize: .init(width: 800, height: 400),
             uniformTypeIdentifier: "public.png",
             sha256: "test",
@@ -52,10 +54,15 @@ final class SelectionToolbarTests: XCTestCase {
         )
         let manager = ScreenshotPinWindowManager(pathsProvider: {
             ScreenshotFeaturePaths(rootURL: root)
+        }, configurationProvider: {
+            ScreenshotPinConfiguration(
+                appearsAcrossSpaces: true,
+                defaultOpacity: 0.42
+            )
         })
         try manager.pin(
             artifact,
-            preferredFrame: CGRect(x: 180, y: 220, width: 400, height: 200)
+            preferredFrame: CGRect(x: 180, y: 220, width: nativeSize.width, height: nativeSize.height)
         )
         let panel = try XCTUnwrap(NSApp.windows.first {
             $0.identifier?.rawValue == "screenshot.pin.\(id.uuidString)"
@@ -64,17 +71,24 @@ final class SelectionToolbarTests: XCTestCase {
         let identifiers = Set(descendants(of: try XCTUnwrap(panel.contentView)).compactMap {
             $0.identifier?.rawValue
         })
-
+        let sourceImageView = try XCTUnwrap(descendants(of: try XCTUnwrap(panel.contentView)).first {
+            $0.identifier?.rawValue == "screenshot.pin.image"
+        })
         XCTAssertTrue(identifiers.contains("screenshot.pin.opacity"))
+        XCTAssertTrue(identifiers.contains("screenshot.pin.image"))
         XCTAssertFalse(identifiers.contains("screenshot.pin.scale"))
-        XCTAssertEqual(panel.frame.width, 400, accuracy: 0.5)
+        XCTAssertEqual(sourceImageView.accessibilityHelp(), "原始分辨率 800 × 400 像素")
+        XCTAssertEqual(sourceImageView.layer?.contentsScale, backingScale)
+        XCTAssertEqual(sourceImageView.alphaValue, 0.42, accuracy: 0.001)
+        XCTAssertTrue(panel.collectionBehavior.contains(.canJoinAllSpaces))
+        XCTAssertEqual(panel.frame.width, nativeSize.width, accuracy: 0.5)
         XCTAssertEqual(
             panel.frame.height,
-            200 + ScreenshotPinLayout.controlBarHeight,
+            nativeSize.height + ScreenshotPinLayout.controlBarHeight,
             accuracy: 0.5
         )
         XCTAssertEqual(panel.frame.minX, 180, accuracy: 0.5)
-        XCTAssertEqual(panel.frame.maxY, 420, accuracy: 0.5)
+        XCTAssertEqual(panel.frame.maxY, 220 + nativeSize.height, accuracy: 0.5)
         XCTAssertLessThanOrEqual(ScreenshotPinLayout.controlBarHeight, 40)
 
         let initialWidth = panel.frame.width
@@ -89,6 +103,37 @@ final class SelectionToolbarTests: XCTestCase {
         let scrollEvent = try XCTUnwrap(NSEvent(cgEvent: cgEvent))
         try XCTUnwrap(panel.contentView).scrollWheel(with: scrollEvent)
         XCTAssertGreaterThan(panel.frame.width, initialWidth)
+
+        // 选区是钉图初始几何的真值；即使原图像素与选区不匹配，初始大小也必须严格相同。
+        let selectedSizeID = UUID()
+        let selectedSizeArtifact = ScreenshotArtifact(
+            id: selectedSizeID,
+            createdAt: Date(),
+            captureMode: .region,
+            relativePath: "Captures/pin.png",
+            thumbnailRelativePath: nil,
+            pointSize: .init(width: nativeSize.width, height: nativeSize.height),
+            pixelSize: .init(width: 800, height: 400),
+            uniformTypeIdentifier: "public.png",
+            sha256: "test-selected-size",
+            displays: []
+        )
+        let selectedSizePreferredFrame = CGRect(
+            x: 460,
+            y: 180,
+            width: 96,
+            height: 48
+        )
+        try manager.pin(selectedSizeArtifact, preferredFrame: selectedSizePreferredFrame)
+        let selectedSizePanel = try XCTUnwrap(NSApp.windows.first {
+            $0.identifier?.rawValue == "screenshot.pin.\(selectedSizeID.uuidString)"
+        })
+        defer { selectedSizePanel.close() }
+
+        XCTAssertEqual(selectedSizePanel.frame.width, selectedSizePreferredFrame.width, accuracy: 0.5)
+        XCTAssertEqual(selectedSizePanel.frame.height, selectedSizePreferredFrame.height, accuracy: 0.5)
+        XCTAssertEqual(selectedSizePanel.frame.minX, selectedSizePreferredFrame.minX, accuracy: 0.5)
+        XCTAssertEqual(selectedSizePanel.frame.maxY, selectedSizePreferredFrame.maxY, accuracy: 0.5)
     }
 
     func testPinLayoutKeepsImageAspectRatioWithoutExternalControlBar() {
@@ -114,13 +159,88 @@ final class SelectionToolbarTests: XCTestCase {
         XCTAssertGreaterThan(enlarged, 1)
         XCTAssertLessThan(reduced, 1)
         XCTAssertEqual(
-            ScreenshotPinLayout.scale(current: 2.5, wheelDelta: 10_000, precise: false),
-            2.5
+            ScreenshotPinLayout.scale(current: 8, wheelDelta: 10_000, precise: false),
+            8
         )
         XCTAssertEqual(
             ScreenshotPinLayout.scale(current: 0.25, wheelDelta: -10_000, precise: false),
             0.25
         )
+    }
+
+    func testPinTrackpadMagnificationScalesInBothDirectionsAndClampsRange() {
+        let enlarged = ScreenshotPinLayout.scale(current: 1, magnification: 0.24)
+        let reduced = ScreenshotPinLayout.scale(current: 1, magnification: -0.24)
+
+        XCTAssertGreaterThan(enlarged, 1)
+        XCTAssertLessThan(reduced, 1)
+        XCTAssertEqual(
+            ScreenshotPinLayout.scale(current: 8, magnification: 100),
+            8
+        )
+        XCTAssertEqual(
+            ScreenshotPinLayout.scale(current: 0.25, magnification: -100),
+            0.25
+        )
+    }
+
+    func testPinKeepsPreferredFrameSizeWhenCaptureMetadataDoesNotMatch() {
+        let source = CGSize(width: 1_600, height: 800)
+
+        let matching = ScreenshotPinImageMetrics.initialImageSize(
+            sourcePixelSize: source,
+            backingScale: 1,
+            preferredFrame: CGRect(x: 0, y: 0, width: 1_600, height: 800)
+        )
+        let mismatched = ScreenshotPinImageMetrics.initialImageSize(
+            sourcePixelSize: source,
+            backingScale: 1,
+            preferredFrame: CGRect(x: 0, y: 0, width: 400, height: 200)
+        )
+
+        XCTAssertEqual(matching, CGSize(width: 1_600, height: 800))
+        XCTAssertEqual(mismatched, CGSize(width: 400, height: 200))
+        XCTAssertEqual(
+            ScreenshotPinImageMetrics.samplingMode(
+                sourcePixelSize: source,
+                renderedPointSize: matching,
+                backingScale: 1
+            ),
+            .nativePixels
+        )
+        XCTAssertEqual(
+            ScreenshotPinImageMetrics.samplingMode(
+                sourcePixelSize: source,
+                renderedPointSize: CGSize(width: 800, height: 400),
+                backingScale: 1
+            ),
+            .scaled
+        )
+        XCTAssertEqual(
+            ScreenshotPinImageMetrics.samplingMode(
+                sourcePixelSize: source,
+                renderedPointSize: CGSize(width: 799.5, height: 400),
+                backingScale: 2
+            ),
+            .scaled,
+            "相差一个物理像素时不能误用 1:1 的无插值绘制"
+        )
+    }
+
+    func testScreenshotPixelGeometryAlignsFractionalSelectionToWholePixels() throws {
+        let aligned = try XCTUnwrap(ScreenshotPixelGeometry.alignedLocalRect(
+            CGRect(x: 100.25, y: 120.25, width: 300.25, height: 200.25),
+            displayPointSize: CGSize(width: 1_440, height: 900),
+            displayPixelSize: CGSize(width: 2_880, height: 1_800),
+            scaleFactor: 2
+        ))
+
+        XCTAssertEqual(aligned.origin.x, 100, accuracy: 0.001)
+        XCTAssertEqual(aligned.origin.y, 120, accuracy: 0.001)
+        XCTAssertEqual(aligned.width, 300.5, accuracy: 0.001)
+        XCTAssertEqual(aligned.height, 200.5, accuracy: 0.001)
+        XCTAssertEqual(aligned.width * 2, 601, accuracy: 0.001)
+        XCTAssertEqual(aligned.height * 2, 401, accuracy: 0.001)
     }
 
     @MainActor
@@ -296,6 +416,10 @@ final class SelectionToolbarTests: XCTestCase {
         XCTAssertEqual(
             SelectionToolbarItem.recognizeText.selectionCompletionAction,
             .recognizeText
+        )
+        XCTAssertEqual(
+            SelectionToolbarItem.translate.selectionCompletionAction,
+            .translate
         )
     }
 

@@ -187,6 +187,109 @@ struct SettingsSwitch: View {
     }
 }
 
+struct ThemedSlider: View {
+    @Binding private var value: Double
+    private let range: ClosedRange<Double>
+    private let step: Double
+    private let theme: ThemeDefinition
+
+    init(
+        value: Binding<Double>,
+        in range: ClosedRange<Double>,
+        step: Double = 0.01,
+        theme: ThemeDefinition
+    ) {
+        _value = value
+        self.range = range
+        self.step = step
+        self.theme = theme
+    }
+
+    var body: some View {
+        GeometryReader { proxy in
+            let thumbDiameter: CGFloat = 16
+            let progress = normalizedValue
+            let trackWidth = max(proxy.size.width, thumbDiameter)
+            let thumbOffset = progress * (trackWidth - thumbDiameter)
+
+            ZStack(alignment: .leading) {
+                Capsule(style: .continuous)
+                    .fill(theme.shortcut.fill.color)
+                    .frame(height: 8)
+                    .overlay {
+                        Capsule(style: .continuous)
+                            .stroke(theme.shortcut.border.color, lineWidth: 1)
+                    }
+
+                Capsule(style: .continuous)
+                    .fill(theme.accent.color)
+                    .frame(width: max(thumbDiameter / 2, progress * trackWidth), height: 8)
+
+                Circle()
+                    .fill(theme.panel.fallback.color)
+                    .frame(width: thumbDiameter, height: thumbDiameter)
+                    .shadow(color: theme.card.shadow.color.color, radius: 3, y: 1)
+                    .overlay {
+                        Circle().stroke(theme.accent.color.opacity(0.48), lineWidth: 1)
+                    }
+                    .offset(x: thumbOffset)
+            }
+            .frame(maxWidth: .infinity, minHeight: 24, alignment: .leading)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { gesture in
+                        setValue(at: gesture.location.x, width: trackWidth)
+                    }
+            )
+        }
+        .frame(height: 24)
+        .focusable()
+        .onMoveCommand { direction in
+            switch direction {
+            case .left, .down:
+                adjust(by: -1)
+            case .right, .up:
+                adjust(by: 1)
+            default:
+                break
+            }
+        }
+        .accessibilityAdjustableAction { direction in
+            switch direction {
+            case .increment:
+                adjust(by: 1)
+            case .decrement:
+                adjust(by: -1)
+            @unknown default:
+                break
+            }
+        }
+    }
+
+    private var normalizedValue: CGFloat {
+        let span = range.upperBound - range.lowerBound
+        guard span > 0 else { return 0 }
+        return min(max(CGFloat((value - range.lowerBound) / span), 0), 1)
+    }
+
+    private func setValue(at position: CGFloat, width: CGFloat) {
+        guard width > 0 else { return }
+        let fraction = Double(min(max(position / width, 0), 1))
+        let rawValue = range.lowerBound + fraction * (range.upperBound - range.lowerBound)
+        value = quantized(rawValue)
+    }
+
+    private func adjust(by amount: Double) {
+        value = quantized(value + amount * step)
+    }
+
+    private func quantized(_ rawValue: Double) -> Double {
+        let snapped = (rawValue / step).rounded() * step
+        return min(max(snapped, range.lowerBound), range.upperBound)
+    }
+}
+
 struct SettingsActionButton: View {
     let title: String
     let symbol: String?

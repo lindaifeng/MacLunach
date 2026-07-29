@@ -20,14 +20,22 @@ enum ScreenshotPinError: Error, Equatable {
 /// 钉图的纯布局计算。图片区域保持原始宽高比，缩放由滚轮实时驱动。
 struct ScreenshotPinLayout: Equatable {
     static let controlBarHeight: CGFloat = 0
-    static let minimumImageSize = CGSize(width: 184, height: 80)
-    static let maximumImageSize = CGSize(width: 2_400, height: 2_400)
+    /// 钉图的初始几何必须严格等于选区；不能用人为最小尺寸把小选区放大。
+    static let minimumImageSize = CGSize(width: 1, height: 1)
+    /// 允许高分辨率截图放大到接近原始像素尺寸，避免 4K/5K 截图只能以缩小后的模糊状态查看。
+    static let maximumImageSize = CGSize(width: 8_192, height: 8_192)
 
     let baseImageSize: CGSize
 
     static func scale(current: Double, wheelDelta: CGFloat, precise: Bool) -> Double {
         let sensitivity = precise ? 0.008 : 0.012
-        return min(2.5, max(0.25, current * exp(Double(wheelDelta) * sensitivity)))
+        return min(8, max(0.25, current * exp(Double(wheelDelta) * sensitivity)))
+    }
+
+    /// `NSEvent.magnification` 是相对上一帧的增量。使用指数累计可以让放大与缩小保持对称，
+    /// 同时避免直接相加在小尺寸时过于迟钝、在大尺寸时又跳变过快。
+    static func scale(current: Double, magnification: CGFloat) -> Double {
+        min(8, max(0.25, current * exp(Double(magnification))))
     }
 
     var aspectRatio: CGFloat {
@@ -35,7 +43,7 @@ struct ScreenshotPinLayout: Equatable {
     }
 
     func imageSize(scale requestedScale: Double) -> CGSize {
-        let scale = CGFloat(min(2.5, max(0.25, requestedScale)))
+        let scale = CGFloat(min(8, max(0.25, requestedScale)))
         let proposed = CGSize(
             width: baseImageSize.width * scale,
             height: baseImageSize.height * scale
@@ -66,16 +74,83 @@ struct ScreenshotPinLayout: Equatable {
     }
 }
 
+/// 钉图始终使用磁盘中的原图像素渲染；当前截图流程传入的选区则是初始位置与大小的真值。
+///
+/// 即使历史元数据或跨显示器 scale 让选区与原图物理像素不再严格对应，也不能改变用户刚刚
+/// 选定的矩形。此时只调整采样策略，不能把窗口改成原图的原生 point 尺寸。
+struct ScreenshotPinImageMetrics: Equatable {
+    enum SamplingMode: Equatable {
+        case nativePixels
+        case scaled
+    }
+
+    static func nativePointSize(pixelSize: CGSize, backingScale: CGFloat) -> CGSize {
+        let scale = max(1, backingScale)
+        return CGSize(
+            width: max(1, pixelSize.width / scale),
+            height: max(1, pixelSize.height / scale)
+        )
+    }
+
+    static func initialImageSize(
+        sourcePixelSize: CGSize,
+        backingScale: CGFloat,
+        preferredFrame: CGRect?
+    ) -> CGSize {
+        if let preferredFrame,
+           preferredFrame.width > 0,
+           preferredFrame.height > 0 {
+            return preferredFrame.size
+        }
+        return nativePointSize(pixelSize: sourcePixelSize, backingScale: backingScale)
+    }
+
+    static func samplingMode(
+        sourcePixelSize: CGSize,
+        renderedPointSize: CGSize,
+        backingScale: CGFloat
+    ) -> SamplingMode {
+        matchesSourcePixels(
+            renderedPointSize: renderedPointSize,
+            sourcePixelSize: sourcePixelSize,
+            backingScale: backingScale
+        ) ? .nativePixels : .scaled
+    }
+
+    static func matchesSourcePixels(
+        renderedPointSize: CGSize,
+        sourcePixelSize: CGSize,
+        backingScale: CGFloat
+    ) -> Bool {
+        let scale = max(1, backingScale)
+        let renderedPixels = CGSize(
+            width: renderedPointSize.width * scale,
+            height: renderedPointSize.height * scale
+        )
+        // 只有真正的 1:1 物理像素映射才能关闭插值。此前允许 1px 以上误差，会把轻微缩放
+        // 错判为原生比例，细线和文字边缘因此仍显得发糊。
+        let pixelTolerance: CGFloat = 0.01
+        return abs(renderedPixels.width - sourcePixelSize.width) <= pixelTolerance
+            && abs(renderedPixels.height - sourcePixelSize.height) <= pixelTolerance
+    }
+}
+
 /// 管理独立的置顶截图窗口。每张钉图拥有自己的窗口状态，互不共享缩放和透明度。
 @MainActor
 final class ScreenshotPinWindowManager: NSObject, ScreenshotPinPresenting {
     typealias PathsProvider = () throws -> ScreenshotFeaturePaths
+    typealias ConfigurationProvider = () -> ScreenshotPinConfiguration
 
     private let pathsProvider: PathsProvider
+    private let configurationProvider: ConfigurationProvider
     private var controllers: [UUID: ScreenshotPinWindowController] = [:]
 
-    init(pathsProvider: @escaping PathsProvider = { try ScreenshotFeaturePaths.applicationSupport() }) {
+    init(
+        pathsProvider: @escaping PathsProvider = { try ScreenshotFeaturePaths.applicationSupport() },
+        configurationProvider: @escaping ConfigurationProvider = { .init() }
+    ) {
         self.pathsProvider = pathsProvider
+        self.configurationProvider = configurationProvider
     }
 
     func pin(_ artifact: ScreenshotArtifact, preferredFrame: CGRect?) throws {
@@ -92,9 +167,8 @@ final class ScreenshotPinWindowManager: NSObject, ScreenshotPinPresenting {
         let controller = ScreenshotPinWindowController(
             artifactID: artifact.id,
             image: image,
-            pointSize: artifact.pointSize,
-            pixelSize: artifact.pixelSize,
-            preferredFrame: preferredFrame
+            preferredFrame: preferredFrame,
+            configuration: configurationProvider()
         )
         controller.onClose = { [weak self] id in
             self?.controllers.removeValue(forKey: id)
@@ -112,22 +186,30 @@ private final class ScreenshotPinWindowController: NSWindowController, NSWindowD
     private var layout: ScreenshotPinLayout
     private weak var pinContentView: ScreenshotPinContentView?
     private var isApplyingSize = false
+    private var scaleEventMonitor: Any?
 
     init(
         artifactID: UUID,
         image: CGImage,
-        pointSize: ScreenshotSize,
-        pixelSize: ScreenshotSize,
-        preferredFrame: CGRect?
+        preferredFrame: CGRect?,
+        configuration: ScreenshotPinConfiguration
     ) {
         self.artifactID = artifactID
-        let logicalSize = Self.logicalImageSize(
-            pointSize: pointSize,
-            pixelSize: pixelSize,
-            image: image
+        let targetScreen = Self.targetScreen(for: preferredFrame)
+        let backingScale = targetScreen?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+        let sourcePixelSize = CGSize(width: image.width, height: image.height)
+        let logicalSize = ScreenshotPinImageMetrics.nativePointSize(
+            pixelSize: sourcePixelSize,
+            backingScale: backingScale
         )
-        // 从截图选区钉图时必须保持原来的 point 尺寸；原始 CGImage 仍作为高分辨率内容源。
-        let initialImageSize = preferredFrame?.size ?? Self.initialSize(source: logicalSize)
+        let sourceSizedFrame = ScreenshotPinImageMetrics.initialImageSize(
+            sourcePixelSize: sourcePixelSize,
+            backingScale: backingScale,
+            preferredFrame: preferredFrame
+        )
+        let initialImageSize = preferredFrame == nil
+            ? Self.initialSize(source: sourceSizedFrame)
+            : sourceSizedFrame
         layout = ScreenshotPinLayout(baseImageSize: initialImageSize)
         let initialContentSize = CGSize(
             width: initialImageSize.width,
@@ -139,13 +221,19 @@ private final class ScreenshotPinWindowController: NSWindowController, NSWindowD
             backing: .buffered,
             defer: false
         )
-        let contentView = ScreenshotPinContentView(image: image, logicalSize: logicalSize)
+        let contentView = ScreenshotPinContentView(
+            image: image,
+            logicalSize: logicalSize,
+            initialOpacity: configuration.defaultOpacity
+        )
         panel.contentView = contentView
         panel.identifier = NSUserInterfaceItemIdentifier("screenshot.pin.\(artifactID.uuidString)")
         panel.title = "钉图"
         panel.setAccessibilityLabel("置顶截图")
         panel.level = .floating
-        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        panel.collectionBehavior = configuration.appearsAcrossSpaces
+            ? [.canJoinAllSpaces, .fullScreenAuxiliary]
+            : [.fullScreenAuxiliary]
         panel.isMovableByWindowBackground = false
         panel.isReleasedWhenClosed = false
         panel.backgroundColor = .clear
@@ -167,12 +255,18 @@ private final class ScreenshotPinWindowController: NSWindowController, NSWindowD
         contentView.onScaleChanged = { [weak self] value, anchor in
             self?.applyScale(value, anchorInContent: anchor)
         }
-        position(panel, preferredFrame: preferredFrame)
+        installScrollMonitor(for: panel)
+        position(
+            panel,
+            preferredFrame: preferredFrame,
+            targetScreen: targetScreen
+        )
     }
 
     required init?(coder: NSCoder) { nil }
 
     func windowWillClose(_ notification: Notification) {
+        removeScaleMonitor()
         onClose?(artifactID)
     }
 
@@ -191,7 +285,7 @@ private final class ScreenshotPinWindowController: NSWindowController, NSWindowD
 
     private func applyScale(_ scale: Double, anchorInContent: CGPoint) {
         guard let panel = window else { return }
-        let contentSize = layout.contentSize(scale: min(2.5, max(0.25, scale)))
+        let contentSize = layout.contentSize(scale: min(8, max(0.25, scale)))
         let oldSize = panel.frame.size
         let anchor = CGPoint(
             x: panel.frame.minX + anchorInContent.x,
@@ -217,23 +311,56 @@ private final class ScreenshotPinWindowController: NSWindowController, NSWindowD
         pinContentView?.updateContentsScale()
     }
 
-    private func position(_ panel: NSPanel, preferredFrame: CGRect?) {
+    /// 图片视图、透明度控件等子视图可能各自吞掉滚轮或捏合事件。缩放是钉图窗口的核心交互，
+    /// 因此在窗口层统一捕获，只要指针位于此钉图内，滚轮和触控板捏合都能缩放。
+    private func installScrollMonitor(for panel: NSPanel) {
+        scaleEventMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.scrollWheel, .magnify]
+        ) { [weak self, weak panel] event in
+            guard let self,
+                  let panel,
+                  event.window === panel,
+                  let contentView = self.pinContentView else {
+                return event
+            }
+
+            let handled = switch event.type {
+            case .scrollWheel:
+                contentView.handleScaleScroll(event)
+            case .magnify:
+                contentView.handleMagnification(event)
+            default:
+                false
+            }
+            return handled ? nil : event
+        }
+    }
+
+    private func removeScaleMonitor() {
+        guard let scaleEventMonitor else { return }
+        NSEvent.removeMonitor(scaleEventMonitor)
+        self.scaleEventMonitor = nil
+    }
+
+    private func position(_ panel: NSPanel, preferredFrame: CGRect?, targetScreen: NSScreen?) {
         if let preferredFrame,
            preferredFrame.width > 0,
            preferredFrame.height > 0 {
-            // 图片区域与原截图完全重合，控制条仅向下延伸。
+            // 选区的位置和尺寸都是用户截图意图的唯一真值。图像的真实像素只影响采样，
+            // 不能让钉图从选区左上角或选区大小偏离，更不能退回到屏幕右上角。
             panel.setFrame(Self.pixelAlignedFrame(
                 CGRect(
                     x: preferredFrame.minX,
-                    y: preferredFrame.minY - ScreenshotPinLayout.controlBarHeight,
-                    width: preferredFrame.width,
-                    height: preferredFrame.height + ScreenshotPinLayout.controlBarHeight
+                    y: preferredFrame.maxY - panel.frame.height,
+                    width: panel.frame.width,
+                    height: panel.frame.height
                 ),
-                on: NSScreen.screens.first(where: { $0.frame.intersects(preferredFrame) })
+                on: targetScreen
             ), display: true)
             return
         }
-        guard let visibleFrame = NSScreen.main?.visibleFrame else {
+        // 没有选区来源（例如从历史记录单独钉住）时，才在来源显示器的右上角给出默认位置。
+        guard let visibleFrame = (targetScreen ?? NSScreen.main)?.visibleFrame else {
             panel.center()
             return
         }
@@ -244,25 +371,9 @@ private final class ScreenshotPinWindowController: NSWindowController, NSWindowD
         ))
     }
 
-    private static func logicalImageSize(
-        pointSize: ScreenshotSize,
-        pixelSize: ScreenshotSize,
-        image: CGImage
-    ) -> CGSize {
-        if pointSize.width.isFinite,
-           pointSize.height.isFinite,
-           pointSize.width > 0,
-           pointSize.height > 0 {
-            return CGSize(width: pointSize.width, height: pointSize.height)
-        }
-        let pixelWidth = pixelSize.width.isFinite && pixelSize.width > 0
-            ? pixelSize.width
-            : Double(image.width)
-        let pixelHeight = pixelSize.height.isFinite && pixelSize.height > 0
-            ? pixelSize.height
-            : Double(image.height)
-        let backingScale = NSScreen.main?.backingScaleFactor ?? 2
-        return CGSize(width: pixelWidth / backingScale, height: pixelHeight / backingScale)
+    private static func targetScreen(for preferredFrame: CGRect?) -> NSScreen? {
+        guard let preferredFrame else { return NSScreen.main }
+        return NSScreen.screens.first(where: { $0.frame.intersects(preferredFrame) }) ?? NSScreen.main
     }
 
     private static func pixelAlignedFrame(_ frame: CGRect, on screen: NSScreen?) -> CGRect {
@@ -308,13 +419,16 @@ private final class ScreenshotPinContentView: NSView {
     private var contextMenuPanel: NSPanel?
     private var contextMenuEventMonitor: Any?
 
-    init(image: CGImage, logicalSize: CGSize) {
+    init(image: CGImage, logicalSize: CGSize, initialOpacity: Double) {
         imageView = ScreenshotPinImageView(image: image, logicalSize: logicalSize)
         super.init(frame: .zero)
         wantsLayer = true
         layer?.backgroundColor = NSColor.clear.cgColor
         configureImageView()
         configureOpacityControl()
+        let opacity = min(1, max(0.15, initialOpacity))
+        imageView.alphaValue = CGFloat(opacity)
+        opacityControl.setValue(opacity)
         imageView.onDoubleClick = { [weak self] in self?.onClose?() }
     }
 
@@ -349,11 +463,11 @@ private final class ScreenshotPinContentView: NSView {
         ])
     }
 
-    override func scrollWheel(with event: NSEvent) {
+    @discardableResult
+    func handleScaleScroll(_ event: NSEvent) -> Bool {
         let delta = event.hasPreciseScrollingDeltas ? event.scrollingDeltaY : event.deltaY * 8
         guard abs(delta) > 0.01 else {
-            super.scrollWheel(with: event)
-            return
+            return false
         }
         currentScale = ScreenshotPinLayout.scale(
             current: currentScale,
@@ -361,6 +475,32 @@ private final class ScreenshotPinContentView: NSView {
             precise: event.hasPreciseScrollingDeltas
         )
         onScaleChanged?(currentScale, convert(event.locationInWindow, from: nil))
+        return true
+    }
+
+    override func scrollWheel(with event: NSEvent) {
+        if !handleScaleScroll(event) {
+            super.scrollWheel(with: event)
+        }
+    }
+
+    @discardableResult
+    func handleMagnification(_ event: NSEvent) -> Bool {
+        guard abs(event.magnification) > 0.0001 else {
+            return false
+        }
+        currentScale = ScreenshotPinLayout.scale(
+            current: currentScale,
+            magnification: event.magnification
+        )
+        onScaleChanged?(currentScale, convert(event.locationInWindow, from: nil))
+        return true
+    }
+
+    override func magnify(with event: NSEvent) {
+        if !handleMagnification(event) {
+            super.magnify(with: event)
+        }
     }
 
     override func rightMouseDown(with event: NSEvent) {
@@ -595,6 +735,11 @@ private final class PinOpacityControl: NSView {
 
     required init?(coder: NSCoder) { nil }
 
+    func setValue(_ value: Double) {
+        slider.doubleValue = min(slider.maxValue, max(slider.minValue, value))
+        slider.toolTip = "不透明度 \(Int((slider.doubleValue * 100).rounded()))%"
+    }
+
     override func updateTrackingAreas() {
         if let trackingAreaReference { removeTrackingArea(trackingAreaReference) }
         let area = NSTrackingArea(
@@ -624,7 +769,11 @@ private final class PinOpacityControl: NSView {
     }
 }
 
-/// 直接把原始 CGImage 交给 Core Animation，避免 NSImage 根据 DPI 重新选择低分辨率表征。
+/// 在视图当前的 Retina backing buffer 中直接重绘原始 `CGImage`。
+///
+/// 不能仅把图片放进 `CALayer.contents` 后交给图层拉伸：窗口实时缩放时图层可能复用较低分辨率的
+/// 中间表面，导致文字和细线明显发糊。这里让 AppKit 按当前屏幕 scale 创建绘制缓冲，再由
+/// Core Graphics 从原始像素重采样；原生像素大小时完全关闭插值，放大/缩小时使用高质量插值。
 @MainActor
 private final class ScreenshotPinImageView: NSView {
     private let image: CGImage
@@ -635,16 +784,13 @@ private final class ScreenshotPinImageView: NSView {
         self.logicalSize = logicalSize
         super.init(frame: .zero)
         wantsLayer = true
-        layerContentsRedrawPolicy = .duringViewResize
-        layer?.contents = image
-        // 容器本身已锁定图片宽高比，直接铺满可避免 resizeAspect 再做一次小数像素计算。
-        layer?.contentsGravity = .resize
-        // 图片与窗口都按物理像素对齐；缩放时只让 Core Animation 做一次高质量采样。
-        layer?.magnificationFilter = .linear
-        layer?.minificationFilter = .trilinear
+        layerContentsRedrawPolicy = .onSetNeedsDisplay
+        layer?.drawsAsynchronously = false
         layer?.allowsEdgeAntialiasing = false
         layer?.backgroundColor = NSColor.clear.cgColor
+        identifier = NSUserInterfaceItemIdentifier("screenshot.pin.image")
         setAccessibilityLabel("钉住的高清截图")
+        setAccessibilityHelp("原始分辨率 \(image.width) × \(image.height) 像素")
     }
 
     required init?(coder: NSCoder) { nil }
@@ -655,9 +801,41 @@ private final class ScreenshotPinImageView: NSView {
     }
 
     func updateContentsScale() {
-        layer?.contentsScale = window?.screen?.backingScaleFactor
+        layer?.contentsScale = window?.backingScaleFactor
+            ?? window?.screen?.backingScaleFactor
             ?? NSScreen.main?.backingScaleFactor
             ?? 2
+        needsDisplay = true
+    }
+
+    override func layout() {
+        super.layout()
+        needsDisplay = true
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        guard let context = NSGraphicsContext.current?.cgContext else { return }
+        let backingScale = layer?.contentsScale
+            ?? window?.backingScaleFactor
+            ?? NSScreen.main?.backingScaleFactor
+            ?? 2
+        let samplingMode = ScreenshotPinImageMetrics.samplingMode(
+            sourcePixelSize: CGSize(width: image.width, height: image.height),
+            renderedPointSize: bounds.size,
+            backingScale: backingScale
+        )
+
+        context.saveGState()
+        switch samplingMode {
+        case .nativePixels:
+            context.interpolationQuality = .none
+            context.setShouldAntialias(false)
+        case .scaled:
+            context.interpolationQuality = .high
+            context.setShouldAntialias(true)
+        }
+        context.draw(image, in: bounds)
+        context.restoreGState()
     }
 
     @discardableResult

@@ -4,7 +4,7 @@ import SwiftUI
 import TouchFeatureAPI
 
 @MainActor
-final class DailyTaskPanelController: NSObject, NSWindowDelegate {
+final class DailyTaskPanelController: NSObject, NSWindowDelegate, FeaturePanelSessionController {
     private let panel: NSPanel
     private let model: DailyTaskPanelModel
     private let onClose: () -> Void
@@ -41,7 +41,6 @@ final class DailyTaskPanelController: NSObject, NSWindowDelegate {
             rootView: DailyTaskPanelView(
                 model: model,
                 onStartFocus: { [weak self] request in
-                    self?.panel.orderOut(nil)
                     self?.onStartFocus(request)
                 }
             )
@@ -49,6 +48,8 @@ final class DailyTaskPanelController: NSObject, NSWindowDelegate {
         )
         installWindowTopDragRegion(in: panel)
     }
+
+    var sessionWindow: NSWindow { panel }
 
     func show() {
         cancelFeaturePanelDismissal(panel)
@@ -63,7 +64,7 @@ final class DailyTaskPanelController: NSObject, NSWindowDelegate {
     }
 
     func windowDidResignKey(_ notification: Notification) {
-        dismissFeaturePanelAfterResigningKey(panel, onHidden: onClose)
+        dismissFeaturePanelAfterResigningKey(panel)
     }
 }
 
@@ -270,7 +271,7 @@ private struct DailyTaskPanelView: View {
                 PanelThemeBackground(theme: theme, reduceTransparency: reduceTransparency, themeColorOpacity: 0.97)
 
                 Circle()
-                    .fill(theme.accent.color.opacity(reduceTransparency ? 0.035 : 0.07))
+                    .fill(theme.interactiveAccent.color.opacity(reduceTransparency ? 0.035 : 0.07))
                     .frame(width: 430, height: 430)
                     .blur(radius: 100)
                     .offset(x: 360, y: -330)
@@ -408,9 +409,9 @@ private struct DailyTaskPanelView: View {
             HStack(spacing: 13) {
                 Image(systemName: completion >= 0.5 ? "star.fill" : "sparkles")
                     .font(.system(size: 20, weight: .semibold))
-                    .foregroundStyle(theme.accent.color)
+                    .foregroundStyle(theme.interactiveAccent.color)
                     .frame(width: 48, height: 48)
-                    .background(theme.accent.color.opacity(0.10), in: Circle())
+                    .background(theme.interactiveAccent.color.opacity(0.10), in: Circle())
                 VStack(alignment: .leading, spacing: 6) {
                     Text(statusTitle).font(.system(size: 14, weight: .semibold))
                     Text(statusSubtitle)
@@ -474,7 +475,7 @@ private struct DailyTaskPanelView: View {
                 Button("编辑") { presentsFocusPicker = true }
                     .buttonStyle(.plain)
                     .font(.system(size: 10.5, weight: .semibold))
-                    .foregroundStyle(theme.text.secondary.color)
+                    .foregroundStyle(theme.interactiveAccent.color)
                     .padding(.horizontal, 11)
                     .padding(.vertical, 6)
                     .background(theme.shortcut.fill.color, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
@@ -515,7 +516,7 @@ private struct DailyTaskPanelView: View {
                 Button { presentsFocusPicker = true } label: {
                     Label("从今日任务中选择一项专注事项", systemImage: "star")
                         .font(.system(size: 11.5, weight: .medium))
-                        .foregroundStyle(theme.text.secondary.color)
+                        .foregroundStyle(theme.interactiveAccent.color)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .background(theme.card.fill.color.opacity(0.7), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                 }
@@ -546,7 +547,7 @@ private struct DailyTaskPanelView: View {
                 Spacer()
                 Text("进行中 \(model.inProgressTasks.count)")
                     .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(theme.accent.color)
+                    .foregroundStyle(theme.interactiveAccent.color)
             }
 
             if model.inProgressTasks.isEmpty {
@@ -568,7 +569,12 @@ private struct DailyTaskPanelView: View {
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(Color.white.opacity(selectedStartTask == nil ? 0.62 : 1))
                     .frame(maxWidth: .infinity, minHeight: 32)
-                    .background(theme.accent.color.opacity(selectedStartTask == nil ? 0.45 : 1), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    .background(
+                        selectedStartTask == nil
+                            ? theme.text.weak.color.opacity(0.28)
+                            : theme.interactiveAccent.color,
+                        in: RoundedRectangle(cornerRadius: 9, style: .continuous)
+                    )
             }
             .buttonStyle(.plain)
             .disabled(selectedStartTask == nil)
@@ -589,7 +595,7 @@ private struct DailyTaskPanelView: View {
             HStack(spacing: 8) {
                 Image(systemName: selectedStartTaskID == task.id ? "record.circle.fill" : "circle")
                     .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(theme.accent.color)
+                    .foregroundStyle(theme.interactiveAccent.color)
                 Text(task.title)
                     .font(.system(size: 10.5, weight: .medium))
                     .foregroundStyle(theme.text.primary.color)
@@ -619,8 +625,8 @@ private struct DailyTaskPanelView: View {
                         .font(.system(size: 20, weight: .semibold))
                         .foregroundStyle(.white)
                         .frame(width: 46, height: 46)
-                        .background(theme.accent.color, in: Circle())
-                        .shadow(color: theme.accent.color.opacity(0.28), radius: 12, y: 7)
+                        .background(theme.interactiveAccent.color, in: Circle())
+                        .shadow(color: theme.interactiveAccent.color.opacity(0.28), radius: 12, y: 7)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("添加任务")
@@ -667,10 +673,10 @@ private struct DailyTaskPanelView: View {
     private func categoryChip(_ category: String) -> some View {
         Text(category)
             .font(.system(size: 9.5, weight: .semibold))
-            .foregroundStyle(theme.accent.color)
+            .foregroundStyle(theme.interactiveAccent.color)
             .padding(.horizontal, 7)
             .padding(.vertical, 3)
-            .background(theme.accent.color.opacity(0.10), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
+            .background(theme.interactiveAccent.color.opacity(0.10), in: RoundedRectangle(cornerRadius: 5, style: .continuous))
     }
 
     private func deadlineLabel(_ deadline: Date) -> String {
@@ -691,11 +697,11 @@ private struct DailyTaskProgressRing: View {
     var body: some View {
         ZStack {
             Circle()
-                .stroke(theme.accent.color.opacity(0.14), lineWidth: 7)
+                .stroke(theme.interactiveAccent.color.opacity(0.14), lineWidth: 7)
             Circle()
                 .trim(from: 0, to: progress)
                 .stroke(
-                    AngularGradient(colors: [theme.auxiliaryAccent.color, theme.accent.color], center: .center),
+                    AngularGradient(colors: [theme.auxiliaryAccent.color, theme.interactiveAccent.color], center: .center),
                     style: StrokeStyle(lineWidth: 7, lineCap: .round)
                 )
                 .rotationEffect(.degrees(-90))
@@ -718,7 +724,7 @@ private struct DailyTaskLinearProgress: View {
                 Capsule()
                     .fill(theme.text.weak.color.opacity(0.14))
                 Capsule()
-                    .fill(theme.accent.color)
+                    .fill(theme.interactiveAccent.color)
                     .frame(width: proxy.size.width * min(max(progress, 0), 1))
             }
         }
@@ -816,7 +822,7 @@ private struct DailyTaskBoardColumn: View {
             Button(action: onAdd) {
                 Label("添加任务", systemImage: "plus")
                     .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(theme.text.secondary.color)
+                    .foregroundStyle(theme.interactiveAccent.color)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 16)
                     .frame(height: 38)
@@ -831,7 +837,7 @@ private struct DailyTaskBoardColumn: View {
         )
         .overlay {
             RoundedRectangle(cornerRadius: 18, style: .continuous)
-                .stroke(isDropTargeted ? theme.accent.color.opacity(0.65) : theme.card.border.color.opacity(0.82), lineWidth: isDropTargeted ? 1.5 : 1)
+                .stroke(isDropTargeted ? theme.interactiveAccent.color.opacity(0.65) : theme.card.border.color.opacity(0.82), lineWidth: isDropTargeted ? 1.5 : 1)
         }
         .shadow(color: theme.card.shadow.color.color.opacity(0.62), radius: 9, y: 4)
         .contentShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
@@ -947,7 +953,7 @@ private struct DailyTaskBoardColumn: View {
 
     private var iconForeground: Color {
         switch status {
-        case .pending: theme.accent.color
+        case .pending: theme.interactiveAccent.color
         case .inProgress: .orange
         case .completed: .white
         }
@@ -955,7 +961,7 @@ private struct DailyTaskBoardColumn: View {
 
     private var iconBackground: Color {
         switch status {
-        case .pending: theme.accent.color.opacity(0.12)
+        case .pending: theme.interactiveAccent.color.opacity(0.12)
         case .inProgress: Color.orange.opacity(0.14)
         case .completed: theme.text.success.color
         }
@@ -983,10 +989,10 @@ private struct DailyTaskBoardRow: View {
                 HStack(spacing: 6) {
                     Text(task.category)
                         .font(.system(size: 8.5, weight: .semibold))
-                        .foregroundStyle(theme.accent.color)
+                        .foregroundStyle(theme.interactiveAccent.color)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
-                        .background(theme.accent.color.opacity(0.09), in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+                        .background(theme.interactiveAccent.color.opacity(0.09), in: RoundedRectangle(cornerRadius: 4, style: .continuous))
                     if task.priority == .urgent || task.priority == .high {
                         Text(task.priority.title)
                             .font(.system(size: 8.5, weight: .semibold))
@@ -1001,7 +1007,7 @@ private struct DailyTaskBoardRow: View {
                 Button(action: onRemove) {
                     Image(systemName: "trash")
                         .font(.system(size: 9.5, weight: .medium))
-                        .foregroundStyle(theme.text.secondary.color)
+                        .foregroundStyle(theme.text.failure.color)
                         .frame(width: 22, height: 22)
                 }
                 .buttonStyle(.plain)
@@ -1102,7 +1108,7 @@ private struct DailyTaskEditorSheet: View {
                 Button(action: cancelEditor) {
                     Image(systemName: "xmark")
                         .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(theme.text.secondary.color)
+                        .foregroundStyle(theme.interactiveAccent.color)
                         .frame(width: 28, height: 28)
                         .background(theme.shortcut.fill.color, in: Circle())
                 }
@@ -1216,7 +1222,7 @@ private struct DailyTaskEditorSheet: View {
                 HStack(spacing: 10) {
                     Image(systemName: draft.isFocusTask ? "checkmark.square.fill" : "square")
                         .font(.system(size: 16, weight: .semibold))
-                        .foregroundStyle(draft.isFocusTask ? theme.accent.color : theme.text.secondary.color)
+                        .foregroundStyle(theme.interactiveAccent.color)
                     VStack(alignment: .leading, spacing: 2) {
                         Text("设为今日专注事项")
                             .font(.system(size: 11.5, weight: .semibold))
@@ -1255,7 +1261,10 @@ private struct DailyTaskEditorSheet: View {
                         .foregroundStyle(.white)
                         .frame(maxWidth: .infinity, minHeight: 40)
                         .contentShape(Rectangle())
-                        .background(theme.accent.color.opacity(canSave ? 1 : 0.45), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                        .background(
+                            canSave ? theme.interactiveAccent.color : theme.text.weak.color.opacity(0.28),
+                            in: RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        )
                 }
                 .buttonStyle(.plain)
                 .disabled(!canSave)
@@ -1270,7 +1279,7 @@ private struct DailyTaskEditorSheet: View {
             ZStack {
                 theme.panel.fallback.color
                 Circle()
-                    .fill(theme.accent.color.opacity(0.045))
+                    .fill(theme.interactiveAccent.color.opacity(0.045))
                     .frame(width: 240, height: 240)
                     .blur(radius: 70)
                     .offset(x: 190, y: -250)
@@ -1417,7 +1426,7 @@ private struct DailyTaskDropdown: View {
                     Spacer(minLength: 3)
                     Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
                         .font(.system(size: 7.5, weight: .bold))
-                        .foregroundStyle(theme.text.secondary.color)
+                        .foregroundStyle(isEnabled ? theme.interactiveAccent.color : theme.text.weak.color)
                 }
                 .padding(.horizontal, 10)
                 .frame(maxWidth: .infinity, minHeight: 36)
@@ -1425,7 +1434,7 @@ private struct DailyTaskDropdown: View {
                 .background(theme.search.fill.color, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 .overlay {
                     RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .stroke(isExpanded ? theme.accent.color.opacity(0.65) : theme.search.border.color, lineWidth: 1)
+                        .stroke(isExpanded ? theme.interactiveAccent.color.opacity(0.65) : theme.search.border.color, lineWidth: 1)
                 }
             }
             .buttonStyle(.plain)
@@ -1440,7 +1449,7 @@ private struct DailyTaskDropdown: View {
                             Button { onSelect(option) } label: {
                                 Text(option)
                                     .font(.system(size: 10.5, weight: option == title ? .semibold : .medium))
-                                    .foregroundStyle(option == title ? theme.accent.color : theme.text.primary.color)
+                                    .foregroundStyle(option == title ? theme.interactiveAccent.color : theme.text.primary.color)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                     .padding(.horizontal, 10)
                                     .frame(height: 30)
@@ -1492,7 +1501,7 @@ private struct DailyTaskFocusPicker: View {
                 Spacer()
                 Button(action: onCancel) {
                     Image(systemName: "xmark")
-                        .foregroundStyle(theme.text.secondary.color)
+                        .foregroundStyle(theme.interactiveAccent.color)
                         .frame(width: 28, height: 28)
                         .background(theme.shortcut.fill.color, in: Circle())
                 }
@@ -1524,7 +1533,7 @@ private struct DailyTaskFocusPicker: View {
     private func focusRow(title: String, category: String, isSelected: Bool) -> some View {
         HStack(spacing: 10) {
             Image(systemName: isSelected ? "checkmark.circle.fill" : "circle")
-                .foregroundStyle(isSelected ? theme.accent.color : theme.text.secondary.color)
+                .foregroundStyle(theme.interactiveAccent.color)
             Text(title)
                 .font(.system(size: 11.5, weight: .medium))
                 .foregroundStyle(theme.text.primary.color)
@@ -1533,7 +1542,7 @@ private struct DailyTaskFocusPicker: View {
             if !category.isEmpty {
                 Text(category)
                     .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(theme.accent.color)
+                    .foregroundStyle(theme.interactiveAccent.color)
             }
         }
         .padding(.horizontal, 12)

@@ -3,7 +3,7 @@ import HolidayCalendarFeature
 import SwiftUI
 
 @MainActor
-final class HolidayCalendarPanelController: NSObject, NSWindowDelegate {
+final class HolidayCalendarPanelController: NSObject, NSWindowDelegate, FeaturePanelSessionController {
     private let panel: NSPanel
     private let onClose: () -> Void
 
@@ -30,6 +30,8 @@ final class HolidayCalendarPanelController: NSObject, NSWindowDelegate {
         installWindowTopDragRegion(in: panel)
     }
 
+    var sessionWindow: NSWindow { panel }
+
     func show() {
         cancelFeaturePanelDismissal(panel)
         panel.center()
@@ -40,7 +42,7 @@ final class HolidayCalendarPanelController: NSObject, NSWindowDelegate {
     func windowWillClose(_ notification: Notification) { onClose() }
 
     func windowDidResignKey(_ notification: Notification) {
-        dismissFeaturePanelAfterResigningKey(panel, onHidden: onClose)
+        dismissFeaturePanelAfterResigningKey(panel)
     }
 }
 
@@ -70,7 +72,7 @@ private struct HolidayCalendarPanelView: View {
                     GeometryReader { viewport in
                         ZStack(alignment: .trailing) {
                             ScrollViewReader { proxy in
-                                ScrollView(.vertical) {
+                                ScrollView(.vertical, showsIndicators: false) {
                                     LazyVStack(spacing: 18) {
                                         ForEach(months, id: \.self) { month in
                                             monthSection(month, proxy: proxy).id(month)
@@ -91,8 +93,6 @@ private struct HolidayCalendarPanelView: View {
                                     }
                                 }
                                 .coordinateSpace(name: "holiday-calendar-scroll")
-                                .scrollIndicators(.hidden)
-                                .background(ThemedScrollIndicatorConfigurator())
                                 .onAppear { proxy.scrollTo(currentMonth, anchor: .top) }
                                 .onPreferenceChange(MonthSectionOffsetPreferenceKey.self) { offsets in
                                     guard let nearest = offsets.min(by: { abs($0.value) < abs($1.value) })?.key else { return }
@@ -163,10 +163,10 @@ private struct HolidayCalendarPanelView: View {
             Button("今天") { focusedMonth = currentMonth; selectedDate = .now; scrollTo(currentMonth) }
                 .buttonStyle(.plain)
                 .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(theme.accent.color)
+                .foregroundStyle(theme.interactiveAccent.color)
                 .padding(.horizontal, 12)
                 .frame(height: 30)
-                .background(theme.accent.color.opacity(0.12), in: Capsule())
+                .background(theme.interactiveAccent.color.opacity(0.12), in: Capsule())
             HStack(spacing: 4) {
                 monthStep(symbol: "chevron.left", amount: -1)
                 monthStep(symbol: "chevron.right", amount: 1)
@@ -186,17 +186,17 @@ private struct HolidayCalendarPanelView: View {
                 if calendar.isDate(month, equalTo: currentMonth, toGranularity: .month) {
                     Text("本月")
                         .font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(theme.accent.color)
+                        .foregroundStyle(theme.interactiveAccent.color)
                         .padding(.horizontal, 7)
                         .padding(.vertical, 3)
-                        .background(theme.accent.color.opacity(0.12), in: Capsule())
+                        .background(theme.interactiveAccent.color.opacity(0.12), in: Capsule())
                 }
                 Spacer()
                 let monthly = entries.filter { calendar.isDate($0.date, equalTo: month, toGranularity: .month) }
                 if !monthly.isEmpty {
                     Text(monthly.map(localizedHolidayName).uniqued().joined(separator: " · "))
                         .font(.system(size: 9.5, weight: .semibold))
-                        .foregroundStyle(theme.accent.color)
+                        .foregroundStyle(theme.interactiveAccent.color)
                         .lineLimit(1)
                 }
             }
@@ -227,7 +227,7 @@ private struct HolidayCalendarPanelView: View {
             ForEach(["周日", "周一", "周二", "周三", "周四", "周五", "周六"], id: \.self) { day in
                 Text(day)
                     .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(day == "周日" || day == "周六" ? theme.accent.color : theme.text.secondary.color)
+                    .foregroundStyle(day == "周日" || day == "周六" ? theme.interactiveAccent.color : theme.text.secondary.color)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.leading, 8)
             }
@@ -255,9 +255,9 @@ private struct HolidayCalendarPanelView: View {
                 HStack(spacing: 4) {
                     Text("\(calendar.component(.day, from: date))")
                         .font(.system(size: 13, weight: isToday || isSelected ? .bold : .semibold, design: .rounded))
-                        .foregroundStyle(isToday ? Color.white : isSelected ? theme.accent.color : theme.text.primary.color)
+                        .foregroundStyle(isToday ? Color.white : isSelected ? theme.interactiveAccent.color : theme.text.primary.color)
                         .frame(width: 25, height: 25)
-                        .background(isToday ? theme.accent.color : Color.clear, in: Circle())
+                        .background(isToday ? theme.interactiveAccent.color : Color.clear, in: Circle())
                     Spacer(minLength: 2)
                     Text(lunarText(for: date)).font(.system(size: 9, weight: .medium)).foregroundStyle(theme.text.weak.color)
                 }
@@ -274,8 +274,8 @@ private struct HolidayCalendarPanelView: View {
             }
             .padding(7)
             .frame(maxWidth: .infinity, minHeight: 72, alignment: .topLeading)
-            .background(isSelected ? theme.accent.color.opacity(0.12) : theme.card.fill.color.opacity(isCurrentMonth ? 0.48 : 0.18), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .overlay { RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(isSelected ? theme.accent.color.opacity(0.5) : theme.card.border.color.opacity(0.35), lineWidth: 1) }
+            .background(isSelected ? theme.interactiveAccent.color.opacity(0.12) : theme.card.fill.color.opacity(isCurrentMonth ? 0.48 : 0.18), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay { RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(isSelected ? theme.interactiveAccent.color.opacity(0.5) : theme.card.border.color.opacity(0.35), lineWidth: 1) }
             .opacity(isCurrentMonth ? 1 : 0.42)
         }
         .buttonStyle(.plain)
@@ -340,7 +340,9 @@ private struct HolidayCalendarPanelView: View {
             focusedMonth = target
             scrollTo(target)
         } label: { Image(systemName: symbol).font(.system(size: 10, weight: .bold)).frame(width: 27, height: 27) }
-            .buttonStyle(.plain).foregroundStyle(theme.text.secondary.color)
+            .buttonStyle(.plain)
+            .foregroundStyle(theme.interactiveAccent.color)
+            .background(theme.interactiveAccent.color.opacity(0.10), in: Circle())
             .accessibilityLabel(amount < 0 ? "上个月" : "下个月")
     }
 
@@ -351,7 +353,10 @@ private struct HolidayCalendarPanelView: View {
 
     private func iconButton(symbol: String, label: String, action: @escaping () -> Void) -> some View {
         Button(action: action) { Image(systemName: symbol).font(.system(size: 10.5, weight: .bold)).frame(width: 29, height: 29) }
-            .buttonStyle(.plain).foregroundStyle(theme.text.secondary.color).background(theme.card.fill.color.opacity(0.8), in: Circle()).accessibilityLabel(label)
+            .buttonStyle(.plain)
+            .foregroundStyle(theme.interactiveAccent.color)
+            .background(theme.interactiveAccent.color.opacity(0.10), in: Circle())
+            .accessibilityLabel(label)
     }
 
     private func entriesForDay(_ date: Date) -> [HolidayEntry] { HolidayCalendar.entries(for: calendar.component(.year, from: date), calendar: calendar).filter { calendar.isDate($0.date, inSameDayAs: date) } }
@@ -366,7 +371,7 @@ private struct HolidayCalendarPanelView: View {
     private func weekdayText(_ date: Date) -> String { ["星期日", "星期一", "星期二", "星期三", "星期四", "星期五", "星期六"][calendar.component(.weekday, from: date) - 1] }
     private func kindTitle(_ kind: HolidayKind) -> String { switch kind { case .chinaOfficial: "国内法定假期"; case .chinaWorkday: "调休工作日"; case .international: "国际节日" } }
     private func dayAccessibilityLabel(_ date: Date, matches: [HolidayEntry]) -> String { [numericDateText(date), "农历\(fullLunarText(for: date))", matches.map(localizedHolidayName).joined(separator: "、")].filter { !$0.isEmpty }.joined(separator: "，") }
-    private func color(for kind: HolidayKind) -> Color { switch kind { case .chinaOfficial: theme.accent.color; case .chinaWorkday: theme.auxiliaryAccent.color; case .international: theme.text.secondary.color } }
+    private func color(for kind: HolidayKind) -> Color { switch kind { case .chinaOfficial: theme.interactiveAccent.color; case .chinaWorkday: theme.auxiliaryAccent.color; case .international: theme.text.secondary.color } }
     private static func firstDay(of date: Date) -> Date { Calendar(identifier: .gregorian).date(from: Calendar(identifier: .gregorian).dateComponents([.year, .month], from: date)) ?? date }
 }
 

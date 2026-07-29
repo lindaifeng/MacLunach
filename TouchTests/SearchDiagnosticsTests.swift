@@ -40,4 +40,33 @@ final class SearchDiagnosticsTests: XCTestCase {
         XCTAssertNil(diagnostics.indexingRootName)
         XCTAssertFalse(diagnostics.isActivelyIndexing)
     }
+
+    func testIndexingActivityReportsActuallyProcessedItemsAndClearsWhenReady() {
+        let diagnostics = SearchDiagnostics(
+            roots: [
+                URL(fileURLWithPath: "/tmp/Desktop"),
+                URL(fileURLWithPath: "/tmp/Documents"),
+                URL(fileURLWithPath: "/tmp/Downloads")
+            ],
+            status: .indexing
+        )
+
+        diagnostics.updateIndexingActivity(
+            processedItemCount: 1_280,
+            completedRoots: 2,
+            totalRoots: 3,
+            rootName: "Downloads"
+        )
+
+        XCTAssertEqual(diagnostics.indexingProcessedItemCount, 1_280)
+        XCTAssertEqual(diagnostics.indexingCompletedRoots, 2)
+        XCTAssertEqual(diagnostics.indexingTotalRoots, 3)
+        XCTAssertEqual(diagnostics.indexingRootName, "Downloads")
+
+        diagnostics.update(status: .ready)
+
+        XCTAssertNil(diagnostics.indexingProcessedItemCount)
+        XCTAssertNil(diagnostics.indexingCompletedRoots)
+        XCTAssertNil(diagnostics.indexingTotalRoots)
+    }
 }

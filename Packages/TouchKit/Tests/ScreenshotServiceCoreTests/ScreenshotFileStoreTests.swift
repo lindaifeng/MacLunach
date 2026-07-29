@@ -8,6 +8,40 @@ import UniformTypeIdentifiers
 
 @Suite("ScreenshotFileStore")
 struct ScreenshotFileStoreTests {
+    @Test("应用支持目录可用时使用持久化截图根目录")
+    func storageRootUsesApplicationSupportDirectoryWhenAvailable() {
+        let applicationSupport = URL(fileURLWithPath: "/tmp/Application Support", isDirectory: true)
+        let temporaryDirectory = URL(fileURLWithPath: "/tmp/Temporary", isDirectory: true)
+
+        let storageRoot = ScreenshotServiceStorageRoot(
+            applicationSupport: .success(applicationSupport),
+            temporaryDirectory: temporaryDirectory
+        )
+
+        #expect(storageRoot.url == applicationSupport
+            .appendingPathComponent("Touch", isDirectory: true)
+            .appendingPathComponent("Features", isDirectory: true)
+            .appendingPathComponent("me.touch.screenshot", isDirectory: true))
+        #expect(!storageRoot.isEphemeral)
+    }
+
+    @Test("应用支持目录不可用时降级到临时截图根目录")
+    func storageRootFallsBackToTemporaryDirectoryWhenApplicationSupportFails() {
+        struct ExpectedFailure: Error {}
+        let temporaryDirectory = URL(fileURLWithPath: "/tmp/Temporary", isDirectory: true)
+
+        let storageRoot = ScreenshotServiceStorageRoot(
+            applicationSupport: .failure(ExpectedFailure()),
+            temporaryDirectory: temporaryDirectory
+        )
+
+        #expect(storageRoot.url == temporaryDirectory
+            .appendingPathComponent("Touch", isDirectory: true)
+            .appendingPathComponent("Features", isDirectory: true)
+            .appendingPathComponent("me.touch.screenshot", isDirectory: true))
+        #expect(storageRoot.isEphemeral)
+    }
+
     @Test("格式的 UTType、扩展名和 alpha 策略一致")
     func imageFormatDescriptorsAreConsistent() {
         #expect(ScreenshotImageFormatDescriptor.for(.png) == .init(

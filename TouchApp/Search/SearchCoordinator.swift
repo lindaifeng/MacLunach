@@ -169,9 +169,9 @@ final class SearchCoordinator: ObservableObject {
     func prepareForPresentation() {
         searchTask?.cancel()
         queryByMode = [:]
-        mode = .applications
+        mode = .actions
         query = ""
-        isSearchFieldFocused = true
+        isSearchFieldFocused = false
         state = .idle
         isKeyboardSelectionActive = false
     }

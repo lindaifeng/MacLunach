@@ -366,16 +366,35 @@ private final class ScreenshotRouterStub: ScreenshotActionRouting {
     try Data().write(to: anotherFile)
     defer { try? FileManager.default.removeItem(at: root) }
 
-    let builder = FinderMenuBuilder(configuration: .init())
+    let clipboard = try MoveClipboardSnapshot.capture(urls: [file])
+    let builder = FinderMenuBuilder(configuration: .init(), pendingMove: clipboard)
     let blankMenu = builder.build(for: .init(targetedURL: root, selectedURLs: []))
     let fileMenu = builder.build(for: .init(targetedURL: root, selectedURLs: [file]))
     let folderMenu = builder.build(for: .init(targetedURL: root, selectedURLs: [folder]))
     let multiMenu = builder.build(for: .init(targetedURL: root, selectedURLs: [file, anotherFile]))
 
-    #expect(blankMenu.map(\.title) == ["新建文件", "新建文件夹", "复制路径", "在终端中打开"])
-    #expect(fileMenu.map(\.title) == ["复制路径", "在终端中打开"])
-    #expect(folderMenu.map(\.title) == ["新建文件", "新建文件夹", "复制路径", "在终端中打开"])
-    #expect(multiMenu.map(\.title) == ["复制路径", "在终端中打开"])
+    #expect(blankMenu.map(\.title) == ["新建文件", "新建文件夹", "粘贴到此处", "复制路径", "在终端中打开"])
+    #expect(fileMenu.map(\.title) == ["剪切", "复制路径", "在终端中打开"])
+    #expect(folderMenu.map(\.title) == ["新建文件", "新建文件夹", "剪切", "粘贴到此处", "复制路径", "在终端中打开"])
+    #expect(multiMenu.map(\.title) == ["剪切", "复制路径", "在终端中打开"])
+}
+
+@Test func superRightMenuDoesNotOfferPasteIntoTheCutSourceOrItsChild() throws {
+    let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    let source = root.appendingPathComponent("原文件夹", isDirectory: true)
+    let child = source.appendingPathComponent("子文件夹", isDirectory: true)
+    try FileManager.default.createDirectory(at: child, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let clipboard = try MoveClipboardSnapshot.capture(urls: [source])
+    let builder = FinderMenuBuilder(configuration: .init(), pendingMove: clipboard)
+
+    let sourceMenu = builder.build(for: .init(targetedURL: source, selectedURLs: []))
+    let childMenu = builder.build(for: .init(targetedURL: child, selectedURLs: []))
+
+    #expect(!sourceMenu.map(\.title).contains("粘贴到此处"))
+    #expect(!childMenu.map(\.title).contains("粘贴到此处"))
 }
 
 @Test func superRightConfigurationSnapshotRoundTripsAtomically() throws {

@@ -22,9 +22,13 @@ final class SystemScreenshotColorClipboardWriter: ScreenshotColorClipboardWritin
 
     func write(_ color: ScreenshotColor) throws {
         pasteboard.clearContents()
-        guard pasteboard.setString(color.hexString, forType: .string) else {
+        guard pasteboard.setString(Self.copyText(for: color), forType: .string) else {
             throw ScreenshotClipboardError.pasteboardWriteFailed
         }
+    }
+
+    static func copyText(for color: ScreenshotColor) -> String {
+        color.rgbString
     }
 }
 
@@ -34,7 +38,7 @@ final class ColorPickerController: ScreenshotColorPickerPresenting {
         let displayID: UInt32
         let point: CGPoint
         let immediately: Bool
-        let completesOnSuccess: Bool
+        let locksOnSuccess: Bool
     }
 
     typealias SampleAcceptedHandler = @MainActor (
@@ -54,6 +58,7 @@ final class ColorPickerController: ScreenshotColorPickerPresenting {
     private var latestSample: ScreenshotColorSample?
     private var latestSampleDisplayID: UInt32?
     private var latestPoint: CGPoint?
+    private var lockedSample: ScreenshotColorSample?
     private var lastSampleStartedAt: ContinuousClock.Instant?
     private var didPushCursor = false
 
@@ -83,24 +88,44 @@ final class ColorPickerController: ScreenshotColorPickerPresenting {
     }
 
     func mouseMoved(on displayID: UInt32, to point: CGPoint) {
+        guard lockedSample == nil else { return }
         latestPoint = point
-        for (id, view) in views {
-            let sample = id == displayID && latestSampleDisplayID == displayID
-                ? latestSample
-                : nil
-            view.update(pointer: point, sample: sample)
-        }
+        let sample = latestSampleDisplayID == displayID ? latestSample : nil
+        views[displayID]?.update(pointer: point, sample: sample)
         requestSample(displayID: displayID, point: point, immediately: false)
     }
 
     func mouseDown(on displayID: UInt32, at point: CGPoint) {
-        requestSample(displayID: displayID, point: point, immediately: true, completesOnSuccess: true)
+        if let action = views[displayID]?.action(at: point) {
+            switch action {
+            case .confirm:
+                _ = confirmLockedColor()
+            }
+            return
+        }
+
+        // 锁定后在其他位置单击即可重新采样，避免用户必须先取消再重进取色。
+        lockedSample = nil
+        requestSample(displayID: displayID, point: point, immediately: true, locksOnSuccess: true)
     }
 
     func keyDown(_ event: NSEvent) {
-        if event.keyCode == 53 {
+        switch event.keyCode {
+        case 36 where lockedSample != nil,
+             49 where lockedSample != nil:
+            _ = confirmLockedColor()
+        case 53:
             finish(with: nil)
+        default:
+            break
         }
+    }
+
+    @discardableResult
+    func confirmLockedColor() -> ScreenshotColor? {
+        guard let color = lockedSample?.color else { return nil }
+        finish(with: color)
+        return color
     }
 
     private func present(_ content: ScreenshotSelectionContent) {
@@ -108,6 +133,7 @@ final class ColorPickerController: ScreenshotColorPickerPresenting {
         latestSample = nil
         latestSampleDisplayID = nil
         latestPoint = nil
+        lockedSample = nil
         lastSampleStartedAt = nil
         pendingSample = nil
 
@@ -152,13 +178,13 @@ final class ColorPickerController: ScreenshotColorPickerPresenting {
         displayID: UInt32,
         point: CGPoint,
         immediately: Bool,
-        completesOnSuccess: Bool = false
+        locksOnSuccess: Bool = false
     ) {
         pendingSample = PendingSample(
             displayID: displayID,
             point: point,
             immediately: immediately,
-            completesOnSuccess: completesOnSuccess
+            locksOnSuccess: locksOnSuccess
         )
         startSampleWorkerIfNeeded()
     }
@@ -190,12 +216,13 @@ final class ColorPickerController: ScreenshotColorPickerPresenting {
                     self.latestSample = sample
                     self.latestSampleDisplayID = request.displayID
                     self.latestPoint = request.point
-                    self.views[request.displayID]?.update(pointer: request.point, sample: sample)
-                    self.sampleAcceptedHandler?(request.displayID, request.point, sample)
-                    if request.completesOnSuccess {
-                        self.finish(with: sample.color)
-                        return
+                    if request.locksOnSuccess {
+                        self.lockedSample = sample
+                        self.views[request.displayID]?.lock(pointer: request.point, sample: sample)
+                    } else {
+                        self.views[request.displayID]?.update(pointer: request.point, sample: sample)
                     }
+                    self.sampleAcceptedHandler?(request.displayID, request.point, sample)
                 } catch is CancellationError {
                     return
                 } catch let error as ScreenshotFeatureError where error == .cancelled {
@@ -251,6 +278,7 @@ private final class ColorPickerOverlayView: NSView {
     private weak var controller: ColorPickerController?
     private var pointer: CGPoint?
     private var sample: ScreenshotColorSample?
+    private var isLocked = false
     private var errorMessage: String?
     private var tracking: NSTrackingArea?
 
@@ -298,8 +326,26 @@ private final class ColorPickerOverlayView: NSView {
     func update(pointer: CGPoint, sample: ScreenshotColorSample?) {
         self.pointer = pointer
         self.sample = sample
+        isLocked = false
         errorMessage = nil
         needsDisplay = true
+    }
+
+    func lock(pointer: CGPoint, sample: ScreenshotColorSample) {
+        self.pointer = pointer
+        self.sample = sample
+        isLocked = true
+        errorMessage = nil
+        needsDisplay = true
+    }
+
+    func action(at desktopPoint: CGPoint) -> ColorPickerLoupeAction? {
+        guard let pointer, isLocked else { return nil }
+        return ColorPickerLoupeView.action(
+            at: localPoint(for: desktopPoint),
+            near: localPoint(for: pointer),
+            in: bounds
+        )
     }
 
     func showError(_ message: String) {
@@ -313,6 +359,7 @@ private final class ColorPickerOverlayView: NSView {
         ColorPickerLoupeView.draw(
             sample: sample,
             errorMessage: errorMessage,
+            isLocked: isLocked,
             at: localPoint(for: pointer),
             in: bounds
         )

@@ -19,6 +19,10 @@ final class LauncherSmokeTests: XCTestCase {
         terminateFixtureApplication(app)
         app.launchArguments = arguments
         app.launch()
+        // macOS 的 UI 测试运行器在连续启动多个窗口 fixture 时，偶发会在
+        // accessibility 会话建立完成前重新取得前台。显式激活应用以建立
+        // 可访问性会话；正常用户重新打开一念时则应只显示启动器。
+        app.activate()
     }
 
     private func waitForHeight(
@@ -53,22 +57,30 @@ final class LauncherSmokeTests: XCTestCase {
 
     func testPomodoroPanelStateTransitionsAndKeepsSelectedDurationOnReset() throws {
         let app = XCUIApplication()
-        app.launchArguments = ["--show-pomodoro"]
-        app.launch()
+        launchFixtureApplication(app, arguments: ["--show-pomodoro"])
 
         XCTAssertTrue(app.buttons["置顶番茄闹钟"].waitForExistence(timeout: 2))
         XCTAssertTrue(app.staticTexts["深度专注"].exists)
         let remainingTime = app.staticTexts["pomodoro.remaining-time"]
         XCTAssertTrue(remainingTime.waitForExistence(timeout: 1))
-        XCTAssertEqual(remainingTime.value as? String, "25:00")
+        XCTAssertEqual(remainingTime.value as? String, "00:25:00")
 
-        let start = app.buttons["开始"]
+        let start = app.buttons["开始专注"]
         XCTAssertTrue(start.exists)
         XCTAssertFalse(app.buttons["重置计时"].isEnabled)
 
-        app.buttons["专注时长，25 分钟"].click()
-        app.buttons["45 分钟"].click()
-        XCTAssertEqual(remainingTime.value as? String, "45:00")
+        let focusDurationButton = app.buttons["专注时长，25 分钟"]
+        focusDurationButton.click()
+        let fortyFiveMinutes = app.buttons["45 分钟"]
+        if !fortyFiveMinutes.waitForExistence(timeout: 1) {
+            // UI 测试运行器偶发在打开浮层时短暂接管前台；重新激活后按
+            // 与真实用户相同的路径再次打开选择器。
+            app.activate()
+            focusDurationButton.click()
+        }
+        XCTAssertTrue(fortyFiveMinutes.waitForExistence(timeout: 2))
+        fortyFiveMinutes.click()
+        XCTAssertEqual(remainingTime.value as? String, "00:45:00")
 
         start.click()
         XCTAssertTrue(app.buttons["暂停计时"].waitForExistence(timeout: 1))
@@ -78,16 +90,29 @@ final class LauncherSmokeTests: XCTestCase {
         XCTAssertTrue(app.buttons["继续计时"].waitForExistence(timeout: 1))
 
         app.buttons["重置计时"].click()
-        XCTAssertEqual(remainingTime.value as? String, "45:00")
-        XCTAssertTrue(app.buttons["开始"].exists)
+        XCTAssertEqual(remainingTime.value as? String, "00:45:00")
+        XCTAssertTrue(app.buttons["开始专注"].exists)
         XCTAssertFalse(app.buttons["重置计时"].isEnabled)
 
-        app.buttons["专注时长，45 分钟"].click()
+        let updatedDurationButton = app.buttons["专注时长，45 分钟"]
+        updatedDurationButton.click()
         let customMinutes = app.textFields["pomodoro.custom-minutes"]
+        if !customMinutes.waitForExistence(timeout: 1) {
+            app.activate()
+            updatedDurationButton.click()
+        }
+        XCTAssertTrue(customMinutes.waitForExistence(timeout: 2))
         customMinutes.click()
         customMinutes.typeText("35")
-        app.buttons["pomodoro.apply-custom-minutes"].click()
-        XCTAssertEqual(remainingTime.value as? String, "35:00")
+        // 回车会立即提交并关闭浮层，不能再让测试框架以已消失的输入框
+        // 作为按键事件目标，否则它会在事件结束后的快照阶段报找不到元素。
+        app.typeKey(.return, modifierFlags: [])
+        // 提交后时长选择浮层会关闭；macOS UI 测试运行器在结束字段编辑时偶发
+        // 短暂接管前台，重新激活也同时
+        // 验证功能窗口会话能恢复到刚才的番茄钟，而不是回到启动器。
+        app.activate()
+        XCTAssertTrue(remainingTime.waitForExistence(timeout: 2))
+        XCTAssertEqual(remainingTime.value as? String, "00:35:00")
 
         app.buttons["置顶番茄闹钟"].click()
         XCTAssertTrue(app.buttons["取消置顶"].waitForExistence(timeout: 1))
@@ -166,11 +191,11 @@ final class LauncherSmokeTests: XCTestCase {
         let timerDial = app.descendants(matching: .any)["pomodoro.timer-dial"]
         let dialRight = timerDial.coordinate(withNormalizedOffset: CGVector(dx: 0.97, dy: 0.5))
         dialRight.click()
-        XCTAssertNotEqual(app.staticTexts["pomodoro.remaining-time"].value as? String, "25:00")
+        XCTAssertNotEqual(app.staticTexts["pomodoro.remaining-time"].value as? String, "00:25:00")
 
         app.buttons["重置计时"].click()
         XCTAssertEqual(progressIndicator.label, "倒计时进度点，已进行 0 秒")
-        app.buttons["开始"].click()
+        app.buttons["开始专注"].click()
         let advanced = NSPredicate(format: "label != %@", "倒计时进度点，已进行 0 秒")
         expectation(for: advanced, evaluatedWith: progressIndicator)
         waitForExpectations(timeout: 3)
@@ -199,8 +224,7 @@ final class LauncherSmokeTests: XCTestCase {
 
     func testPomodoroHidesWhenAnotherApplicationBecomesActive() throws {
         let app = XCUIApplication()
-        app.launchArguments = ["--show-pomodoro"]
-        app.launch()
+        launchFixtureApplication(app, arguments: ["--show-pomodoro"])
 
         let targetButton = app.buttons["pomodoro.target-count"]
         XCTAssertTrue(targetButton.waitForExistence(timeout: 2))
@@ -209,6 +233,75 @@ final class LauncherSmokeTests: XCTestCase {
         finder.activate()
         XCTAssertTrue(targetButton.waitForNonExistence(timeout: 2))
         app.activate()
+        XCTAssertTrue(app.textFields["search.query"].waitForExistence(timeout: 2))
+        XCTAssertFalse(targetButton.exists)
+    }
+
+    func testMultipleFeaturePanelsStayRetainedUntilUserSelectsOneFromLauncher() throws {
+        let app = XCUIApplication()
+        launchFixtureApplication(
+            app,
+            arguments: ["--show-pomodoro-and-daily-tasks", "--daily-task-fixture"]
+        )
+
+        let targetButton = app.buttons["pomodoro.target-count"]
+        let startTaskButton = app.buttons["开始任务"]
+        XCTAssertTrue(targetButton.waitForExistence(timeout: 2))
+        XCTAssertTrue(startTaskButton.waitForExistence(timeout: 2))
+
+        let finder = XCUIApplication(bundleIdentifier: "com.apple.finder")
+        finder.activate()
+        XCTAssertTrue(targetButton.waitForNonExistence(timeout: 2))
+        XCTAssertTrue(startTaskButton.waitForNonExistence(timeout: 2))
+
+        app.activate()
+        XCTAssertTrue(app.textFields["search.query"].waitForExistence(timeout: 2))
+        XCTAssertFalse(targetButton.exists)
+        XCTAssertFalse(startTaskButton.exists)
+
+        app.buttons["feature.me.touch.pomodoro"].click()
+        XCTAssertTrue(targetButton.waitForExistence(timeout: 2))
+        XCTAssertFalse(startTaskButton.exists)
+    }
+
+    func testPomodoroCompletionStaysAtZeroUntilUserAcknowledges() throws {
+        let app = XCUIApplication()
+        launchFixtureApplication(app, arguments: ["--show-pomodoro-completed-fixture"])
+
+        let remainingTime = app.staticTexts["pomodoro.remaining-time"]
+        XCTAssertTrue(remainingTime.waitForExistence(timeout: 2))
+        XCTAssertEqual(remainingTime.value as? String, "00:00:00")
+
+        let acknowledgeButton = app.buttons["确认完成"]
+        XCTAssertTrue(acknowledgeButton.waitForExistence(timeout: 2))
+        acknowledgeButton.click()
+
+        XCTAssertEqual(remainingTime.value as? String, "00:25:00")
+        XCTAssertTrue(app.buttons["开始专注"].waitForExistence(timeout: 1))
+    }
+
+    func testPomodoroCompletionReturnsApplicationToForegroundAndCanStopAlarm() throws {
+        let app = XCUIApplication()
+        launchFixtureApplication(
+            app,
+            arguments: ["--show-pomodoro-background-completion-fixture"]
+        )
+
+        let targetButton = app.buttons["pomodoro.target-count"]
+        XCTAssertTrue(targetButton.waitForExistence(timeout: 2))
+
+        let finder = XCUIApplication(bundleIdentifier: "com.apple.finder")
+        finder.activate()
+        XCTAssertTrue(targetButton.waitForNonExistence(timeout: 2))
+
+        let stopAlarmButton = app.buttons["停止闹钟"]
+        XCTAssertTrue(stopAlarmButton.waitForExistence(timeout: 6))
+        XCTAssertEqual(app.state, .runningForeground)
+        XCTAssertEqual(app.staticTexts["pomodoro.remaining-time"].value as? String, "00:00:00")
+
+        stopAlarmButton.click()
+        XCTAssertTrue(app.buttons["确认完成"].waitForExistence(timeout: 2))
+        XCTAssertEqual(app.staticTexts["pomodoro.remaining-time"].value as? String, "00:00:00")
     }
 
     func testPomodoroConfigurationRemainsInteractiveAndBreakCanReset() throws {
@@ -233,7 +326,7 @@ final class LauncherSmokeTests: XCTestCase {
         app.buttons["重置计时"].click()
         XCTAssertTrue(app.buttons["休息方式，短休 5 分钟"].waitForExistence(timeout: 1))
 
-        app.buttons["开始"].click()
+        app.buttons["开始专注"].click()
         XCTAssertTrue(app.buttons["暂停计时"].waitForExistence(timeout: 1))
         let durationPicker = app.buttons.matching(
             NSPredicate(format: "label BEGINSWITH %@", "专注时长")

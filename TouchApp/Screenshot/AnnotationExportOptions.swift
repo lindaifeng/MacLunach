@@ -80,13 +80,7 @@ struct AnnotationExportAccessoryView: View {
         Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 10) {
             GridRow {
                 Text("格式：")
-                Picker("导出格式", selection: formatBinding) {
-                    ForEach(ScreenshotImageFormat.allCases, id: \.rawValue) { format in
-                        Text(AnnotationExportOptions.displayName(for: format))
-                            .tag(format.rawValue)
-                    }
-                }
-                .labelsHidden()
+                AnnotationFormatSelector(selection: formatBinding, onSelect: onFormatChange)
                 .accessibilityLabel("导出格式")
                 .accessibilityValue(options.formatDisplayName)
                 .accessibilityIdentifier("screenshot.annotation.export.format")
@@ -95,7 +89,7 @@ struct AnnotationExportAccessoryView: View {
             GridRow {
                 Text("质量：")
                 HStack(spacing: 8) {
-                    Slider(value: $options.quality, in: 0.1...1, step: 0.01)
+                    AnnotationRangeControl(value: $options.quality, in: 0.1...1, step: 0.01)
                         .frame(width: 180)
                         .disabled(options.format == .png)
                         .accessibilityLabel("导出质量")
@@ -115,13 +109,11 @@ struct AnnotationExportAccessoryView: View {
         .accessibilityIdentifier("screenshot.annotation.export.options")
     }
 
-    private var formatBinding: Binding<String> {
+    private var formatBinding: Binding<ScreenshotImageFormat> {
         Binding(
-            get: { options.format.rawValue },
-            set: { rawValue in
-                guard let format = ScreenshotImageFormat(rawValue: rawValue) else { return }
+            get: { options.format },
+            set: { format in
                 options.format = format
-                onFormatChange(format)
             }
         )
     }
@@ -132,5 +124,63 @@ struct AnnotationExportAccessoryView: View {
 
     private var qualityAccessibilityValue: String {
         options.format == .png ? "PNG 无损" : "百分之 \(options.qualityPercentage)"
+    }
+}
+
+struct AnnotationFormatSelector: View {
+    @Binding private var selection: ScreenshotImageFormat
+    private let onSelect: (ScreenshotImageFormat) -> Void
+
+    init(
+        selection: Binding<ScreenshotImageFormat>,
+        onSelect: @escaping (ScreenshotImageFormat) -> Void
+    ) {
+        _selection = selection
+        self.onSelect = onSelect
+    }
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(ScreenshotImageFormat.allCases, id: \.rawValue) { format in
+                Button {
+                    selection = format
+                    onSelect(format)
+                } label: {
+                    Text(shortName(for: format))
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(isSelected(format) ? .white : Color.primary.opacity(0.78))
+                        .frame(minWidth: 54)
+                        .frame(height: 26)
+                        .background(
+                            isSelected(format) ? Color.accentColor : Color.primary.opacity(0.08),
+                            in: Capsule(style: .continuous)
+                        )
+                        .overlay {
+                            Capsule(style: .continuous)
+                                .stroke(
+                                    isSelected(format) ? Color.accentColor.opacity(0.8) : Color.primary.opacity(0.14),
+                                    lineWidth: 1
+                                )
+                        }
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(AnnotationExportOptions.displayName(for: format))
+                .accessibilityAddTraits(isSelected(format) ? .isSelected : [])
+            }
+        }
+        .padding(3)
+        .background(Color.primary.opacity(0.05), in: Capsule(style: .continuous))
+    }
+
+    private func isSelected(_ format: ScreenshotImageFormat) -> Bool {
+        selection == format
+    }
+
+    private func shortName(for format: ScreenshotImageFormat) -> String {
+        switch format {
+        case .png: "PNG"
+        case .jpeg: "JPEG"
+        case .heif: "HEIF"
+        }
     }
 }

@@ -8,7 +8,7 @@ let package = Package(
         .library(name: "TouchFeatureAPI", targets: ["TouchFeatureAPI"]),
         .library(name: "TouchCore", targets: ["TouchCore"]),
         .library(name: "FinderFeature", targets: ["FinderFeature"]),
-        .library(name: "ScreenshotFeature", targets: ["ScreenshotFeature"]),
+        .library(name: "ScreenshotFeature", type: .static, targets: ["ScreenshotFeature"]),
         .library(name: "ScreenshotServiceProtocol", targets: ["ScreenshotServiceProtocol"]),
         .library(name: "ScreenshotServiceCore", targets: ["ScreenshotServiceCore"]),
         .library(name: "SuperRightFeature", targets: ["SuperRightFeature"]),
@@ -21,6 +21,7 @@ let package = Package(
         .library(name: "TranslationFeature", targets: ["TranslationFeature"]),
         .library(name: "OCRFeature", targets: ["OCRFeature"]),
         .library(name: "FileActionServiceProtocol", targets: ["FileActionServiceProtocol"]),
+        .library(name: "FileActionServiceCore", targets: ["FileActionServiceCore"]),
         .executable(name: "SearchBenchmark", targets: ["SearchBenchmark"])
     ],
     targets: [
@@ -42,6 +43,10 @@ let package = Package(
             linkerSettings: [.linkedLibrary("sqlite3")]
         ),
         .target(name: "FileActionServiceProtocol"),
+        .target(
+            name: "FileActionServiceCore",
+            dependencies: ["FileActionServiceProtocol"]
+        ),
         .target(
             name: "SuperRightFeature",
             dependencies: ["TouchFeatureAPI", "FileActionServiceProtocol"]
@@ -91,6 +96,10 @@ let package = Package(
                 "OCRFeature",
                 "TouchFeatureAPI"
             ]
+        ),
+        .testTarget(
+            name: "FileActionServiceCoreTests",
+            dependencies: ["FileActionServiceCore", "FileActionServiceProtocol"]
         )
     ]
 )

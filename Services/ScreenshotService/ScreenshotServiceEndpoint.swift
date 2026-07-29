@@ -20,16 +20,26 @@ final class ScreenshotServiceEndpoint: NSObject, ScreenshotXPCProtocol, @uncheck
     private var pendingCancellationRequestIDs: Set<UUID> = []
 
     override convenience init() {
-        let applicationSupport = try! FileManager.default.url(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
+        let applicationSupport: Result<URL, any Error>
+        do {
+            applicationSupport = .success(try FileManager.default.url(
+                for: .applicationSupportDirectory,
+                in: .userDomainMask,
+                appropriateFor: nil,
+                create: true
+            ))
+        } catch {
+            NSLog(
+                "ScreenshotService Application Support unavailable; using temporary storage: %@",
+                String(describing: error)
+            )
+            applicationSupport = .failure(error)
+        }
+        let storageRoot = ScreenshotServiceStorageRoot(
+            applicationSupport: applicationSupport,
+            temporaryDirectory: FileManager.default.temporaryDirectory
         )
-        let root = applicationSupport
-            .appendingPathComponent("Touch", isDirectory: true)
-            .appendingPathComponent("Features", isDirectory: true)
-            .appendingPathComponent("me.touch.screenshot", isDirectory: true)
+        let root = storageRoot.url
         let retentionController: ScreenshotRetentionController?
         do {
             let store = try ScreenshotHistoryStore(rootURL: root)

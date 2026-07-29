@@ -25,7 +25,7 @@ final class ScreenshotCoordinatorTests: XCTestCase {
         XCTAssertFalse(launcher.isLauncherVisible)
     }
 
-    func testFailureAndCancellationRestoreOnlyPreviouslyVisibleLauncher() async {
+    func testFailureAndCancellationLeaveLauncherHidden() async {
         struct ExpectedFailure: Error {}
         let failureEvents = EventRecorder()
         let failureLauncher = LauncherStub(isVisible: true, events: failureEvents)
@@ -36,8 +36,8 @@ final class ScreenshotCoordinatorTests: XCTestCase {
             _ = try await failingCoordinator.route(.captureDefaultMode)
             XCTFail("失败的捕获不应成功")
         } catch { }
-        XCTAssertEqual(failureEvents.values(), ["hide", "show"])
-        XCTAssertTrue(failureLauncher.isLauncherVisible)
+        XCTAssertEqual(failureEvents.values(), ["hide"])
+        XCTAssertFalse(failureLauncher.isLauncherVisible)
 
         let hiddenEvents = EventRecorder()
         let hiddenLauncher = LauncherStub(isVisible: false, events: hiddenEvents)
@@ -55,12 +55,10 @@ final class ScreenshotCoordinatorTests: XCTestCase {
         let task = Task { try await cancellationCoordinator.route(.captureDefaultMode) }
         await gate.waitUntilStarted()
         task.cancel()
-        do {
-            _ = try await task.value
-            XCTFail("取消的捕获不应成功")
-        } catch { }
-        XCTAssertEqual(cancellationEvents.values(), ["hide", "show"])
-        XCTAssertTrue(cancellationLauncher.isLauncherVisible)
+        let cancellationResult = try? await task.value
+        XCTAssertEqual(cancellationResult, .completed)
+        XCTAssertEqual(cancellationEvents.values(), ["hide"])
+        XCTAssertFalse(cancellationLauncher.isLauncherVisible)
     }
 
     func testPermissionIsRequestedOnceFromUserActionAndRetryCanRecover() async throws {
@@ -398,6 +396,36 @@ final class ScreenshotCoordinatorTests: XCTestCase {
         XCTAssertEqual(frame.size, CGSize(width: 300, height: 200))
     }
 
+    func testPinPlacementExpandsFractionalRegionToCapturedPixelBounds() throws {
+        let screen = try XCTUnwrap(NSScreen.main ?? NSScreen.screens.first)
+        let id = try XCTUnwrap(
+            (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value
+        )
+        let display = ScreenshotDisplayDescriptor(
+            id: id,
+            frame: .init(x: 0, y: 0, width: screen.frame.width, height: screen.frame.height),
+            pixelSize: .init(width: screen.frame.width * 2, height: screen.frame.height * 2),
+            scaleFactor: 2
+        )
+        let target = ScreenshotCaptureTarget.region(
+            displayID: id,
+            rect: .init(x: 100.25, y: 120.25, width: 300.25, height: 200.25)
+        )
+
+        let frame = try XCTUnwrap(ScreenshotCoordinator.pinFrame(
+            for: target,
+            content: .init(displays: [display], windows: []),
+            screens: [screen]
+        ))
+
+        XCTAssertEqual(frame.origin.x, screen.frame.minX + 100, accuracy: 0.01)
+        XCTAssertEqual(frame.origin.y, screen.frame.maxY - 320.5, accuracy: 0.01)
+        XCTAssertEqual(frame.size.width, 300.5, accuracy: 0.01)
+        XCTAssertEqual(frame.size.height, 200.5, accuracy: 0.01)
+        XCTAssertEqual(frame.width * 2, 601, accuracy: 0.01)
+        XCTAssertEqual(frame.height * 2, 401, accuracy: 0.01)
+    }
+
     func testAnnotatePostCaptureActionOpensArtifactWithoutCopyingOrShowingThumbnail() async throws {
         let artifact = makeArtifact(relativePath: "Captures/annotate.png")
         let clipboard = ClipboardWriterStub()
@@ -440,13 +468,15 @@ final class ScreenshotCoordinatorTests: XCTestCase {
             capture: capture,
             clipboardWriter: clipboard,
             pinPresenter: pinPresenter,
-            selection: selection
+            selection: selection,
+            configuration: .init(output: .init(format: .jpeg, quality: 0.45))
         )
 
         _ = try await coordinator.route(.captureDefaultMode)
 
         XCTAssertTrue(clipboard.artifacts.isEmpty)
         XCTAssertEqual(pinPresenter.artifacts, [artifact])
+        XCTAssertEqual(capture.lastRequest?.output, .init(format: .png, quality: 1))
     }
 
     func testCaptureServiceWithoutArtifactRemainsCompatibleAndDoesNotWriteClipboard() async throws {
@@ -520,7 +550,7 @@ final class ScreenshotCoordinatorTests: XCTestCase {
         XCTAssertFalse(launcher.isLauncherVisible)
     }
 
-    func testColorPickerCancellationDoesNotWriteClipboardAndRestoresLauncher() async throws {
+    func testColorPickerCancellationDoesNotWriteClipboardOrReopenLauncher() async throws {
         let picker = ColorPickerStub(color: nil)
         let clipboard = ColorClipboardWriterStub()
         let events = EventRecorder()
@@ -536,8 +566,8 @@ final class ScreenshotCoordinatorTests: XCTestCase {
 
         XCTAssertEqual(result, .completed)
         XCTAssertTrue(clipboard.colors.isEmpty)
-        XCTAssertEqual(events.values(), ["hide", "show"])
-        XCTAssertTrue(launcher.isLauncherVisible)
+        XCTAssertEqual(events.values(), ["hide"])
+        XCTAssertFalse(launcher.isLauncherVisible)
     }
 
     func testDeactivationCancelsActiveColorPicker() async {
@@ -576,7 +606,7 @@ final class ScreenshotCoordinatorTests: XCTestCase {
         _ = try? await routeTask.value
     }
 
-    func testCancelledSelectionDoesNotCaptureAndRestoresLauncher() async throws {
+    func testCancelledSelectionDoesNotCaptureOrReopenLauncher() async throws {
         let events = EventRecorder()
         let launcher = LauncherStub(isVisible: true, events: events)
         let capture = CaptureStub {}
@@ -590,8 +620,8 @@ final class ScreenshotCoordinatorTests: XCTestCase {
 
         XCTAssertEqual(result, .completed)
         XCTAssertEqual(capture.captureCount, 0)
-        XCTAssertEqual(events.values(), ["hide", "show"])
-        XCTAssertTrue(launcher.isLauncherVisible)
+        XCTAssertEqual(events.values(), ["hide"])
+        XCTAssertFalse(launcher.isLauncherVisible)
     }
 
     func testConcurrentCaptureIsBusyDuringSelectionAndDeactivationCancelsPresenter() async {
@@ -689,6 +719,138 @@ final class ScreenshotCoordinatorTests: XCTestCase {
         XCTAssertEqual(textWriter.texts, ["你好 Touch"])
         XCTAssertEqual(recognitionPresenter.artifacts, [artifact])
         XCTAssertEqual(recognitionPresenter.presentations, [.result(recognition)])
+    }
+
+    func testTranslateCapturesAndRecognizesOnceThenRoutesTextWithoutPresentingOCRResult() async throws {
+        let artifact = makeArtifact(relativePath: "Captures/translate-region.png")
+        let recognition = ScreenshotRecognitionResult(
+            artifactID: artifact.id,
+            fullText: "  Hello Touch  ",
+            textBlocks: [],
+            barcodes: []
+        )
+        let capture = CaptureStub(artifact: artifact, recognitionResult: recognition)
+        let recognitionPresenter = RecognitionPresenterStub()
+        let translationHandler = TranslationRequestHandlerStub()
+        let coordinator = makeCoordinator(
+            capture: capture,
+            recognitionPresenter: recognitionPresenter,
+            selection: SelectionStub(completionAction: .translate),
+            translationRequestHandler: { request in translationHandler.handle(request) }
+        )
+
+        let result = try await coordinator.route(.captureDefaultMode)
+
+        XCTAssertEqual(result, .completed)
+        XCTAssertEqual(capture.captureCount, 1)
+        XCTAssertEqual(capture.lastRequest?.mode, .ocrRegion)
+        XCTAssertEqual(capture.lastRequest?.history, .init(isEnabled: false, keepsFilesWhenDisabled: false))
+        XCTAssertEqual(capture.recognitionCount, 1)
+        XCTAssertEqual(translationHandler.requests, [
+            .init(text: "Hello Touch", source: .screenCapture, recognizedLanguageCode: nil)
+        ])
+        XCTAssertTrue(recognitionPresenter.artifacts.isEmpty)
+        XCTAssertTrue(recognitionPresenter.presentations.isEmpty)
+        XCTAssertEqual(capture.deletedArtifacts, [artifact])
+    }
+
+    func testTranslateDoesNotRouteWhitespaceOnlyRecognitionOrPresentOCRResult() async throws {
+        let artifact = makeArtifact(relativePath: "Captures/translate-empty.png")
+        let recognition = ScreenshotRecognitionResult(
+            artifactID: artifact.id,
+            fullText: " \n\t ",
+            textBlocks: [],
+            barcodes: []
+        )
+        let capture = CaptureStub(artifact: artifact, recognitionResult: recognition)
+        let recognitionPresenter = RecognitionPresenterStub()
+        let translationHandler = TranslationRequestHandlerStub()
+        let feedback = TranslationFeedbackPresenterStub()
+        let coordinator = makeCoordinator(
+            capture: capture,
+            recognitionPresenter: recognitionPresenter,
+            selection: SelectionStub(completionAction: .translate),
+            translationRequestHandler: { request in translationHandler.handle(request) },
+            translationFeedbackPresenter: feedback
+        )
+
+        let result = try await coordinator.route(.captureDefaultMode)
+
+        XCTAssertEqual(result, .completed)
+        XCTAssertEqual(capture.recognitionCount, 1)
+        XCTAssertTrue(translationHandler.requests.isEmpty)
+        XCTAssertTrue(recognitionPresenter.artifacts.isEmpty)
+        XCTAssertEqual(capture.deletedArtifacts, [artifact])
+        XCTAssertEqual(feedback.messages, ["未识别到可翻译的文字，请重新选择区域。"])
+    }
+
+    func testTranslateRecognitionFailureDoesNotPresentOCRResult() async throws {
+        let artifact = makeArtifact(relativePath: "Captures/translate-failed.png")
+        let capture = CaptureStub(
+            artifact: artifact,
+            recognitionError: .recognitionFailed(message: "Vision 暂时不可用")
+        )
+        let recognitionPresenter = RecognitionPresenterStub()
+        let translationHandler = TranslationRequestHandlerStub()
+        let feedback = TranslationFeedbackPresenterStub()
+        let coordinator = makeCoordinator(
+            capture: capture,
+            recognitionPresenter: recognitionPresenter,
+            selection: SelectionStub(completionAction: .translate),
+            translationRequestHandler: { request in translationHandler.handle(request) },
+            translationFeedbackPresenter: feedback
+        )
+
+        let result = try await coordinator.route(.captureDefaultMode)
+
+        XCTAssertEqual(result, .completed)
+        XCTAssertTrue(translationHandler.requests.isEmpty)
+        XCTAssertTrue(recognitionPresenter.artifacts.isEmpty)
+        XCTAssertEqual(capture.deletedArtifacts, [artifact])
+        XCTAssertEqual(feedback.messages, ["Vision 暂时不可用，请重新选择区域。"])
+    }
+
+    func testTranslateCancellationWhileWaitingForOCRDeletesArtifactAndShowsRecoveryFeedback() async throws {
+        let artifact = makeArtifact(relativePath: "Captures/translate-cancelled.png")
+        let gate = RecognitionGate()
+        let capture = CaptureStub(
+            artifact: artifact,
+            recognitionHandler: { try await gate.wait() }
+        )
+        let feedback = TranslationFeedbackPresenterStub()
+        let coordinator = makeCoordinator(
+            capture: capture,
+            selection: SelectionStub(completionAction: .translate),
+            translationFeedbackPresenter: feedback
+        )
+
+        let task = Task { try await coordinator.route(.captureDefaultMode) }
+        await gate.waitUntilStarted()
+        task.cancel()
+        let result = try await task.value
+
+        XCTAssertEqual(result, .completed)
+        XCTAssertEqual(capture.deletedArtifacts, [artifact])
+        XCTAssertEqual(feedback.messages, ["识别已取消，请重新选择区域。"])
+    }
+
+    func testCancelledTranslateSelectionDoesNotRouteTextOrPresentOCRResult() async throws {
+        let capture = CaptureStub()
+        let recognitionPresenter = RecognitionPresenterStub()
+        let translationHandler = TranslationRequestHandlerStub()
+        let coordinator = makeCoordinator(
+            capture: capture,
+            recognitionPresenter: recognitionPresenter,
+            selection: SelectionStub(target: nil, completionAction: .translate),
+            translationRequestHandler: { request in translationHandler.handle(request) }
+        )
+
+        let result = try await coordinator.route(.captureDefaultMode)
+
+        XCTAssertEqual(result, .completed)
+        XCTAssertEqual(capture.captureCount, 0)
+        XCTAssertTrue(translationHandler.requests.isEmpty)
+        XCTAssertTrue(recognitionPresenter.artifacts.isEmpty)
     }
 
     func testRecognitionFailureKeepsArtifactAndPresentsRetryableFailure() async throws {
@@ -861,6 +1023,8 @@ final class ScreenshotCoordinatorTests: XCTestCase {
         workspacePreviewLoader: @escaping ScreenshotCoordinator.WorkspacePreviewLoader = { _ in nil },
         colorPicker: any ScreenshotColorPickerPresenting = ColorPickerStub(color: nil),
         configuration: ScreenshotFeatureConfiguration = .init(),
+        translationRequestHandler: @escaping ScreenshotCoordinator.TranslationRequestHandler = { _ in },
+        translationFeedbackPresenter: any ScreenshotTranslationFeedbackPresenting = TranslationFeedbackPresenterStub(),
         invalidateService: @escaping @Sendable () async -> Void = {},
         registerShortcuts: @escaping @MainActor @Sendable () -> Void = {},
         unregisterShortcuts: @escaping @MainActor @Sendable () -> Void = {}
@@ -882,6 +1046,8 @@ final class ScreenshotCoordinatorTests: XCTestCase {
             workspacePreviewLoader: workspacePreviewLoader,
             colorPickerFactory: { colorPicker },
             configurationProvider: { configuration },
+            translationRequestHandler: translationRequestHandler,
+            translationFeedbackPresenter: translationFeedbackPresenter,
             invalidateService: invalidateService,
             registerShortcuts: registerShortcuts,
             unregisterShortcuts: unregisterShortcuts
@@ -969,6 +1135,7 @@ private final class CaptureStub: ScreenshotCapturing, @unchecked Sendable {
     private let artifact: ScreenshotArtifact?
     private let recognitionResult: ScreenshotRecognitionResult?
     private let recognitionError: ScreenshotFeatureError?
+    private let recognitionHandler: (@Sendable () async throws -> ScreenshotRecognitionResult)?
     private let content: ScreenshotSelectionContent
     private var storedCaptureCount = 0
     private var storedLastRequest: ScreenshotCaptureRequest?
@@ -983,7 +1150,8 @@ private final class CaptureStub: ScreenshotCapturing, @unchecked Sendable {
         artifact: ScreenshotArtifact? = nil,
         recognitionResult: ScreenshotRecognitionResult? = nil,
         recognitionError: ScreenshotFeatureError? = nil,
-        handler: @escaping @Sendable () async throws -> Void = {}
+        handler: @escaping @Sendable () async throws -> Void = {},
+        recognitionHandler: (@Sendable () async throws -> ScreenshotRecognitionResult)? = nil
     ) {
         self.content = content ?? ScreenshotSelectionContent(
             displays: [
@@ -999,6 +1167,7 @@ private final class CaptureStub: ScreenshotCapturing, @unchecked Sendable {
         self.artifact = artifact
         self.recognitionResult = recognitionResult
         self.recognitionError = recognitionError
+        self.recognitionHandler = recognitionHandler
         self.handler = handler
     }
 
@@ -1035,6 +1204,7 @@ private final class CaptureStub: ScreenshotCapturing, @unchecked Sendable {
             storedRecognitionCount += 1
         }
         if let recognitionError { throw recognitionError }
+        if let recognitionHandler { return try await recognitionHandler() }
         guard let recognitionResult else { throw ScreenshotFeatureError.targetUnavailable }
         return recognitionResult
     }
@@ -1119,6 +1289,24 @@ private final class RecognitionPresenterStub: ScreenshotRecognitionPresenting {
     func retry() async throws -> ScreenshotRecognitionResult {
         guard let retryAction else { throw ScreenshotFeatureError.targetUnavailable }
         return try await retryAction()
+    }
+}
+
+@MainActor
+private final class TranslationRequestHandlerStub {
+    private(set) var requests: [TextTranslationRequest] = []
+
+    func handle(_ request: TextTranslationRequest) {
+        requests.append(request)
+    }
+}
+
+@MainActor
+private final class TranslationFeedbackPresenterStub: ScreenshotTranslationFeedbackPresenting {
+    private(set) var messages: [String] = []
+
+    func present(message: String, retry: @escaping @MainActor @Sendable () -> Void) {
+        messages.append(message)
     }
 }
 
@@ -1315,6 +1503,23 @@ private actor CaptureGate {
 
     func release() {
         isReleased = true
+    }
+}
+
+private actor RecognitionGate {
+    private var didStart = false
+
+    func wait() async throws -> ScreenshotRecognitionResult {
+        didStart = true
+        while true {
+            try await Task.sleep(for: .milliseconds(5))
+        }
+    }
+
+    func waitUntilStarted() async {
+        while !didStart {
+            await Task.yield()
+        }
     }
 }
 

@@ -306,13 +306,13 @@ struct AnnotationCanvasView: View {
         if layer.id == state.selectedLayerID, let rect = bounds(for: points) {
             context.stroke(
                 Path(rect.insetBy(dx: -4, dy: -4)),
-                with: .color(.accentColor),
+                with: .color(appearance.selectionStroke),
                 style: StrokeStyle(lineWidth: 1.5, dash: [4, 3])
             )
             for point in resizeHandlePoints(for: rect).map(\.point) {
                 let handleRect = CGRect(x: point.x - 4, y: point.y - 4, width: 8, height: 8)
                 context.fill(Path(ellipseIn: handleRect), with: .color(.white))
-                context.stroke(Path(ellipseIn: handleRect), with: .color(.accentColor), lineWidth: 1.5)
+                context.stroke(Path(ellipseIn: handleRect), with: .color(appearance.selectionStroke), lineWidth: 1.5)
             }
         }
     }
@@ -329,7 +329,7 @@ struct AnnotationCanvasView: View {
         } else {
             for point in points.dropFirst() { path.addLine(to: point) }
         }
-        context.stroke(path, with: .color(.accentColor), style: .init(lineWidth: 2, dash: [5, 3]))
+        context.stroke(path, with: .color(appearance.selectionStroke), style: .init(lineWidth: 2, dash: [5, 3]))
     }
 
     private func drawPendingCrop(in context: inout GraphicsContext, imageRect: CGRect) {
@@ -385,6 +385,7 @@ struct AnnotationCanvasView: View {
             .help("取消本次裁剪（Esc）")
             .accessibilityHint("放弃当前尚未应用的裁剪范围")
             .accessibilityIdentifier("screenshot.annotation.crop.cancel")
+            .buttonStyle(.annotationEditorSecondaryAction(appearance: appearance))
 
             Button("应用裁剪") {
                 do {
@@ -393,10 +394,10 @@ struct AnnotationCanvasView: View {
                     NSSound.beep()
                 }
             }
-            .buttonStyle(.borderedProminent)
             .keyboardShortcut(.defaultAction)
             .accessibilityHint("将当前裁剪范围写入标注项目")
             .accessibilityIdentifier("screenshot.annotation.crop.confirm")
+            .buttonStyle(.annotationEditorPrimaryAction(appearance: appearance))
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)

@@ -54,6 +54,33 @@ protocol WorkspaceTextCapturing: AnyObject {
 }
 
 @MainActor
+protocol ScreenshotTranslationFeedbackPresenting: AnyObject {
+    func present(message: String, retry: @escaping @MainActor @Sendable () -> Void)
+}
+
+@MainActor
+final class ScreenshotTranslationFeedbackAlert: ScreenshotTranslationFeedbackPresenting {
+    func present(message: String, retry: @escaping @MainActor @Sendable () -> Void) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "截图翻译"
+        alert.informativeText = message
+        alert.addButton(withTitle: "重新截图")
+        alert.addButton(withTitle: "取消")
+
+        let handleResponse: (NSApplication.ModalResponse) -> Void = { response in
+            guard response == .alertFirstButtonReturn else { return }
+            retry()
+        }
+        if let window = NSApp.keyWindow {
+            alert.beginSheetModal(for: window, completionHandler: handleResponse)
+        } else {
+            handleResponse(alert.runModal())
+        }
+    }
+}
+
+@MainActor
 final class ScreenshotCoordinator: ScreenshotActionRouting, WorkspaceTextCapturing {
     typealias ServiceInvalidation = @Sendable () async -> Void
     typealias ShortcutAction = @MainActor @Sendable () -> Void
@@ -62,6 +89,7 @@ final class ScreenshotCoordinator: ScreenshotActionRouting, WorkspaceTextCapturi
     typealias WorkspacePreviewLoader = @Sendable (ScreenshotArtifact) async -> Data?
     typealias ColorPickerFactory = @MainActor () -> any ScreenshotColorPickerPresenting
     typealias ConfigurationProvider = @MainActor () -> ScreenshotFeatureConfiguration
+    typealias TranslationRequestHandler = @MainActor @Sendable (TextTranslationRequest) -> Void
 
     private enum CaptureFlowOutcome {
         case result(FeatureActionResult)
@@ -84,6 +112,8 @@ final class ScreenshotCoordinator: ScreenshotActionRouting, WorkspaceTextCapturi
     private let workspacePreviewLoader: WorkspacePreviewLoader
     private let colorPickerFactory: ColorPickerFactory
     private let configurationProvider: ConfigurationProvider
+    private let translationRequestHandler: TranslationRequestHandler
+    private let translationFeedbackPresenter: any ScreenshotTranslationFeedbackPresenting
     private let invalidateService: ServiceInvalidation
     private let registerShortcuts: ShortcutAction
     private let unregisterShortcuts: ShortcutAction
@@ -95,6 +125,7 @@ final class ScreenshotCoordinator: ScreenshotActionRouting, WorkspaceTextCapturi
     private var activeSelectionPresenter: (any ScreenshotSelectionPresenting)?
     private var activeColorPickerPresenter: (any ScreenshotColorPickerPresenting)?
     private var isEnabled = true
+    private var pendingTranslationRetry = false
 
     init(
         authorization: any ScreenRecordingAuthorizing,
@@ -120,6 +151,8 @@ final class ScreenshotCoordinator: ScreenshotActionRouting, WorkspaceTextCapturi
         },
         colorPickerFactory: ColorPickerFactory? = nil,
         configurationProvider: @escaping ConfigurationProvider = { .init() },
+        translationRequestHandler: @escaping TranslationRequestHandler = { _ in },
+        translationFeedbackPresenter: any ScreenshotTranslationFeedbackPresenting = ScreenshotTranslationFeedbackAlert(),
         invalidateService: @escaping ServiceInvalidation = {},
         registerShortcuts: @escaping ShortcutAction = {},
         unregisterShortcuts: @escaping ShortcutAction = {}
@@ -142,6 +175,8 @@ final class ScreenshotCoordinator: ScreenshotActionRouting, WorkspaceTextCapturi
             ColorPickerController(captureService: captureService)
         }
         self.configurationProvider = configurationProvider
+        self.translationRequestHandler = translationRequestHandler
+        self.translationFeedbackPresenter = translationFeedbackPresenter
         self.invalidateService = invalidateService
         self.registerShortcuts = registerShortcuts
         self.unregisterShortcuts = unregisterShortcuts
@@ -249,10 +284,10 @@ final class ScreenshotCoordinator: ScreenshotActionRouting, WorkspaceTextCapturi
                     text: text,
                     previewImageData: previewImageData
                 )
-                await deleteWorkspaceArtifact(artifact, using: captureService)
+                await deleteTemporaryArtifact(artifact, using: captureService)
                 return captureResult
             } catch {
-                await deleteWorkspaceArtifact(artifact, using: captureService)
+                await deleteTemporaryArtifact(artifact, using: captureService)
                 throw error
             }
         }
@@ -283,6 +318,7 @@ final class ScreenshotCoordinator: ScreenshotActionRouting, WorkspaceTextCapturi
         guard workspaceTextCaptureTask != nil else { return }
         activeSelectionPresenter?.cancel()
         workspaceTextCaptureTask?.cancel()
+        pendingTranslationRetry = false
     }
 
     func activate() async {
@@ -310,7 +346,7 @@ final class ScreenshotCoordinator: ScreenshotActionRouting, WorkspaceTextCapturi
             return .requiresSetup(message: "请允许一念录制屏幕")
         }
 
-        let shouldRestoreLauncher = hideLauncherIfNeeded()
+        hideLauncherIfNeeded()
         let captureID = UUID()
         let presenter = selectionFactory()
         activeSelectionPresenter = presenter
@@ -333,7 +369,6 @@ final class ScreenshotCoordinator: ScreenshotActionRouting, WorkspaceTextCapturi
                     target: selection.target,
                     windowShadow: selection.windowShadow
                 ))
-                restoreLauncher(if: shouldRestoreLauncher)
                 return .result(result)
             case .gifRecording:
                 let result = try await extensionRouter.start(.init(
@@ -341,11 +376,8 @@ final class ScreenshotCoordinator: ScreenshotActionRouting, WorkspaceTextCapturi
                     target: selection.target,
                     windowShadow: selection.windowShadow
                 ))
-                // GIF 没有普通截图的浮动缩略图；完成后恢复原先可见的启动器，
-                // 避免 HUD 关闭后看起来像整个应用被强制退出。
-                restoreLauncher(if: shouldRestoreLauncher)
                 return .result(result)
-            case .copy, .save, .pin, .recognizeText:
+            case .copy, .save, .pin, .recognizeText, .translate:
                 break
             }
 
@@ -354,7 +386,7 @@ final class ScreenshotCoordinator: ScreenshotActionRouting, WorkspaceTextCapturi
                 try Task.checkCancellation()
             }
             let request = ScreenshotCaptureRequest(
-                mode: selection.completionAction == .recognizeText
+                mode: selection.completionAction == .recognizeText || selection.completionAction == .translate
                     ? .ocrRegion
                     : Self.mode(for: selection.target),
                 // 可见倒计时已在主进程完成。XPC 收到请求后必须立即捕获，
@@ -362,9 +394,15 @@ final class ScreenshotCoordinator: ScreenshotActionRouting, WorkspaceTextCapturi
                 delay: .none,
                 target: selection.target,
                 windowShadow: selection.windowShadow,
-                output: configuration.output,
+                // 钉图是持续显示、反复缩放的视觉产物，不能继承 JPEG/HEIF 的有损导出设置。
+                // 始终保留无损原始像素；用户的格式偏好仍只影响复制、保存和历史导出。
+                output: selection.completionAction == .pin
+                    ? .init(format: .png, quality: 1)
+                    : configuration.output,
                 annotations: selection.annotations,
-                history: configuration.history
+                history: selection.completionAction == .translate
+                    ? .init(isEnabled: false, keepsFilesWhenDisabled: false)
+                    : configuration.history
             )
             let artifact = try await captureService.captureArtifact(request)
             switch selection.completionAction {
@@ -383,6 +421,10 @@ final class ScreenshotCoordinator: ScreenshotActionRouting, WorkspaceTextCapturi
             case .recognizeText:
                 if let artifact {
                     try await recognizeAndPresent(artifact, configuration: configuration)
+                }
+            case .translate:
+                if let artifact {
+                    try await recognizeAndTranslate(artifact, configuration: configuration)
                 }
             case .scrollingCapture, .gifRecording:
                 break
@@ -404,10 +446,15 @@ final class ScreenshotCoordinator: ScreenshotActionRouting, WorkspaceTextCapturi
                 }
             }
             finishCapture(id: captureID)
-            return finish(outcome, restoringLauncher: shouldRestoreLauncher)
+            return finish(outcome)
+        } catch is CancellationError {
+            finishCapture(id: captureID)
+            return .completed
+        } catch let error as ScreenshotFeatureError where error == .cancelled {
+            finishCapture(id: captureID)
+            return .completed
         } catch {
             finishCapture(id: captureID)
-            restoreLauncher(if: shouldRestoreLauncher)
             throw error
         }
     }
@@ -417,7 +464,7 @@ final class ScreenshotCoordinator: ScreenshotActionRouting, WorkspaceTextCapturi
             return .requiresSetup(message: "请允许一念录制屏幕")
         }
 
-        let shouldRestoreLauncher = hideLauncherIfNeeded()
+        hideLauncherIfNeeded()
         let captureID = UUID()
         let captureService = captureService
         let countdownPresenter = countdownPresenter
@@ -456,10 +503,15 @@ final class ScreenshotCoordinator: ScreenshotActionRouting, WorkspaceTextCapturi
                 Task { @MainActor in countdownPresenter.cancel() }
             }
             finishCapture(id: captureID)
-            return finish(outcome, restoringLauncher: shouldRestoreLauncher)
+            return finish(outcome)
+        } catch is CancellationError {
+            finishCapture(id: captureID)
+            return .completed
+        } catch let error as ScreenshotFeatureError where error == .cancelled {
+            finishCapture(id: captureID)
+            return .completed
         } catch {
             finishCapture(id: captureID)
-            restoreLauncher(if: shouldRestoreLauncher)
             throw error
         }
     }
@@ -617,13 +669,43 @@ final class ScreenshotCoordinator: ScreenshotActionRouting, WorkspaceTextCapturi
               let screen = screens.first(where: { screen in
                   (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value == displayID
               }) else { return nil }
-        let xOffset = CGFloat(targetRect.x - descriptor.frame.x)
-        let yOffsetFromTop = CGFloat(targetRect.y - descriptor.frame.y)
+        let positionedRect: ScreenshotRect
+        if case .region = target {
+            let localRect = CGRect(
+                x: CGFloat(targetRect.x - descriptor.frame.x),
+                y: CGFloat(targetRect.y - descriptor.frame.y),
+                width: CGFloat(targetRect.width),
+                height: CGFloat(targetRect.height)
+            )
+            guard let alignedLocalRect = ScreenshotPixelGeometry.alignedLocalRect(
+                localRect,
+                displayPointSize: CGSize(
+                    width: CGFloat(descriptor.frame.width),
+                    height: CGFloat(descriptor.frame.height)
+                ),
+                displayPixelSize: CGSize(
+                    width: CGFloat(descriptor.pixelSize.width),
+                    height: CGFloat(descriptor.pixelSize.height)
+                ),
+                scaleFactor: CGFloat(descriptor.scaleFactor)
+            ) else { return nil }
+            positionedRect = .init(
+                x: descriptor.frame.x + Double(alignedLocalRect.minX),
+                y: descriptor.frame.y + Double(alignedLocalRect.minY),
+                width: Double(alignedLocalRect.width),
+                height: Double(alignedLocalRect.height)
+            )
+        } else {
+            positionedRect = targetRect
+        }
+
+        let xOffset = CGFloat(positionedRect.x - descriptor.frame.x)
+        let yOffsetFromTop = CGFloat(positionedRect.y - descriptor.frame.y)
         return CGRect(
             x: screen.frame.minX + xOffset,
-            y: screen.frame.maxY - yOffsetFromTop - CGFloat(targetRect.height),
-            width: CGFloat(targetRect.width),
-            height: CGFloat(targetRect.height)
+            y: screen.frame.maxY - yOffsetFromTop - CGFloat(positionedRect.height),
+            width: CGFloat(positionedRect.width),
+            height: CGFloat(positionedRect.height)
         )
     }
 
@@ -680,12 +762,61 @@ final class ScreenshotCoordinator: ScreenshotActionRouting, WorkspaceTextCapturi
         }
     }
 
+    private func recognizeAndTranslate(
+        _ artifact: ScreenshotArtifact,
+        configuration: ScreenshotFeatureConfiguration
+    ) async throws {
+        do {
+            let result = try await captureService.recognize(.init(
+                artifact: artifact,
+                configuration: configuration.ocr
+            ))
+            try Task.checkCancellation()
+            let text = result.fullText.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else {
+                presentTranslationFeedback("未识别到可翻译的文字，请重新选择区域。")
+                await deleteTemporaryArtifact(artifact, using: captureService)
+                return
+            }
+            translationRequestHandler(.init(
+                text: text,
+                source: .screenCapture,
+                recognizedLanguageCode: nil
+            ))
+        } catch is CancellationError {
+            presentTranslationFeedback("识别已取消，请重新选择区域。")
+        } catch let error as ScreenshotFeatureError where error == .cancelled {
+            presentTranslationFeedback("识别已取消，请重新选择区域。")
+        } catch {
+            presentTranslationFeedback(
+                "\(ScreenshotRecognitionErrorMessage.text(for: error))，请重新选择区域。"
+            )
+        }
+        await deleteTemporaryArtifact(artifact, using: captureService)
+    }
+
+    private func presentTranslationFeedback(_ message: String) {
+        translationFeedbackPresenter.present(message: message) { [weak self] in
+            self?.retryTranslationCapture()
+        }
+    }
+
+    private func retryTranslationCapture() {
+        guard captureTask == nil else {
+            pendingTranslationRetry = true
+            return
+        }
+        Task { @MainActor [weak self] in
+            _ = try? await self?.route(.captureDefaultMode)
+        }
+    }
+
     private func pickColor() async throws -> FeatureActionResult {
         guard requestAuthorization() == .authorized else {
             return .requiresSetup(message: "请允许一念录制屏幕")
         }
 
-        let shouldRestoreLauncher = hideLauncherIfNeeded()
+        hideLauncherIfNeeded()
         let captureID = UUID()
         let presenter = colorPickerFactory()
         activeColorPickerPresenter = presenter
@@ -711,41 +842,33 @@ final class ScreenshotCoordinator: ScreenshotActionRouting, WorkspaceTextCapturi
                 Task { @MainActor in presenter.cancel() }
             }
             finishCapture(id: captureID)
-            return finish(outcome, restoringLauncher: shouldRestoreLauncher)
+            return finish(outcome)
+        } catch is CancellationError {
+            finishCapture(id: captureID)
+            return .completed
+        } catch let error as ScreenshotFeatureError where error == .cancelled {
+            finishCapture(id: captureID)
+            return .completed
         } catch {
             finishCapture(id: captureID)
-            restoreLauncher(if: shouldRestoreLauncher)
             throw error
         }
     }
 
-    private func hideLauncherIfNeeded() -> Bool {
-        let shouldRestoreLauncher = launcher?.isLauncherVisible ?? false
-        if shouldRestoreLauncher {
+    private func hideLauncherIfNeeded() {
+        if launcher?.isLauncherVisible == true {
             launcher?.hideLauncher()
         }
-        return shouldRestoreLauncher
     }
 
-    private func finish(
-        _ outcome: CaptureFlowOutcome,
-        restoringLauncher shouldRestoreLauncher: Bool
-    ) -> FeatureActionResult {
+    private func finish(_ outcome: CaptureFlowOutcome) -> FeatureActionResult {
         switch outcome {
         case .cancelled:
-            restoreLauncher(if: shouldRestoreLauncher)
+            // 用户主动按 Escape 或点击取消时，截图流程应安静结束，不能把启动器
+            // 强行带回前台打断用户正在使用的应用。
             return .completed
         case .result(let result):
-            if case .requiresSetup = result {
-                restoreLauncher(if: shouldRestoreLauncher)
-            }
             return result
-        }
-    }
-
-    private func restoreLauncher(if shouldRestoreLauncher: Bool) {
-        if shouldRestoreLauncher {
-            launcher?.showLauncher()
         }
     }
 
@@ -770,10 +893,14 @@ final class ScreenshotCoordinator: ScreenshotActionRouting, WorkspaceTextCapturi
         activeColorPickerPresenter = nil
         activeCaptureID = nil
         captureTask = nil
+        if pendingTranslationRetry {
+            pendingTranslationRetry = false
+            retryTranslationCapture()
+        }
     }
 }
 
-private func deleteWorkspaceArtifact(
+private func deleteTemporaryArtifact(
     _ artifact: ScreenshotArtifact,
     using captureService: any ScreenshotCapturing
 ) async {

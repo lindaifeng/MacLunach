@@ -30,6 +30,9 @@ final class SearchDiagnostics: ObservableObject {
     @Published private(set) var exclusionRules: [String]
     @Published private(set) var indexingProgress: Double?
     @Published private(set) var indexingRootName: String?
+    @Published private(set) var indexingProcessedItemCount: Int?
+    @Published private(set) var indexingCompletedRoots: Int?
+    @Published private(set) var indexingTotalRoots: Int?
 
     init(
         roots: [URL],
@@ -39,7 +42,10 @@ final class SearchDiagnostics: ObservableObject {
         status: Status = .waiting,
         exclusionRules: [String] = SearchDiagnostics.defaultExclusionRules,
         indexingProgress: Double? = nil,
-        indexingRootName: String? = nil
+        indexingRootName: String? = nil,
+        indexingProcessedItemCount: Int? = nil,
+        indexingCompletedRoots: Int? = nil,
+        indexingTotalRoots: Int? = nil
     ) {
         self.roots = roots
         self.fileCount = fileCount
@@ -49,6 +55,9 @@ final class SearchDiagnostics: ObservableObject {
         self.exclusionRules = exclusionRules
         self.indexingProgress = indexingProgress
         self.indexingRootName = indexingRootName
+        self.indexingProcessedItemCount = indexingProcessedItemCount
+        self.indexingCompletedRoots = indexingCompletedRoots
+        self.indexingTotalRoots = indexingTotalRoots
     }
 
     var rootNames: [String] {
@@ -79,6 +88,9 @@ final class SearchDiagnostics: ObservableObject {
             if status != .indexing, status != .rebuilding {
                 indexingProgress = nil
                 indexingRootName = nil
+                indexingProcessedItemCount = nil
+                indexingCompletedRoots = nil
+                indexingTotalRoots = nil
             }
         }
         if let exclusionRules { self.exclusionRules = exclusionRules }
@@ -87,6 +99,21 @@ final class SearchDiagnostics: ObservableObject {
     func updateIndexingProgress(_ progress: Double, rootName: String?) {
         indexingProgress = min(max(progress, 0), 1)
         indexingRootName = rootName
+    }
+
+    func updateIndexingActivity(
+        processedItemCount: Int,
+        completedRoots: Int,
+        totalRoots: Int,
+        rootName: String?
+    ) {
+        indexingProcessedItemCount = max(0, processedItemCount)
+        indexingCompletedRoots = max(0, completedRoots)
+        indexingTotalRoots = max(0, totalRoots)
+        indexingRootName = rootName
+        indexingProgress = totalRoots > 0
+            ? min(max(Double(completedRoots) / Double(totalRoots), 0), 1)
+            : nil
     }
 
     var isActivelyIndexing: Bool {

@@ -55,7 +55,7 @@ final class ColorPickerControllerTests: XCTestCase {
         XCTAssertEqual(acceptedPoints.last, .init(x: 2, y: 10))
     }
 
-    func testMouseDownBypassesMovementThrottleAndCompletesWithFreshSample() async throws {
+    func testMouseDownBypassesMovementThrottleAndLocksFreshSampleUntilConfirmation() async throws {
         let capture = ColorSampleCaptureProbe { _ in .zero }
         var acceptedPoints: [CGPoint] = []
         let controller = ColorPickerController(
@@ -71,6 +71,28 @@ final class ColorPickerControllerTests: XCTestCase {
         try await waitUntil(timeout: .milliseconds(250)) { await capture.requestCount == 2 }
         try await waitUntil { acceptedPoints.count == 2 }
         XCTAssertEqual(acceptedPoints.last, .init(x: 2, y: 10))
+        XCTAssertEqual(controller.confirmLockedColor(), .init(red: 2, green: 0, blue: 0))
+    }
+
+    func testLockedColorIgnoresPointerMovementAndCopiesRGBText() async throws {
+        let capture = ColorSampleCaptureProbe { _ in .zero }
+        let controller = ColorPickerController(
+            captureService: capture,
+            minimumSampleInterval: .zero
+        )
+
+        controller.mouseDown(on: 1, at: .init(x: 18, y: 10))
+        try await waitUntil { await capture.requestCount == 1 }
+        try await Task.sleep(for: .milliseconds(20))
+        controller.mouseMoved(on: 1, to: .init(x: 42, y: 10))
+        try await Task.sleep(for: .milliseconds(20))
+
+        let requestCount = await capture.requestCount
+        XCTAssertEqual(requestCount, 1)
+        XCTAssertEqual(
+            SystemScreenshotColorClipboardWriter.copyText(for: .init(red: 18, green: 0, blue: 0)),
+            "RGB(18, 0, 0)"
+        )
     }
 
     private func waitUntil(

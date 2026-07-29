@@ -70,6 +70,7 @@ enum DayTheme {
         ),
         accent: .init(hex: 0x586DFF),
         auxiliaryAccent: .init(hex: 0x3F7CFF),
+        interactiveAccent: .init(hex: 0x315F9D),
         motion: .init(duration: 0.19, hoverOffset: -2, pressedScale: 0.98)
     )
 }

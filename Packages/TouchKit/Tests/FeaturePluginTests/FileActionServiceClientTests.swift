@@ -21,6 +21,29 @@ import FileActionServiceProtocol
     #expect(connection.invalidateCount == 0)
 }
 
+@Test func fileActionClientQueriesAndCancelsOperationUsingTheReferencedRequestID() async throws {
+    let operationID = UUID()
+    let processor = FileActionServiceRequestProcessor(actionHandler: { action in
+        guard action.operationRequestID == operationID else {
+            return .failure(.malformedRequest("缺少目标请求 ID"))
+        }
+        let status: FileActionServiceOperationStatus = action.name == "cancelOperation"
+            ? .cancelling
+            : .running
+        return .success(.init(operationState: .init(requestID: operationID, status: status)))
+    })
+    let connection = MockFileActionServiceConnection { data, reply, _ in
+        reply(processor.process(data))
+    }
+    let client = FileActionServiceClient(connectionFactory: { connection })
+
+    let current = try await client.operationState(for: operationID)
+    let cancellation = try await client.cancelOperation(requestID: operationID)
+
+    #expect(current == .init(requestID: operationID, status: .running))
+    #expect(cancellation == .init(requestID: operationID, status: .cancelling))
+}
+
 @Test func fileActionClientTimeoutReturnsDeterministicallyAndInvalidatesConnection() async {
     let connection = MockFileActionServiceConnection { _, _, _ in }
     let client = FileActionServiceClient(connectionFactory: { connection })
@@ -71,6 +94,86 @@ import FileActionServiceProtocol
 
     #expect(!request.isExpired(at: createdAt.addingTimeInterval(11.9)))
     #expect(request.isExpired(at: createdAt.addingTimeInterval(12)))
+}
+
+@Test func relayResultCacheReplaysOnlyTheOriginalActionForTheSameRequestID() {
+    let id = UUID()
+    let original = FileActionServiceRelayRequest(
+        id: id,
+        action: .createFolder(directory: URL(fileURLWithPath: "/tmp/original"))
+    )
+    let response = FileActionServiceResponse(
+        requestID: id,
+        payload: .actionResult(.init(createdURL: URL(fileURLWithPath: "/tmp/original/未命名文件夹")))
+    )
+    var cache = FileActionServiceRelayResultCache()
+    cache.store(response, for: original, at: Date(timeIntervalSince1970: 1_750_000_000))
+
+    let retry = FileActionServiceRelayRequest(
+        id: id,
+        responseChallenge: UUID(),
+        action: original.action
+    )
+    #expect(cache.response(for: retry) == response)
+
+    let altered = FileActionServiceRelayRequest(
+        id: id,
+        action: .createFolder(directory: URL(fileURLWithPath: "/tmp/altered"))
+    )
+    #expect(cache.response(for: altered) == nil)
+    #expect(cache.containsRequestID(id))
+}
+
+@Test func relayAcceptsOnlyRegularOwnerControlledRequestWithMatchingFilename() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let request = FileActionServiceRelayRequest(
+        action: .createFolder(directory: URL(fileURLWithPath: "/tmp"))
+    )
+    let url = directory.appendingPathComponent("\(request.id.uuidString).json")
+    try JSONEncoder().encode(request).write(to: url, options: .atomic)
+
+    let pending = FileActionServiceRelay.pendingRequests(in: directory)
+
+    #expect(pending.map(\.request) == [request])
+}
+
+@Test func relayQuarantinesRequestWhenFilenameDoesNotMatchPayloadID() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let request = FileActionServiceRelayRequest(
+        action: .createFolder(directory: URL(fileURLWithPath: "/tmp"))
+    )
+    let url = directory.appendingPathComponent("\(UUID().uuidString).json")
+    try JSONEncoder().encode(request).write(to: url, options: .atomic)
+
+    #expect(FileActionServiceRelay.pendingRequests(in: directory).isEmpty)
+    #expect(!FileManager.default.fileExists(atPath: url.path))
+}
+
+@Test func relayRejectsSymbolicLinkRequestFiles() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let request = FileActionServiceRelayRequest(
+        action: .createFolder(directory: URL(fileURLWithPath: "/tmp"))
+    )
+    let backingURL = directory.appendingPathComponent("backing")
+    try JSONEncoder().encode(request).write(to: backingURL, options: .atomic)
+    let linkURL = directory.appendingPathComponent("\(request.id.uuidString).json")
+    try FileManager.default.createSymbolicLink(at: linkURL, withDestinationURL: backingURL)
+
+    #expect(FileActionServiceRelay.pendingRequests(in: directory).isEmpty)
+    #expect(!FileManager.default.fileExists(atPath: linkURL.path))
+    #expect(FileManager.default.fileExists(atPath: backingURL.path))
 }
 
 private final class MockFileActionServiceConnection: FileActionServiceConnection, @unchecked Sendable {

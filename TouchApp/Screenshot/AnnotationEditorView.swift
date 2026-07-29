@@ -17,6 +17,7 @@ struct AnnotationEditorView: View {
         let appearance = AnnotationEditorAppearance.make(
             theme: themeStore.theme,
             colorScheme: colorScheme,
+            reduceMotion: reduceMotion || hasArgument("--reduce-motion"),
             reduceTransparency: reduceTransparency || hasArgument("--reduce-transparency"),
             increasedContrast: colorSchemeContrast == .increased || hasArgument("--increase-contrast")
         )
@@ -50,7 +51,6 @@ struct AnnotationEditorView: View {
             }
         }
         .frame(minWidth: 820, minHeight: 560)
-        .tint(appearance.accent)
         .animation(
             reduceMotion || hasArgument("--reduce-motion")
                 ? nil
@@ -75,6 +75,7 @@ struct AnnotationEditorView: View {
             .accessibilityLabel("撤销")
             .accessibilityHint("撤销上一次标注修改")
             .accessibilityIdentifier("screenshot.annotation.undo")
+            .buttonStyle(.annotationEditorTool(appearance: appearance))
 
             Button {
                 _ = state.redo()
@@ -86,6 +87,7 @@ struct AnnotationEditorView: View {
             .accessibilityLabel("重做")
             .accessibilityHint("恢复上一次撤销的标注修改")
             .accessibilityIdentifier("screenshot.annotation.redo")
+            .buttonStyle(.annotationEditorTool(appearance: appearance))
 
             Button {
                 _ = state.selectPreviousLayer()
@@ -97,6 +99,7 @@ struct AnnotationEditorView: View {
             .accessibilityLabel("选择上一个图层")
             .accessibilityHint("按文档顺序循环选择前一个标注图层")
             .accessibilityIdentifier("screenshot.annotation.layer.previous")
+            .buttonStyle(.annotationEditorTool(appearance: appearance))
 
             Button {
                 _ = state.selectNextLayer()
@@ -108,6 +111,7 @@ struct AnnotationEditorView: View {
             .accessibilityLabel("选择下一个图层")
             .accessibilityHint("按文档顺序循环选择后一个标注图层")
             .accessibilityIdentifier("screenshot.annotation.layer.next")
+            .buttonStyle(.annotationEditorTool(appearance: appearance))
 
             Divider().frame(height: 24)
 
@@ -128,8 +132,12 @@ struct AnnotationEditorView: View {
                                 }
                             }
                         }
-                        .buttonStyle(.bordered)
-                        .tint(state.selectedTool == tool ? .accentColor : nil)
+                        .buttonStyle(
+                            .annotationEditorTool(
+                                appearance: appearance,
+                                isSelected: state.selectedTool == tool
+                            )
+                        )
                         .help("\(tool.title)（\(tool.keyboardShortcut.uppercased())）")
                         .accessibilityLabel(tool.title)
                         .accessibilityValue(state.selectedTool == tool ? "已选择" : "未选择")
@@ -146,12 +154,14 @@ struct AnnotationEditorView: View {
                 .help("复制最终渲染图片（⇧⌘C）")
                 .accessibilityHint("将带有全部标注的图片复制到剪贴板")
                 .accessibilityIdentifier("screenshot.annotation.copy")
+                .buttonStyle(.annotationEditorSecondaryAction(appearance: appearance))
 
             Button("另存为…", action: onExport)
                 .keyboardShortcut("s", modifiers: [.command, .shift])
                 .help("另存为 PNG、JPEG 或 HEIF（⇧⌘S）")
                 .accessibilityHint("打开保存面板并选择图片格式与质量")
                 .accessibilityIdentifier("screenshot.annotation.export")
+                .buttonStyle(.annotationEditorSecondaryAction(appearance: appearance))
 
             Button {
                 Task { await state.save() }
@@ -167,6 +177,7 @@ struct AnnotationEditorView: View {
             .accessibilityLabel(state.isSaving ? "正在保存项目" : "保存项目")
             .accessibilityHint("保存可继续编辑的标注图层项目")
             .accessibilityIdentifier("screenshot.annotation.save")
+            .buttonStyle(.annotationEditorPrimaryAction(appearance: appearance))
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -194,6 +205,7 @@ struct AnnotationEditorView: View {
                     .lineLimit(1)
                 Button("重试") { Task { await state.retrySave() } }
                     .accessibilityIdentifier("screenshot.annotation.retry-save")
+                    .buttonStyle(.annotationEditorSecondaryAction(appearance: appearance))
             }
         }
         .font(.caption)

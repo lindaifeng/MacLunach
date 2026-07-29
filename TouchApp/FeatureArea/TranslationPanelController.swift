@@ -25,7 +25,7 @@ private enum TranslationWorkspaceMetrics {
 }
 
 @MainActor
-final class TranslationPanelController: NSObject, NSWindowDelegate {
+final class TranslationPanelController: NSObject, NSWindowDelegate, FeaturePanelSessionController {
     // 参考图来自 Retina 2× 截图：1120 × 464 像素对应 AppKit 的
     // 560 × 232 点。窗口尺寸必须使用点，否则在截图中会被放大为两倍。
     private static let defaultWindowSize = NSSize(
@@ -40,15 +40,18 @@ final class TranslationPanelController: NSObject, NSWindowDelegate {
     private let panel: TranslationPanel
     private let model = TranslationWorkspaceModel()
     private let screenshotCoordinator: any WorkspaceTextCapturing
+    private let onPresented: () -> Void
     private let onClose: () -> Void
     private var isPinned = false
 
     init(
         screenshotCoordinator: any WorkspaceTextCapturing,
         themeStore: ThemeStore,
+        onPresented: @escaping () -> Void = {},
         onClose: @escaping () -> Void
     ) {
         self.screenshotCoordinator = screenshotCoordinator
+        self.onPresented = onPresented
         self.onClose = onClose
         panel = TranslationPanel(
             contentRect: NSRect(origin: .zero, size: Self.defaultWindowSize),
@@ -133,13 +136,15 @@ final class TranslationPanelController: NSObject, NSWindowDelegate {
     }
 
     var isPanelVisible: Bool { panel.isVisible }
+    var sessionWindow: NSWindow { panel }
+    var remainsVisibleWhenApplicationIsInactive: Bool { isPinned }
 
     func windowWillClose(_ notification: Notification) {
         screenshotCoordinator.cancelWorkspaceTextCapture()
         onClose()
     }
     func windowDidResignKey(_ notification: Notification) {
-        dismissFeaturePanelAfterResigningKey(panel, keepsVisible: isPinned, onHidden: onClose)
+        dismissFeaturePanelAfterResigningKey(panel, keepsVisible: isPinned)
     }
 
     private func presentPanel() {
@@ -147,6 +152,7 @@ final class TranslationPanelController: NSObject, NSWindowDelegate {
         panel.center()
         NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
+        onPresented()
     }
 
     private func captureInitialText() {
@@ -231,7 +237,7 @@ final class TranslationPanelController: NSObject, NSWindowDelegate {
 
 private final class TranslationPanel: NSPanel { override var canBecomeKey: Bool { true } }
 
-private struct TranslationSessionRequest: Equatable, Sendable {
+struct TranslationSessionRequest: Equatable, Sendable {
     let id: UUID
     let text: String
     let sourceLanguageCode: String?
@@ -239,14 +245,28 @@ private struct TranslationSessionRequest: Equatable, Sendable {
     let allowsLanguagePackDownload: Bool
 }
 
-private struct TranslationLanguagePackPrompt: Equatable, Sendable {
+struct TranslationLanguagePackPrompt: Equatable, Sendable {
     let title: String
     let message: String
     let actionTitle: String
 }
 
+private struct TranslationLanguagePair: Hashable {
+    let sourceLanguageCode: String?
+    let targetLanguageCode: String
+
+    init(_ request: TranslationSessionRequest) {
+        sourceLanguageCode = Self.normalize(request.sourceLanguageCode)
+        targetLanguageCode = Self.normalize(request.targetLanguageCode) ?? request.targetLanguageCode
+    }
+
+    private static func normalize(_ languageCode: String?) -> String? {
+        languageCode?.lowercased().replacingOccurrences(of: "_", with: "-")
+    }
+}
+
 @MainActor
-private final class TranslationWorkspaceModel: ObservableObject {
+final class TranslationWorkspaceModel: ObservableObject {
     enum StatusKind {
         case ready
         case loading
@@ -288,6 +308,10 @@ private final class TranslationWorkspaceModel: ObservableObject {
     /// 安装对应的本机语言包。把请求暂存起来，而不是继续挂在 translationTask 上，
     /// 可以让提示状态稳定显示，同时保证点击“下载语言包”后才重新创建系统会话。
     private var pendingLanguagePackRequest: TranslationSessionRequest?
+    /// Translation 没有公开可靠的下载进度。记录已经确认“受支持但未安装”的
+    /// 语言对，可以避免用户没有点击下载时，再次进入功能却重新挂起系统会话。
+    /// 只有用户明确点击下载/重新检查后，才允许该语言对再次创建 TranslationSession。
+    private var languagePairsRequiringDownload: Set<TranslationLanguagePair> = []
 
     var isSupportedSystem: Bool { ProcessInfo.processInfo.operatingSystemVersion.majorVersion >= 15 }
     var hasSourceText: Bool { !sourceText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
@@ -379,13 +403,7 @@ private final class TranslationWorkspaceModel: ObservableObject {
             statusKind = .error
             return
         }
-        statusMessage = "正在准备系统语言包…"
-        statusKind = .loading
-        translatedText = ""
-        isTranslating = true
-        languagePackPrompt = nil
-        pendingLanguagePackRequest = nil
-        sessionRequest = .init(
+        let request = TranslationSessionRequest(
             id: UUID(),
             text: text,
             // OCR 已经给出语言时，自动识别仍保持“自动：English”的展示，
@@ -394,9 +412,28 @@ private final class TranslationWorkspaceModel: ObservableObject {
             targetLanguageCode: targetChoice.languageCode,
             allowsLanguagePackDownload: false
         )
+        translatedText = ""
+        if languagePairsRequiringDownload.contains(TranslationLanguagePair(request)) {
+            showLanguagePackPrompt(
+                for: request,
+                title: "系统语言包未安装",
+                message: "当前语言组合需要先下载离线语言包；点击按钮后由 macOS 管理下载。"
+            )
+            return
+        }
+
+        statusMessage = "正在检查系统语言包…"
+        statusKind = .loading
+        isTranslating = true
+        languagePackPrompt = nil
+        pendingLanguagePackRequest = nil
+        sessionRequest = request
     }
 
     func finishTranslation(_ text: String) {
+        if let sessionRequest {
+            languagePairsRequiringDownload.remove(TranslationLanguagePair(sessionRequest))
+        }
         translatedText = text
         statusMessage = "已使用 macOS 系统离线翻译"
         statusKind = .success
@@ -430,6 +467,7 @@ private final class TranslationWorkspaceModel: ObservableObject {
         message: String,
         actionTitle: String = "下载语言包"
     ) {
+        languagePairsRequiringDownload.insert(TranslationLanguagePair(request))
         // 只保留不允许下载的原始请求。用户点击按钮后会重新创建一个新的
         // TranslationSession.Configuration，让系统有机会弹出并完成语言包下载。
         pendingLanguagePackRequest = request
@@ -713,8 +751,11 @@ private struct TranslationWorkspaceView: View {
                 }
             }
             .ignoresSafeArea(.container, edges: .top)
+            // 外轮廓由带 fullSizeContentView 的原生窗口统一裁切。这里不能再给
+            // SwiftUI 内容增加内层圆角，否则背景会从红黄绿按钮下方才开始，
+            // 视觉上像标题栏被排除在窗口边框之外。
             .preferredColorScheme(theme.preferredColorScheme)
-            .tint(theme.accent.color)
+            .tint(theme.interactiveAccent.color)
             .animation(
                 reduceMotion ? nil : .easeOut(duration: theme.motion.duration),
                 value: model.copyConfirmation
@@ -920,7 +961,7 @@ private struct TranslationWorkspaceView: View {
         HStack(spacing: 6) {
             Image(systemName: "arrow.down.circle")
                 .font(.system(size: 10.5, weight: .semibold))
-                .foregroundStyle(theme.accent.color)
+                .foregroundStyle(theme.interactiveAccent.color)
                 .frame(width: 18, height: 18)
                 .accessibilityHidden(true)
 
@@ -948,7 +989,7 @@ private struct TranslationWorkspaceView: View {
                     .foregroundStyle(Color.white)
                     .padding(.horizontal, 6)
                     .frame(height: 20)
-                    .background(theme.accent.color, in: Capsule())
+                    .background(theme.interactiveAccent.color, in: Capsule())
                     .contentShape(Capsule())
             }
             .frame(minWidth: 74)
@@ -973,7 +1014,7 @@ private struct TranslationWorkspaceView: View {
         // 同时让语言包状态单独把窗口拉高，不挤压底部 7pt 安全留白。
         .frame(height: TranslationWorkspaceMetrics.languagePackPromptHeight)
         .background(
-            theme.accent.color.opacity(reduceTransparency ? 0.16 : 0.10),
+            theme.interactiveAccent.color.opacity(reduceTransparency ? 0.18 : 0.11),
             in: RoundedRectangle(cornerRadius: 8, style: .continuous)
         )
         .accessibilityElement(children: .contain)
@@ -1011,7 +1052,7 @@ private struct TranslationWorkspaceView: View {
                 accessibilityLabel: isEditable ? "原文编辑区" : "译文",
                 accessibilityIdentifier: textIdentifier,
                 textColor: theme.text.primary.nsColor,
-                insertionPointColor: theme.accent.nsColor,
+                insertionPointColor: theme.interactiveAccent.nsColor,
                 onContentHeightChange: onContentHeightChange
             )
 
@@ -1370,7 +1411,7 @@ where Choice: Hashable & CaseIterable & RawRepresentable, Choice.RawValue == Str
 
     private var pickerBorder: Color {
         if isPresented {
-            return theme.accent.color.opacity(0.28)
+            return theme.interactiveAccent.color.opacity(0.28)
         }
         if isHovering {
             return theme.panel.highlight.color.opacity(0.14)
@@ -1435,7 +1476,7 @@ private struct TranslationLanguageOption: View {
 
                 Image(systemName: "checkmark")
                     .font(.system(size: 9.5, weight: .bold))
-                    .foregroundStyle(theme.accent.color)
+                    .foregroundStyle(theme.interactiveAccent.color)
                     .opacity(isSelected ? 1 : 0)
                     .accessibilityHidden(true)
             }
@@ -1459,7 +1500,7 @@ private struct TranslationLanguageOption: View {
 
     private var optionBackground: Color {
         if isSelected {
-            return theme.accent.color.opacity(0.15)
+            return theme.interactiveAccent.color.opacity(0.15)
         }
         if isHovering {
             return theme.card.hoverFill.color.opacity(0.82)

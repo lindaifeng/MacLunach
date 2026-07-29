@@ -21,7 +21,7 @@ private enum OCRWorkspaceMetrics {
 }
 
 @MainActor
-final class OCRPanelController: NSObject, NSWindowDelegate {
+final class OCRPanelController: NSObject, NSWindowDelegate, FeaturePanelSessionController {
     // 参考图是 Retina 2× 截图：约 780 × 503 像素，对应 390 × 252 点。
     private static let defaultWindowSize = NSSize(
         width: 390,
@@ -33,6 +33,7 @@ final class OCRPanelController: NSObject, NSWindowDelegate {
     private let model: OCRWorkspaceModel
     private let screenshotCoordinator: any WorkspaceTextCapturing
     private let onTranslate: (TextTranslationRequest) -> Void
+    private let onPresented: () -> Void
     private let onClose: () -> Void
     private var isPinned = false
 
@@ -42,10 +43,12 @@ final class OCRPanelController: NSObject, NSWindowDelegate {
         configurationProvider: @escaping OCRConfigurationProvider = { .init() },
         copyWriter: @escaping OCRCopyWriter = OCRPanelController.writeToSystemPasteboard,
         onTranslate: @escaping (TextTranslationRequest) -> Void,
+        onPresented: @escaping () -> Void = {},
         onClose: @escaping () -> Void
     ) {
         self.screenshotCoordinator = screenshotCoordinator
         self.onTranslate = onTranslate
+        self.onPresented = onPresented
         self.onClose = onClose
         model = OCRWorkspaceModel(
             configurationProvider: configurationProvider,
@@ -112,6 +115,9 @@ final class OCRPanelController: NSObject, NSWindowDelegate {
         presentPanel()
     }
 
+    var sessionWindow: NSWindow { panel }
+    var remainsVisibleWhenApplicationIsInactive: Bool { isPinned }
+
     var isPanelVisible: Bool { panel.isVisible }
 
     var recognizedTextForTesting: String { model.text }
@@ -135,7 +141,7 @@ final class OCRPanelController: NSObject, NSWindowDelegate {
     }
 
     func windowDidResignKey(_ notification: Notification) {
-        dismissFeaturePanelAfterResigningKey(panel, keepsVisible: isPinned, onHidden: onClose)
+        dismissFeaturePanelAfterResigningKey(panel, keepsVisible: isPinned)
     }
 
     private func presentPanel() {
@@ -143,6 +149,7 @@ final class OCRPanelController: NSObject, NSWindowDelegate {
         panel.center()
         NSApp.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
+        onPresented()
     }
 
     private func captureInitialText() {
@@ -407,7 +414,7 @@ private struct OCRWorkspaceView: View {
         }
         .ignoresSafeArea(.container, edges: .top)
         .preferredColorScheme(theme.preferredColorScheme)
-        .tint(theme.accent.color)
+        .tint(theme.interactiveAccent.color)
         .animation(
             reduceMotion ? nil : .easeOut(duration: theme.motion.duration),
             value: model.copyConfirmation
@@ -510,7 +517,7 @@ private struct OCRWorkspaceView: View {
             OCRTextView(
                 text: $model.text,
                 textColor: theme.text.primary.nsColor,
-                insertionPointColor: theme.accent.nsColor,
+                insertionPointColor: theme.interactiveAccent.nsColor,
                 allowsVerticalScrolling: allowsEditorScrolling,
                 onContentHeightChange: updateTextContentHeight
             )

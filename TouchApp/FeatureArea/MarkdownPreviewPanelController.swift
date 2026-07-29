@@ -6,7 +6,7 @@ import UniformTypeIdentifiers
 import WebKit
 
 @MainActor
-final class MarkdownPreviewPanelController: NSObject, NSWindowDelegate {
+final class MarkdownPreviewPanelController: NSObject, NSWindowDelegate, FeaturePanelSessionController {
     private let panel: MarkdownEditingPanel
     private let model = MarkdownPreviewModel()
     private let onClose: () -> Void
@@ -62,6 +62,8 @@ final class MarkdownPreviewPanelController: NSObject, NSWindowDelegate {
         NotificationCenter.default.removeObserver(self)
     }
 
+    var sessionWindow: NSWindow { panel }
+
     func show() {
         cancelFeaturePanelDismissal(panel)
         panel.level = Self.featurePanelLevel
@@ -75,7 +77,7 @@ final class MarkdownPreviewPanelController: NSObject, NSWindowDelegate {
     }
 
     func windowDidResignKey(_ notification: Notification) {
-        dismissFeaturePanelAfterResigningKey(panel, onHidden: onClose)
+        dismissFeaturePanelAfterResigningKey(panel)
     }
 
     @objc private func applicationDidBecomeActive() {
@@ -298,10 +300,10 @@ private struct MarkdownPanelView: View {
             if isDropTarget {
                 ZStack {
                     RoundedRectangle(cornerRadius: 22, style: .continuous)
-                        .fill(theme.accent.color.opacity(0.1))
+                        .fill(theme.interactiveAccent.color.opacity(0.1))
                     Label("松开以导入 Markdown 文档", systemImage: "doc.badge.arrow.up")
                         .font(.system(size: 15, weight: .semibold, design: .rounded))
-                        .foregroundStyle(theme.accent.color)
+                        .foregroundStyle(theme.interactiveAccent.color)
                         .padding(.horizontal, 18)
                         .frame(height: 42)
                         .background(theme.card.fill.color.opacity(0.96), in: Capsule())
@@ -427,7 +429,9 @@ private struct MarkdownPanelView: View {
                 horizontalInset: focused ? 38 : 24,
                 verticalInset: 28,
                 foregroundColor: theme.text.primary.color,
-                accentColor: theme.accent.color,
+                accentColor: theme.interactiveAccent.color,
+                lineNumberColor: markdownLineNumberColor,
+                lineNumberBackgroundColor: markdownLineNumberBackgroundColor,
                 onImportDocument: { url in
                     guard onImportDocument(url) else { return false }
                     mode = .editing
@@ -438,7 +442,7 @@ private struct MarkdownPanelView: View {
                 .background(theme.card.fill.color.opacity(0.3))
                 .overlay(alignment: .leading) {
                     Rectangle()
-                        .fill(theme.card.border.color.opacity(0.34))
+                        .fill(theme.interactiveAccent.color.opacity(0.18))
                         .frame(width: 1)
                         .offset(x: markdownLineNumberRulerWidth)
                         .allowsHitTesting(false)
@@ -469,7 +473,7 @@ private struct MarkdownPanelView: View {
                             primaryText: theme.text.primary.cssRGBA,
                             secondaryText: theme.text.secondary.cssRGBA,
                             weakText: theme.text.weak.cssRGBA,
-                            accent: theme.accent.cssRGBA,
+                            accent: theme.interactiveAccent.cssRGBA,
                             surface: theme.card.fill.cssRGBA,
                             border: theme.card.border.cssRGBA
                         ),
@@ -537,16 +541,18 @@ private struct MarkdownPanelView: View {
         Button(action: action) {
             Label(title, systemImage: symbol)
                 .font(.system(size: 10.5, weight: .semibold))
-                .foregroundStyle(isProminent ? Color.white : theme.text.secondary.color)
+                .foregroundStyle(isProminent ? Color.white : theme.interactiveAccent.color)
                 .padding(.horizontal, 12)
                 .frame(height: 32)
                 .background(
-                    isProminent ? theme.accent.color : theme.card.fill.color.opacity(0.55),
+                    isProminent
+                        ? theme.interactiveAccent.color
+                        : theme.interactiveAccent.color.opacity(0.10),
                     in: Capsule()
                 )
                 .overlay {
                     if !isProminent {
-                        Capsule().stroke(theme.card.border.color.opacity(0.38), lineWidth: 1)
+                        Capsule().stroke(theme.interactiveAccent.color.opacity(0.24), lineWidth: 1)
                     }
                 }
         }
@@ -562,7 +568,7 @@ private struct MarkdownPanelView: View {
                 .foregroundStyle(Color.white)
         }
         .frame(width: 32, height: 32)
-        .shadow(color: theme.accent.color.opacity(0.2), radius: 7, y: 3)
+        .shadow(color: theme.interactiveAccent.color.opacity(0.2), radius: 7, y: 3)
     }
 
     private var modeSelector: some View {
@@ -573,15 +579,17 @@ private struct MarkdownPanelView: View {
                 } label: {
                     Label(item.title, systemImage: item.symbol)
                         .font(.system(size: 10.5, weight: .semibold))
-                        .foregroundStyle(mode == item ? theme.accent.color : theme.text.secondary.color)
+                        .foregroundStyle(
+                            theme.interactiveAccent.color.opacity(mode == item ? 1 : 0.78)
+                        )
                         .frame(width: 72, height: 31)
                         .background(
-                            mode == item ? theme.card.fill.color.opacity(0.94) : Color.clear,
+                            mode == item ? theme.interactiveAccent.color.opacity(0.12) : Color.clear,
                             in: Capsule()
                         )
                         .overlay {
                             if mode == item {
-                                Capsule().stroke(theme.accent.color.opacity(0.28), lineWidth: 1)
+                                Capsule().stroke(theme.interactiveAccent.color.opacity(0.34), lineWidth: 1)
                             }
                         }
                         .contentShape(Capsule())
@@ -593,6 +601,26 @@ private struct MarkdownPanelView: View {
         }
         .padding(3)
         .background(theme.panel.fallback.color.opacity(0.32), in: Capsule())
+    }
+
+    /// 浅色工作台使用高对比石墨色；深色工作台使用浅蓝，避免深色背景下行号消失。
+    private var markdownLineNumberColor: Color {
+        switch theme.id {
+        case .defaultGlass, .day:
+            return theme.text.primary.color.opacity(0.82)
+        case .night, .graphite:
+            return theme.interactiveAccent.color.opacity(0.86)
+        }
+    }
+
+    /// 覆盖 NSRulerView 的系统浅灰底，让行号栏真正融入工作台主题。
+    private var markdownLineNumberBackgroundColor: Color {
+        switch theme.id {
+        case .defaultGlass, .day:
+            return theme.interactiveAccent.color.opacity(0.08)
+        case .night, .graphite:
+            return theme.panel.fallback.color.opacity(0.72)
+        }
     }
 
     private var workspaceFooter: some View {
@@ -635,7 +663,7 @@ private struct MarkdownPanelView: View {
         VStack(spacing: 12) {
             Image(systemName: "doc.text.magnifyingglass")
                 .font(.system(size: 28, weight: .light))
-                .foregroundStyle(theme.accent.color)
+                .foregroundStyle(theme.interactiveAccent.color)
             Text("等待第一行内容")
                 .font(.system(size: 16, weight: .semibold, design: .rounded))
                 .foregroundStyle(theme.text.primary.color)
@@ -689,7 +717,7 @@ private struct MarkdownPanelView: View {
         case let .unorderedItem(text):
             HStack(alignment: .firstTextBaseline, spacing: 9) {
                 Circle()
-                    .fill(theme.accent.color)
+                    .fill(theme.interactiveAccent.color)
                     .frame(width: 5, height: 5)
                 Text(inlineMarkdown(text))
                     .font(.system(size: 14))
@@ -701,7 +729,7 @@ private struct MarkdownPanelView: View {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
                 Text("\(number).")
                     .font(.system(size: 12, weight: .semibold, design: .rounded))
-                    .foregroundStyle(theme.accent.color)
+                    .foregroundStyle(theme.interactiveAccent.color)
                     .frame(minWidth: 18, alignment: .trailing)
                 Text(inlineMarkdown(text))
                     .font(.system(size: 14))
@@ -712,7 +740,7 @@ private struct MarkdownPanelView: View {
         case let .quote(text):
             HStack(alignment: .top, spacing: 11) {
                 Capsule()
-                    .fill(theme.accent.color.opacity(0.78))
+                    .fill(theme.interactiveAccent.color.opacity(0.78))
                     .frame(width: 3)
                 Text(inlineMarkdown(text))
                     .font(.system(size: 13.5, weight: .medium))
@@ -728,7 +756,7 @@ private struct MarkdownPanelView: View {
                 if !language.isEmpty {
                     Text(language.uppercased())
                         .font(.system(size: 8.5, weight: .bold, design: .rounded))
-                        .foregroundStyle(theme.accent.color)
+                        .foregroundStyle(theme.interactiveAccent.color)
                 }
                 ScrollView(.horizontal) {
                     Text(source)
@@ -778,6 +806,8 @@ private struct MarkdownSourceEditor: NSViewRepresentable {
     let verticalInset: CGFloat
     let foregroundColor: Color
     let accentColor: Color
+    let lineNumberColor: Color
+    let lineNumberBackgroundColor: Color
     let onImportDocument: (URL) -> Bool
     let onScroll: ((CGFloat) -> Void)?
 
@@ -858,8 +888,8 @@ private struct MarkdownSourceEditor: NSViewRepresentable {
     }
 
     private func applyAppearance(to lineNumberRuler: MarkdownLineNumberRulerView) {
-        let baseColor = NSColor(foregroundColor)
-        lineNumberRuler.numberColor = baseColor.withAlphaComponent(0.38)
+        lineNumberRuler.numberColor = NSColor(lineNumberColor)
+        lineNumberRuler.rulerBackgroundColor = NSColor(lineNumberBackgroundColor)
     }
 
     @MainActor
@@ -947,6 +977,7 @@ private final class MarkdownTextView: NSTextView {
 private final class MarkdownLineNumberRulerView: NSRulerView {
     weak var textView: NSTextView?
     var numberColor = NSColor.secondaryLabelColor
+    var rulerBackgroundColor = NSColor.clear
 
     init(scrollView: NSScrollView, textView: NSTextView) {
         self.textView = textView
@@ -957,6 +988,12 @@ private final class MarkdownLineNumberRulerView: NSRulerView {
 
     required init(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        rulerBackgroundColor.setFill()
+        dirtyRect.fill()
+        drawHashMarksAndLabels(in: dirtyRect)
     }
 
     override func drawHashMarksAndLabels(in dirtyRect: NSRect) {
@@ -1150,7 +1187,7 @@ private struct MarkdownOutlineDrawer: View {
             HStack(spacing: 8) {
                 Image(systemName: "list.bullet.indent")
                     .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(theme.accent.color)
+                    .foregroundStyle(theme.interactiveAccent.color)
                 Text("目录")
                     .font(.system(size: 12, weight: .bold, design: .rounded))
                     .foregroundStyle(theme.text.primary.color)
@@ -1186,7 +1223,7 @@ private struct MarkdownOutlineDrawer: View {
                     VStack(alignment: .leading, spacing: 8) {
                         Image(systemName: "eye.slash")
                             .font(.system(size: 16, weight: .medium))
-                            .foregroundStyle(theme.accent.color)
+                            .foregroundStyle(theme.interactiveAccent.color)
                         Text(message)
                             .font(.system(size: 12, weight: .medium))
                             .foregroundStyle(theme.text.secondary.color)
@@ -1219,12 +1256,12 @@ private struct MarkdownOutlineDrawer: View {
         } label: {
             Text(heading.title)
                 .font(.system(size: 12, weight: isActive ? .bold : .medium))
-                .foregroundStyle(isActive ? theme.accent.color : theme.text.secondary.color)
+                .foregroundStyle(isActive ? theme.interactiveAccent.color : theme.text.primary.color)
                 .lineLimit(2)
                 .frame(maxWidth: .infinity, minHeight: 30, alignment: .leading)
                 .padding(.horizontal, 9)
                 .background(
-                    isActive ? theme.accent.color.opacity(0.14) : Color.clear,
+                    isActive ? theme.interactiveAccent.color.opacity(0.14) : Color.clear,
                     in: RoundedRectangle(cornerRadius: 7, style: .continuous)
                 )
                 .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))

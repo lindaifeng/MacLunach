@@ -134,6 +134,8 @@ targets:
     dependencies:
       - package: TouchKit
         product: FileActionServiceProtocol
+      - package: TouchKit
+        product: FileActionServiceCore
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: me.touch.launcher.FileActionService
@@ -193,8 +195,6 @@ targets:
       - TouchTests
     dependencies:
       - target: Touch
-      - package: TouchKit
-        product: ScreenshotFeature
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: me.touch.launcher.tests
