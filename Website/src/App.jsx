@@ -228,7 +228,7 @@ function Workflows({ onOpen }) {
         <div className="utility-grid">
           <article className="utility utility--finder" data-reveal>
             <div className="utility__copy"><span>03 / FINDER</span><h3>右键少绕一步。</h3><p>新建文件、文件夹、复制路径，或在你的终端中打开当前位置。</p></div>
-            <ProductImage src={productURL("finder-menu.png")} alt="一念超级右键 Finder 菜单真实界面" onOpen={onOpen} />
+            <ProductImage src={productURL("finder-menu-clean.png")} alt="一念超级右键 Finder 菜单真实界面" onOpen={onOpen} />
           </article>
           <article className="utility utility--translation" data-reveal>
             <div className="utility__copy"><span>04 / TRANSLATE</span><h3>看见文字，马上理解。</h3><p>截图后可直接识别与翻译；需要语言包时提供明确的下载入口。</p></div>
